@@ -87,6 +87,12 @@ fn analyze(path: &PathBuf, contract_filter: Option<&str>, verbose: bool) -> Resu
                 Visibility::Private => "private",
             };
 
+            let display_name = if func.name.is_empty() {
+                format!("{:?}", func.kind).to_lowercase()
+            } else {
+                func.name.clone()
+            };
+
             match CfgBuilder::build(func, contract) {
                 Ok(cfg) => {
                     let blocks = cfg.node_count();
@@ -96,7 +102,7 @@ fn analyze(path: &PathBuf, contract_filter: Option<&str>, verbose: bool) -> Resu
                         .count();
 
                     println!("  {} {} — {} blocks, {} edges, {} revert paths",
-                        vis, func.name, blocks, edges, reverts);
+                        vis, display_name, blocks, edges, reverts);
 
                     if verbose {
                         for node in cfg.node_indices() {
@@ -114,7 +120,7 @@ fn analyze(path: &PathBuf, contract_filter: Option<&str>, verbose: bool) -> Resu
                     }
                 }
                 Err(e) => {
-                    println!("  {} {} — CFG error: {e}", vis, func.name);
+                    println!("  {} {} — CFG error: {e}", vis, display_name);
                 }
             }
         }

@@ -1,7 +1,7 @@
 use petgraph::stable_graph::NodeIndex;
 
 use crate::model::contract::ContractDef;
-use crate::model::expression::{Expression, ExpressionKind};
+use crate::model::expression::{BinaryOperator, Expression, ExpressionKind, UnaryOperator};
 use crate::model::function::FunctionDef;
 use crate::model::statement::{Statement, StatementKind};
 
@@ -517,7 +517,6 @@ fn classify_expression(expr: &Expression) -> CfgStatement {
     }
 }
 
-/// Simple string representation of an expression for display purposes.
 fn expr_to_string(expr: &Expression) -> String {
     match &expr.kind {
         ExpressionKind::Identifier { name } => name.clone(),
@@ -530,15 +529,57 @@ fn expr_to_string(expr: &Expression) -> String {
             format!("{}({})", expr_to_string(callee), args.join(", "))
         }
         ExpressionKind::BinaryOp { left, operator, right } => {
-            format!("{} {:?} {}", expr_to_string(left), operator, expr_to_string(right))
+            format!("{} {} {}", expr_to_string(left), binop_to_str(operator), expr_to_string(right))
         }
-        ExpressionKind::UnaryOp { operator, operand } => {
-            format!("{:?}({})", operator, expr_to_string(operand))
-        }
+        ExpressionKind::UnaryOp { operator, operand } => match operator {
+            UnaryOperator::Not => format!("!{}", expr_to_string(operand)),
+            UnaryOperator::Neg => format!("-{}", expr_to_string(operand)),
+            UnaryOperator::BitNot => format!("~{}", expr_to_string(operand)),
+            _ => format!("{:?}({})", operator, expr_to_string(operand)),
+        },
         ExpressionKind::IndexAccess { base, index } => {
             let idx = index.as_ref().map(|e| expr_to_string(e)).unwrap_or_default();
             format!("{}[{}]", expr_to_string(base), idx)
         }
-        _ => format!("{:?}", expr.kind),
+        ExpressionKind::Assignment { target, value, .. } => {
+            format!("{} = {}", expr_to_string(target), expr_to_string(value))
+        }
+        ExpressionKind::Ternary { condition, true_expr, false_expr } => {
+            format!("{} ? {} : {}", expr_to_string(condition), expr_to_string(true_expr), expr_to_string(false_expr))
+        }
+        ExpressionKind::TypeCast { type_name, expression } => {
+            format!("{type_name}({})", expr_to_string(expression))
+        }
+        ExpressionKind::TypeMeta { type_name } => {
+            format!("type({type_name})")
+        }
+        ExpressionKind::New { type_name, arguments } => {
+            let args: Vec<String> = arguments.iter().map(expr_to_string).collect();
+            format!("new {type_name}({})", args.join(", "))
+        }
+    }
+}
+
+fn binop_to_str(op: &BinaryOperator) -> &'static str {
+    match op {
+        BinaryOperator::Add => "+",
+        BinaryOperator::Sub => "-",
+        BinaryOperator::Mul => "*",
+        BinaryOperator::Div => "/",
+        BinaryOperator::Mod => "%",
+        BinaryOperator::Pow => "**",
+        BinaryOperator::Eq => "==",
+        BinaryOperator::Neq => "!=",
+        BinaryOperator::Lt => "<",
+        BinaryOperator::Gt => ">",
+        BinaryOperator::Lte => "<=",
+        BinaryOperator::Gte => ">=",
+        BinaryOperator::And => "&&",
+        BinaryOperator::Or => "||",
+        BinaryOperator::BitAnd => "&",
+        BinaryOperator::BitOr => "|",
+        BinaryOperator::BitXor => "^",
+        BinaryOperator::Shl => "<<",
+        BinaryOperator::Shr => ">>",
     }
 }
