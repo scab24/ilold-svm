@@ -1,0 +1,12 @@
+[package]
+name = "ilold-core"
+version = "0.1.0"
+edition = "2021"
+description = "Core library for Ilold: smart contract execution path analysis engine"
+
+[dependencies]
+solar = { workspace = true }
+petgraph = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

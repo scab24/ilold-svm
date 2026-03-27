@@ -1,0 +1,14 @@
+[package]
+name = "ilold-cli"
+version = "0.1.0"
+edition = "2021"
+description = "CLI for Ilold: smart contract execution path analyzer"
+
+[[bin]]
+name = "ilold"
+path = "src/main.rs"
+
+[dependencies]
+ilold-core = { path = "../ilold-core" }
+anyhow = { workspace = true }
+clap = { workspace = true }
