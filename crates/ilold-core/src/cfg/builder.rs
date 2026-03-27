@@ -198,26 +198,21 @@ impl CfgBuilder {
             join
         };
 
-        // Join block (only if both branches don't terminate)
-        let then_has_exit = self.graph.edges(then_end).next().is_some()
-            && self.graph[then_end].kind != BlockKind::Return
-            && self.graph[then_end].kind != BlockKind::Revert;
-        let else_has_exit = self.graph.edges(else_end).next().is_some()
-            && self.graph[else_end].kind != BlockKind::Return
-            && self.graph[else_end].kind != BlockKind::Revert;
+        // Join block: connect non-terminal branches
+        let then_needs_join = !self.block_is_terminal(then_end);
+        let else_needs_join = else_body.is_some() && !self.block_is_terminal(else_end);
 
-        if then_has_exit || else_has_exit || else_body.is_none() {
+        if then_needs_join || else_needs_join || else_body.is_none() {
             let join = if else_body.is_none() {
                 else_end // already created as the join
             } else {
                 self.add_block(BlockKind::Normal)
             };
 
-            // Connect non-terminal branches to join
-            if !self.block_is_terminal(then_end) {
+            if then_needs_join {
                 self.add_edge(then_end, join, BranchEdge::Unconditional);
             }
-            if else_body.is_some() && !self.block_is_terminal(else_end) {
+            if else_needs_join {
                 self.add_edge(else_end, join, BranchEdge::Unconditional);
             }
             self.current_block = join;
