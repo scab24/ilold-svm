@@ -10,7 +10,7 @@ use crate::model::expression::*;
 use crate::model::function::*;
 use crate::model::modifier::*;
 use crate::model::project::*;
-use crate::model::statement::*;
+use crate::model::statement::{CatchClause, Statement, StatementKind};
 
 use super::error::ParseError;
 use super::ProjectParser;
@@ -499,6 +499,41 @@ fn convert_statement(stmt: &ast::Stmt<'_>, file_index: usize) -> Statement {
                 .map(|e| convert_expression(e, file_index)),
         },
 
+        StmtKind::Try(try_stmt) => {
+            let expression = convert_expression(&try_stmt.expr, file_index);
+            let clauses = try_stmt
+                .clauses
+                .iter()
+                .map(|c| CatchClause {
+                    name: c.name.as_ref().map(|n| n.as_str().to_string()),
+                    params: convert_param_list(&c.args),
+                    body: convert_block_stmts(&c.block, file_index),
+                })
+                .collect();
+            StatementKind::TryCatch { expression, clauses }
+        }
+
+        StmtKind::DeclMulti(vars, expr) => {
+            // (uint a, uint b) = foo() — we store the whole thing as a single
+            // VariableDeclaration with a combined name for simplicity in v1.
+            let names: Vec<String> = vars
+                .iter()
+                .map(|v| match v {
+                    solar::interface::SpannedOption::Some(var) => var
+                        .name
+                        .as_ref()
+                        .map(|n: &ast::Ident| n.as_str().to_string())
+                        .unwrap_or("_".into()),
+                    solar::interface::SpannedOption::None(_) => "_".into(),
+                })
+                .collect();
+            StatementKind::VariableDeclaration {
+                name: format!("({})", names.join(", ")),
+                type_name: "tuple".into(),
+                initial_value: Some(convert_expression(expr, file_index)),
+            }
+        }
+
         StmtKind::Assembly(..) => StatementKind::Assembly {
             span: make_span(file_index),
         },
@@ -506,15 +541,6 @@ fn convert_statement(stmt: &ast::Stmt<'_>, file_index: usize) -> Statement {
         StmtKind::Break => StatementKind::Break,
         StmtKind::Continue => StatementKind::Continue,
         StmtKind::Placeholder => StatementKind::Placeholder,
-
-        _ => StatementKind::ExpressionStmt {
-            expression: Expression {
-                kind: ExpressionKind::Identifier {
-                    name: "/* unsupported stmt */".into(),
-                },
-                span: make_span(file_index),
-            },
-        },
     };
 
     Statement {
@@ -601,12 +627,8 @@ fn convert_expression(expr: &ast::Expr<'_>, file_index: usize) -> Expression {
             arguments: Vec::new(),
         },
 
-        ExprKind::Type(ty) => ExpressionKind::TypeCast {
+        ExprKind::Type(ty) => ExpressionKind::TypeMeta {
             type_name: type_to_string(ty),
-            expression: Box::new(Expression {
-                kind: ExpressionKind::Identifier { name: String::new() },
-                span: make_span(file_index),
-            }),
         },
 
         _ => ExpressionKind::Identifier {
@@ -703,7 +725,7 @@ fn type_to_string(ty: &ast::Type<'_>) -> String {
         ast::TypeKind::Array(arr) => {
             let elem = type_to_string(&arr.element);
             match &arr.size {
-                Some(_size) => format!("{elem}[/*sized*/]"),
+                Some(size) => format!("{elem}[{size:?}]"),
                 None => format!("{elem}[]"),
             }
         }

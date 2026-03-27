@@ -1,7 +1,16 @@
 use serde::{Deserialize, Serialize};
 
-use super::common::SourceSpan;
+use super::common::{Param, SourceSpan};
 use super::expression::Expression;
+
+/// A single clause in a try/catch statement
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CatchClause {
+    /// None for the success clause (returns), Some("Error"), Some("Panic"), or custom
+    pub name: Option<String>,
+    pub params: Vec<Param>,
+    pub body: Vec<Statement>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Statement {
@@ -54,6 +63,11 @@ pub enum StatementKind {
         name: String,
         type_name: String,
         initial_value: Option<Expression>,
+    },
+    /// try expr returns (...) { ok_body } catch Error(...) { err_body } catch (...) { ... }
+    TryCatch {
+        expression: Expression,
+        clauses: Vec<CatchClause>,
     },
     Assembly {
         span: SourceSpan,

@@ -48,9 +48,14 @@ pub enum ExpressionKind {
         true_expr: Box<Expression>,
         false_expr: Box<Expression>,
     },
+    /// uint256(x), address(y) — explicit type conversion
     TypeCast {
         type_name: String,
         expression: Box<Expression>,
+    },
+    /// type(uint256) — builtin that returns type metadata (min, max)
+    TypeMeta {
+        type_name: String,
     },
     New {
         type_name: String,
