@@ -45,23 +45,27 @@ pub fn build_call_graph(project: &Project, contract: &ContractDef) -> CallGraph 
             for stmt in &block.statements {
                 match stmt {
                     CfgStatement::InternalCall { function, .. } => {
-                        let callee_idx = resolve_internal(
-                            function,
-                            contract,
-                            project,
-                            &mut graph,
-                            &mut node_index,
-                        );
-                        add_or_increment_edge(&mut graph, caller_idx, callee_idx);
+                        if !is_type_cast(function) {
+                            let callee_idx = resolve_internal(
+                                function,
+                                contract,
+                                project,
+                                &mut graph,
+                                &mut node_index,
+                            );
+                            add_or_increment_edge(&mut graph, caller_idx, callee_idx);
+                        }
                     }
                     CfgStatement::ExternalCall { target, function, .. } => {
-                        let callee_idx = resolve_external(
-                            target,
-                            function,
-                            &mut graph,
-                            &mut node_index,
-                        );
-                        add_or_increment_edge(&mut graph, caller_idx, callee_idx);
+                        if !is_type_cast(function) && !is_type_cast(target) {
+                            let callee_idx = resolve_external(
+                                target,
+                                function,
+                                &mut graph,
+                                &mut node_index,
+                            );
+                            add_or_increment_edge(&mut graph, caller_idx, callee_idx);
+                        }
                     }
                     _ => {}
                 }
@@ -143,6 +147,23 @@ fn resolve_external(
     });
     index.insert(key, idx);
     idx
+}
+
+/// Filter out type casts that look like function calls (IERC20(addr), address(0), uint256(x))
+fn is_type_cast(name: &str) -> bool {
+    let name = name.trim();
+    // Solidity elementary types
+    if name.starts_with("type(") || name.starts_with("address") || name.starts_with("uint")
+        || name.starts_with("int") || name.starts_with("bytes") || name.starts_with("bool")
+        || name.starts_with("string")
+    {
+        return true;
+    }
+    // Interface type casts: starts with I + uppercase (IERC20, IUniswapV2Pair)
+    if name.starts_with('I') && name.len() > 1 && name.chars().nth(1).is_some_and(|c| c.is_uppercase()) {
+        return true;
+    }
+    false
 }
 
 fn add_or_increment_edge(graph: &mut CallGraph, from: NodeIndex, to: NodeIndex) {
