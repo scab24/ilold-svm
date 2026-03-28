@@ -87,9 +87,19 @@ fn parse_single_file(
             }
         })?;
 
+        // Solar's BytePos starts at 1 (not 0). For multi-file parsing, each file
+        // has an offset. We detect it from the source_map.
+        let base_offset = sess.source_map()
+            .files()
+            .first()
+            .map(|f| f.start_pos.to_usize())
+            .unwrap_or(1);
+
+        let mapper = SpanMapper::new(file_index, src, base_offset);
+
         for item in source_unit.items.iter() {
             if let ItemKind::Contract(ref contract) = item.kind {
-                contracts.push(convert_contract(contract, file_index));
+                contracts.push(convert_contract(contract, &mapper));
             }
         }
 
@@ -104,7 +114,7 @@ fn parse_single_file(
 // Contract
 // ============================================================================
 
-fn convert_contract(contract: &ast::ItemContract<'_>, file_index: usize) -> ContractDef {
+fn convert_contract(contract: &ast::ItemContract<'_>, mapper: &SpanMapper) -> ContractDef {
     let mut functions = Vec::new();
     let mut modifiers = Vec::new();
     let mut state_vars = Vec::new();
@@ -117,25 +127,25 @@ fn convert_contract(contract: &ast::ItemContract<'_>, file_index: usize) -> Cont
         match &item.kind {
             ItemKind::Function(f) => {
                 if f.kind == ast::FunctionKind::Modifier {
-                    modifiers.push(convert_modifier_def(f, file_index));
+                    modifiers.push(convert_modifier_def(f, mapper));
                 } else {
-                    functions.push(convert_function(f, file_index));
+                    functions.push(convert_function(f, mapper));
                 }
             }
             ItemKind::Variable(v) => {
-                state_vars.push(convert_state_var(v, file_index));
+                state_vars.push(convert_state_var(v, mapper));
             }
             ItemKind::Struct(s) => {
-                structs.push(convert_struct(s, file_index));
+                structs.push(convert_struct(s, mapper));
             }
             ItemKind::Enum(e) => {
-                enums.push(convert_enum(e, file_index));
+                enums.push(convert_enum(e, mapper));
             }
             ItemKind::Event(ev) => {
-                events.push(convert_event(ev, file_index));
+                events.push(convert_event(ev, mapper));
             }
             ItemKind::Error(er) => {
-                errors.push(convert_error(er, file_index));
+                errors.push(convert_error(er, mapper));
             }
             _ => {}
         }
@@ -158,7 +168,7 @@ fn convert_contract(contract: &ast::ItemContract<'_>, file_index: usize) -> Cont
         events,
         errors,
         inherits,
-        span: make_span(file_index),
+        span: mapper.convert(contract.name.span),
     }
 }
 
@@ -175,7 +185,7 @@ fn convert_contract_kind(kind: ast::ContractKind) -> ContractKind {
 // Functions and modifiers
 // ============================================================================
 
-fn convert_function(f: &ast::ItemFunction<'_>, file_index: usize) -> FunctionDef {
+fn convert_function(f: &ast::ItemFunction<'_>, mapper: &SpanMapper) -> FunctionDef {
     let name = f
         .header
         .name
@@ -203,7 +213,7 @@ fn convert_function(f: &ast::ItemFunction<'_>, file_index: usize) -> FunctionDef
         .header
         .modifiers
         .iter()
-        .map(|m| convert_modifier_ref(m, file_index))
+        .map(|m| convert_modifier_ref(m, mapper))
         .collect();
 
     let params = convert_param_list(&f.header.parameters);
@@ -211,7 +221,7 @@ fn convert_function(f: &ast::ItemFunction<'_>, file_index: usize) -> FunctionDef
     let body = f
         .body
         .as_ref()
-        .map(|block| convert_block_stmts(block, file_index));
+        .map(|block| convert_block_stmts(block, mapper));
 
     FunctionDef {
         name,
@@ -224,11 +234,11 @@ fn convert_function(f: &ast::ItemFunction<'_>, file_index: usize) -> FunctionDef
         body,
         is_virtual: f.header.virtual_(),
         is_override: f.header.override_.is_some(),
-        span: make_span(file_index),
+        span: mapper.convert(f.header.span),
     }
 }
 
-fn convert_modifier_def(f: &ast::ItemFunction<'_>, file_index: usize) -> ModifierDef {
+fn convert_modifier_def(f: &ast::ItemFunction<'_>, mapper: &SpanMapper) -> ModifierDef {
     let name = f
         .header
         .name
@@ -240,20 +250,20 @@ fn convert_modifier_def(f: &ast::ItemFunction<'_>, file_index: usize) -> Modifie
     let body = f
         .body
         .as_ref()
-        .map(|block| convert_block_stmts(block, file_index))
+        .map(|block| convert_block_stmts(block, mapper))
         .unwrap_or_default();
 
     ModifierDef {
         name,
         params,
         body,
-        span: make_span(file_index),
+        span: mapper.convert(f.header.span),
     }
 }
 
-fn convert_modifier_ref(m: &ast::Modifier<'_>, file_index: usize) -> ModifierRef {
+fn convert_modifier_ref(m: &ast::Modifier<'_>, mapper: &SpanMapper) -> ModifierRef {
     let name = path_to_string(&m.name);
-    let arguments: Vec<Expression> = m.arguments.exprs().map(|e| convert_expression(e, file_index)).collect();
+    let arguments: Vec<Expression> = m.arguments.exprs().map(|e| convert_expression(e, mapper)).collect();
     ModifierRef { name, arguments }
 }
 
@@ -308,7 +318,7 @@ fn convert_returns(header: &ast::FunctionHeader<'_>) -> Vec<Param> {
 // State vars, structs, enums, events, errors
 // ============================================================================
 
-fn convert_state_var(v: &ast::VariableDefinition<'_>, file_index: usize) -> StateVar {
+fn convert_state_var(v: &ast::VariableDefinition<'_>, mapper: &SpanMapper) -> StateVar {
     let visibility = v
         .visibility
         .map(convert_visibility)
@@ -327,7 +337,7 @@ fn convert_state_var(v: &ast::VariableDefinition<'_>, file_index: usize) -> Stat
     let initial_value = v
         .initializer
         .as_ref()
-        .map(|expr| convert_expression(expr, file_index));
+        .map(|expr| convert_expression(expr, mapper));
 
     StateVar {
         name: v
@@ -340,11 +350,11 @@ fn convert_state_var(v: &ast::VariableDefinition<'_>, file_index: usize) -> Stat
         is_constant,
         is_immutable,
         initial_value,
-        span: make_span(file_index),
+        span: mapper.convert(v.span),
     }
 }
 
-fn convert_struct(s: &ast::ItemStruct<'_>, file_index: usize) -> StructDef {
+fn convert_struct(s: &ast::ItemStruct<'_>, mapper: &SpanMapper) -> StructDef {
     let fields = s
         .fields
         .iter()
@@ -361,19 +371,19 @@ fn convert_struct(s: &ast::ItemStruct<'_>, file_index: usize) -> StructDef {
     StructDef {
         name: s.name.as_str().to_string(),
         fields,
-        span: make_span(file_index),
+        span: mapper.convert(s.name.span),
     }
 }
 
-fn convert_enum(e: &ast::ItemEnum<'_>, file_index: usize) -> EnumDef {
+fn convert_enum(e: &ast::ItemEnum<'_>, mapper: &SpanMapper) -> EnumDef {
     EnumDef {
         name: e.name.as_str().to_string(),
         variants: e.variants.iter().map(|v| v.as_str().to_string()).collect(),
-        span: make_span(file_index),
+        span: mapper.convert(e.name.span),
     }
 }
 
-fn convert_event(ev: &ast::ItemEvent<'_>, file_index: usize) -> EventDef {
+fn convert_event(ev: &ast::ItemEvent<'_>, mapper: &SpanMapper) -> EventDef {
     let params = ev
         .parameters
         .iter()
@@ -390,11 +400,11 @@ fn convert_event(ev: &ast::ItemEvent<'_>, file_index: usize) -> EventDef {
     EventDef {
         name: ev.name.as_str().to_string(),
         params,
-        span: make_span(file_index),
+        span: mapper.convert(ev.name.span),
     }
 }
 
-fn convert_error(er: &ast::ItemError<'_>, file_index: usize) -> ErrorDef {
+fn convert_error(er: &ast::ItemError<'_>, mapper: &SpanMapper) -> ErrorDef {
     let params = er
         .parameters
         .iter()
@@ -411,7 +421,7 @@ fn convert_error(er: &ast::ItemError<'_>, file_index: usize) -> ErrorDef {
     ErrorDef {
         name: er.name.as_str().to_string(),
         params,
-        span: make_span(file_index),
+        span: mapper.convert(er.name.span),
     }
 }
 
@@ -419,71 +429,71 @@ fn convert_error(er: &ast::ItemError<'_>, file_index: usize) -> ErrorDef {
 // Statements
 // ============================================================================
 
-fn convert_block_stmts(block: &ast::Block<'_>, file_index: usize) -> Vec<Statement> {
+fn convert_block_stmts(block: &ast::Block<'_>, mapper: &SpanMapper) -> Vec<Statement> {
     block
         .stmts
         .iter()
-        .map(|s| convert_statement(s, file_index))
+        .map(|s| convert_statement(s, mapper))
         .collect()
 }
 
-fn convert_statement(stmt: &ast::Stmt<'_>, file_index: usize) -> Statement {
+fn convert_statement(stmt: &ast::Stmt<'_>, mapper: &SpanMapper) -> Statement {
     let kind = match &stmt.kind {
         StmtKind::If(condition, then_stmt, else_stmt) => StatementKind::If {
-            condition: convert_expression(condition, file_index),
-            then_body: wrap_stmt_as_body(then_stmt, file_index),
+            condition: convert_expression(condition, mapper),
+            then_body: wrap_stmt_as_body(then_stmt, mapper),
             else_body: else_stmt
                 .as_ref()
-                .map(|s| wrap_stmt_as_body(s, file_index)),
+                .map(|s| wrap_stmt_as_body(s, mapper)),
         },
 
         StmtKind::For { init, cond, next, body } => StatementKind::For {
             init: init
                 .as_ref()
-                .map(|s| Box::new(convert_statement(s, file_index))),
+                .map(|s| Box::new(convert_statement(s, mapper))),
             condition: cond
                 .as_ref()
-                .map(|e| convert_expression(e, file_index)),
+                .map(|e| convert_expression(e, mapper)),
             increment: next
                 .as_ref()
-                .map(|e| convert_expression(e, file_index)),
-            body: wrap_stmt_as_body(body, file_index),
+                .map(|e| convert_expression(e, mapper)),
+            body: wrap_stmt_as_body(body, mapper),
         },
 
         StmtKind::While(condition, body) => StatementKind::While {
-            condition: convert_expression(condition, file_index),
-            body: wrap_stmt_as_body(body, file_index),
+            condition: convert_expression(condition, mapper),
+            body: wrap_stmt_as_body(body, mapper),
         },
 
         StmtKind::DoWhile(body, condition) => StatementKind::DoWhile {
-            body: wrap_stmt_as_body(body, file_index),
-            condition: convert_expression(condition, file_index),
+            body: wrap_stmt_as_body(body, mapper),
+            condition: convert_expression(condition, mapper),
         },
 
         StmtKind::Block(block) => StatementKind::Block {
-            statements: convert_block_stmts(block, file_index),
+            statements: convert_block_stmts(block, mapper),
         },
 
         StmtKind::UncheckedBlock(block) => StatementKind::UncheckedBlock {
-            statements: convert_block_stmts(block, file_index),
+            statements: convert_block_stmts(block, mapper),
         },
 
         StmtKind::Return(value) => StatementKind::Return {
-            value: value.as_ref().map(|e| convert_expression(e, file_index)),
+            value: value.as_ref().map(|e| convert_expression(e, mapper)),
         },
 
         StmtKind::Emit(path, args) => StatementKind::Emit {
             event_name: path_to_string(path),
-            arguments: args.exprs().map(|e| convert_expression(e, file_index)).collect(),
+            arguments: args.exprs().map(|e| convert_expression(e, mapper)).collect(),
         },
 
         StmtKind::Revert(path, args) => StatementKind::Revert {
             error_name: Some(path_to_string(path)),
-            arguments: args.exprs().map(|e| convert_expression(e, file_index)).collect(),
+            arguments: args.exprs().map(|e| convert_expression(e, mapper)).collect(),
         },
 
         StmtKind::Expr(expr) => StatementKind::ExpressionStmt {
-            expression: convert_expression(expr, file_index),
+            expression: convert_expression(expr, mapper),
         },
 
         StmtKind::DeclSingle(var) => StatementKind::VariableDeclaration {
@@ -496,18 +506,18 @@ fn convert_statement(stmt: &ast::Stmt<'_>, file_index: usize) -> Statement {
             initial_value: var
                 .initializer
                 .as_ref()
-                .map(|e| convert_expression(e, file_index)),
+                .map(|e| convert_expression(e, mapper)),
         },
 
         StmtKind::Try(try_stmt) => {
-            let expression = convert_expression(&try_stmt.expr, file_index);
+            let expression = convert_expression(&try_stmt.expr, mapper);
             let clauses = try_stmt
                 .clauses
                 .iter()
                 .map(|c| CatchClause {
                     name: c.name.as_ref().map(|n| n.as_str().to_string()),
                     params: convert_param_list(&c.args),
-                    body: convert_block_stmts(&c.block, file_index),
+                    body: convert_block_stmts(&c.block, mapper),
                 })
                 .collect();
             StatementKind::TryCatch { expression, clauses }
@@ -530,12 +540,12 @@ fn convert_statement(stmt: &ast::Stmt<'_>, file_index: usize) -> Statement {
             StatementKind::VariableDeclaration {
                 name: format!("({})", names.join(", ")),
                 type_name: "tuple".into(),
-                initial_value: Some(convert_expression(expr, file_index)),
+                initial_value: Some(convert_expression(expr, mapper)),
             }
         }
 
         StmtKind::Assembly(..) => StatementKind::Assembly {
-            span: make_span(file_index),
+            span: mapper.convert(stmt.span),
         },
 
         StmtKind::Break => StatementKind::Break,
@@ -545,14 +555,14 @@ fn convert_statement(stmt: &ast::Stmt<'_>, file_index: usize) -> Statement {
 
     Statement {
         kind,
-        span: make_span(file_index),
+        span: mapper.convert(stmt.span),
     }
 }
 
-fn wrap_stmt_as_body(stmt: &ast::Stmt<'_>, file_index: usize) -> Vec<Statement> {
+fn wrap_stmt_as_body(stmt: &ast::Stmt<'_>, mapper: &SpanMapper) -> Vec<Statement> {
     match &stmt.kind {
-        StmtKind::Block(block) => convert_block_stmts(block, file_index),
-        _ => vec![convert_statement(stmt, file_index)],
+        StmtKind::Block(block) => convert_block_stmts(block, mapper),
+        _ => vec![convert_statement(stmt, mapper)],
     }
 }
 
@@ -560,57 +570,57 @@ fn wrap_stmt_as_body(stmt: &ast::Stmt<'_>, file_index: usize) -> Vec<Statement> 
 // Expressions
 // ============================================================================
 
-fn convert_expression(expr: &ast::Expr<'_>, file_index: usize) -> Expression {
+fn convert_expression(expr: &ast::Expr<'_>, mapper: &SpanMapper) -> Expression {
     let kind = match &expr.kind {
         ExprKind::Call(callee, args) => ExpressionKind::FunctionCall {
-            callee: Box::new(convert_expression(callee, file_index)),
-            arguments: args.exprs().map(|e| convert_expression(e, file_index)).collect(),
+            callee: Box::new(convert_expression(callee, mapper)),
+            arguments: args.exprs().map(|e| convert_expression(e, mapper)).collect(),
         },
 
         ExprKind::CallOptions(callee, _options) => ExpressionKind::FunctionCall {
-            callee: Box::new(convert_expression(callee, file_index)),
+            callee: Box::new(convert_expression(callee, mapper)),
             arguments: Vec::new(),
         },
 
         ExprKind::Member(object, member) => ExpressionKind::MemberAccess {
-            object: Box::new(convert_expression(object, file_index)),
+            object: Box::new(convert_expression(object, mapper)),
             member: member.as_str().to_string(),
         },
 
         ExprKind::Index(base, index_kind) => ExpressionKind::IndexAccess {
-            base: Box::new(convert_expression(base, file_index)),
+            base: Box::new(convert_expression(base, mapper)),
             index: match index_kind {
                 ast::IndexKind::Index(Some(expr)) => {
-                    Some(Box::new(convert_expression(expr, file_index)))
+                    Some(Box::new(convert_expression(expr, mapper)))
                 }
                 _ => None,
             },
         },
 
         ExprKind::Binary(left, op, right) => ExpressionKind::BinaryOp {
-            left: Box::new(convert_expression(left, file_index)),
+            left: Box::new(convert_expression(left, mapper)),
             operator: convert_binop_kind(op.kind),
-            right: Box::new(convert_expression(right, file_index)),
+            right: Box::new(convert_expression(right, mapper)),
         },
 
         ExprKind::Unary(op, operand) => ExpressionKind::UnaryOp {
             operator: convert_unop_kind(op.kind),
-            operand: Box::new(convert_expression(operand, file_index)),
+            operand: Box::new(convert_expression(operand, mapper)),
         },
 
         ExprKind::Assign(target, op, value) => ExpressionKind::Assignment {
-            target: Box::new(convert_expression(target, file_index)),
+            target: Box::new(convert_expression(target, mapper)),
             operator: op
                 .as_ref()
                 .map(|o| convert_assign_op_kind(o.kind))
                 .unwrap_or(AssignOperator::Assign),
-            value: Box::new(convert_expression(value, file_index)),
+            value: Box::new(convert_expression(value, mapper)),
         },
 
         ExprKind::Ternary(cond, true_expr, false_expr) => ExpressionKind::Ternary {
-            condition: Box::new(convert_expression(cond, file_index)),
-            true_expr: Box::new(convert_expression(true_expr, file_index)),
-            false_expr: Box::new(convert_expression(false_expr, file_index)),
+            condition: Box::new(convert_expression(cond, mapper)),
+            true_expr: Box::new(convert_expression(true_expr, mapper)),
+            false_expr: Box::new(convert_expression(false_expr, mapper)),
         },
 
         ExprKind::Ident(ident) => ExpressionKind::Identifier {
@@ -638,7 +648,7 @@ fn convert_expression(expr: &ast::Expr<'_>, file_index: usize) -> Expression {
 
     Expression {
         kind,
-        span: make_span(file_index),
+        span: mapper.convert(expr.span),
     }
 }
 
@@ -745,14 +755,45 @@ fn path_to_string(path: &ast::AstPath<'_>) -> String {
         .unwrap_or_default()
 }
 
-/// Placeholder span — real line/column mapping will be added later
-/// using solar's SourceMap integration.
-fn make_span(file_index: usize) -> SourceSpan {
-    SourceSpan {
-        file_index,
-        start_line: 0,
-        start_col: 0,
-        end_line: 0,
-        end_col: 0,
+/// Pre-computed line offset table for converting byte positions to line/column.
+struct SpanMapper {
+    file_index: usize,
+    /// Byte offset where each line starts. line_offsets[0] = 0 (first line).
+    line_offsets: Vec<usize>,
+    /// Offset added to solar's BytePos to get the position relative to this file.
+    /// Solar uses absolute positions across all files in the SourceMap.
+    base_offset: usize,
+}
+
+impl SpanMapper {
+    fn new(file_index: usize, src: &str, base_offset: usize) -> Self {
+        let mut line_offsets = vec![0usize];
+        for (i, ch) in src.char_indices() {
+            if ch == '\n' {
+                line_offsets.push(i + 1);
+            }
+        }
+        Self { file_index, line_offsets, base_offset }
     }
+
+    fn convert(&self, span: solar::interface::Span) -> SourceSpan {
+        let lo = span.lo().to_usize().saturating_sub(self.base_offset);
+        let hi = span.hi().to_usize().saturating_sub(self.base_offset);
+        let (start_line, start_col) = self.offset_to_line_col(lo);
+        let (end_line, end_col) = self.offset_to_line_col(hi);
+        SourceSpan {
+            file_index: self.file_index,
+            start_line: start_line as u32,
+            start_col: start_col as u32,
+            end_line: end_line as u32,
+            end_col: end_col as u32,
+        }
+    }
+
+    fn offset_to_line_col(&self, offset: usize) -> (usize, usize) {
+        let line = self.line_offsets.partition_point(|&o| o <= offset).saturating_sub(1);
+        let col = offset.saturating_sub(self.line_offsets.get(line).copied().unwrap_or(0));
+        (line + 1, col + 1) // 1-based
+    }
+
 }
