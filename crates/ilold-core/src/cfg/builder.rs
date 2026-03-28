@@ -347,7 +347,9 @@ impl CfgBuilder {
         clauses: &[crate::model::statement::CatchClause],
     ) {
         let before = self.current_block;
-        self.add_stmt_to_current(classify_expression(expression));
+        for s in classify_expression(expression) {
+            self.add_stmt_to_current(s);
+        }
 
         let join = self.add_block(BlockKind::Normal);
 
@@ -394,7 +396,9 @@ impl CfgBuilder {
         }
 
         // Not require/assert — classify and add to current block
-        self.add_stmt_to_current(classify_expression(expr));
+        for s in classify_expression(expr) {
+            self.add_stmt_to_current(s);
+        }
     }
 
     fn process_require(&mut self, arguments: &[Expression]) {
@@ -467,53 +471,109 @@ impl CfgBuilder {
 // Expression classification
 // ============================================================================
 
-/// Classify an expression into a CfgStatement for the detection engine.
-fn classify_expression(expr: &Expression) -> CfgStatement {
+/// Classify an expression into CfgStatements for the detection engine.
+/// Returns multiple statements when an expression contains embedded calls
+/// (e.g., `x = foo()` produces both an Assignment and an InternalCall).
+fn classify_expression(expr: &Expression) -> Vec<CfgStatement> {
+    let mut stmts = Vec::new();
+    collect_calls(expr, &mut stmts);
+
     match &expr.kind {
-        ExpressionKind::FunctionCall { callee, .. } => match &callee.kind {
-            // foo() — internal call
-            ExpressionKind::Identifier { name } => CfgStatement::InternalCall {
-                function: name.clone(),
+        ExpressionKind::FunctionCall { .. } => {
+            // Already handled by collect_calls
+        }
+        ExpressionKind::Assignment { target, .. } => {
+            stmts.push(CfgStatement::Assignment {
+                target: expr_to_string(target),
+                value: expr_to_string(expr),
                 span: None,
-            },
-            // x.y() — heuristic: external if x is not this/super
-            ExpressionKind::MemberAccess { object, member } => {
-                if let ExpressionKind::Identifier { name } = &object.kind {
-                    if name == "this" || name == "super" {
-                        CfgStatement::InternalCall {
-                            function: member.clone(),
-                            span: None,
+            });
+        }
+        _ => {
+            stmts.push(CfgStatement::Assignment {
+                target: String::new(),
+                value: expr_to_string(expr),
+                span: None,
+            });
+        }
+    }
+
+    stmts
+}
+
+/// Recursively scan an expression for function calls and add them as CfgStatements.
+fn collect_calls(expr: &Expression, stmts: &mut Vec<CfgStatement>) {
+    match &expr.kind {
+        ExpressionKind::FunctionCall { callee, arguments } => {
+            // Classify this call
+            match &callee.kind {
+                ExpressionKind::Identifier { name } => {
+                    stmts.push(CfgStatement::InternalCall {
+                        function: name.clone(),
+                        span: None,
+                    });
+                }
+                ExpressionKind::MemberAccess { object, member } => {
+                    if let ExpressionKind::Identifier { name } = &object.kind {
+                        if name == "this" || name == "super" {
+                            stmts.push(CfgStatement::InternalCall {
+                                function: member.clone(),
+                                span: None,
+                            });
+                        } else {
+                            stmts.push(CfgStatement::ExternalCall {
+                                target: name.clone(),
+                                function: member.clone(),
+                                span: None,
+                            });
                         }
                     } else {
-                        CfgStatement::ExternalCall {
-                            target: name.clone(),
+                        stmts.push(CfgStatement::ExternalCall {
+                            target: expr_to_string(object),
                             function: member.clone(),
                             span: None,
-                        }
-                    }
-                } else {
-                    CfgStatement::ExternalCall {
-                        target: expr_to_string(object),
-                        function: member.clone(),
-                        span: None,
+                        });
                     }
                 }
+                _ => {
+                    stmts.push(CfgStatement::InternalCall {
+                        function: expr_to_string(callee),
+                        span: None,
+                    });
+                }
             }
-            _ => CfgStatement::InternalCall {
-                function: expr_to_string(callee),
-                span: None,
-            },
-        },
-        ExpressionKind::Assignment { target, .. } => CfgStatement::Assignment {
-            target: expr_to_string(target),
-            value: expr_to_string(expr),
-            span: None,
-        },
-        _ => CfgStatement::Assignment {
-            target: String::new(),
-            value: expr_to_string(expr),
-            span: None,
-        },
+            // Also recurse into arguments (they might contain calls too)
+            for arg in arguments {
+                collect_calls(arg, stmts);
+            }
+        }
+        // Recurse into sub-expressions
+        ExpressionKind::Assignment { target, value, .. } => {
+            collect_calls(target, stmts);
+            collect_calls(value, stmts);
+        }
+        ExpressionKind::BinaryOp { left, right, .. } => {
+            collect_calls(left, stmts);
+            collect_calls(right, stmts);
+        }
+        ExpressionKind::UnaryOp { operand, .. } => {
+            collect_calls(operand, stmts);
+        }
+        ExpressionKind::MemberAccess { object, .. } => {
+            collect_calls(object, stmts);
+        }
+        ExpressionKind::IndexAccess { base, index } => {
+            collect_calls(base, stmts);
+            if let Some(idx) = index {
+                collect_calls(idx, stmts);
+            }
+        }
+        ExpressionKind::Ternary { condition, true_expr, false_expr } => {
+            collect_calls(condition, stmts);
+            collect_calls(true_expr, stmts);
+            collect_calls(false_expr, stmts);
+        }
+        _ => {}
     }
 }
 
