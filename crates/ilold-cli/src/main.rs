@@ -42,14 +42,35 @@ enum Commands {
         #[arg(long)]
         verbose: bool,
     },
+    /// Start interactive web viewer
+    Serve {
+        /// Path to .sol file or directory
+        path: PathBuf,
+
+        /// Port to listen on
+        #[arg(long, default_value = "8080")]
+        port: u16,
+
+        /// Max sequence depth
+        #[arg(long, default_value = "3")]
+        max_seq_depth: usize,
+    },
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
         Commands::Analyze { path, contract, max_seq_depth, verbose } => {
             analyze(&path, contract.as_deref(), max_seq_depth, verbose)
+        }
+        Commands::Serve { path, port, max_seq_depth } => {
+            let paths = collect_sol_files(&path)?;
+            if paths.is_empty() {
+                anyhow::bail!("No .sol files found at {}", path.display());
+            }
+            ilold_web::serve(paths, port, max_seq_depth).await
         }
     }
 }
