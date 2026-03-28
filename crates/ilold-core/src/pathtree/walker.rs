@@ -251,6 +251,11 @@ fn collect_annotations(
             }
             CfgStatement::RequireCheck { condition, .. } => {
                 annotations.require_checks.push(condition.clone());
+                for sv in state_vars {
+                    if condition.contains(&sv.name) && !annotations.state_reads.contains(&sv.name) {
+                        annotations.state_reads.push(sv.name.clone());
+                    }
+                }
             }
             CfgStatement::AssertCheck { condition, .. } => {
                 annotations.require_checks.push(format!("assert: {condition}"));
@@ -258,12 +263,17 @@ fn collect_annotations(
             CfgStatement::AssemblyBlock { .. } => {
                 annotations.has_assembly = true;
             }
-            CfgStatement::Assignment { target, .. } => {
-                // Check if this writes a state variable
+            CfgStatement::Assignment { target, value, .. } => {
                 let base_name = target.split('[').next().unwrap_or(target);
                 let base_name = base_name.split('.').next().unwrap_or(base_name);
                 if state_vars.iter().any(|sv| sv.name == base_name) {
                     annotations.state_writes.push(target.clone());
+                }
+                // Detect state reads in the value expression and target
+                for sv in state_vars {
+                    if value.contains(&sv.name) && !annotations.state_reads.contains(&sv.name) {
+                        annotations.state_reads.push(sv.name.clone());
+                    }
                 }
             }
             CfgStatement::StateWrite { variable, .. } => {
