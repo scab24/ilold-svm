@@ -1,3 +1,3 @@
-pub mod types;
 pub mod config;
+pub mod types;
 pub mod walker;
