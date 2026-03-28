@@ -334,10 +334,14 @@ impl CfgBuilder {
         self.current_block = exit_block;
     }
 
-    fn process_return(&mut self, _value: Option<&Expression>) {
+    fn process_return(&mut self, value: Option<&Expression>) {
+        if let Some(expr) = value {
+            for s in classify_expression(expr) {
+                self.add_stmt_to_current(s);
+            }
+        }
         let ret = self.add_block(BlockKind::Return);
         self.add_edge(self.current_block, ret, BranchEdge::Unconditional);
-        // After return, current_block becomes the return node (terminal)
         self.current_block = ret;
     }
 
