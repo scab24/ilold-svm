@@ -282,6 +282,99 @@ pub async fn get_sequences(
 }
 
 // ============================================================================
+// Search suggestions — what's searchable in this contract
+// ============================================================================
+
+#[derive(Serialize)]
+pub struct SearchSuggestions {
+    pub functions: Vec<String>,
+    pub state_vars: Vec<String>,
+    pub events: Vec<String>,
+    pub external_calls: Vec<String>,
+    pub categories: Vec<SuggestionCategory>,
+}
+
+#[derive(Serialize)]
+pub struct SuggestionCategory {
+    pub label: String,
+    pub items: Vec<String>,
+}
+
+pub async fn get_search_suggestions(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Result<Json<SearchSuggestions>, StatusCode> {
+    let contract = state
+        .project
+        .contracts
+        .iter()
+        .find(|c| c.name == name)
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    let functions: Vec<String> = contract
+        .functions
+        .iter()
+        .filter(|f| !f.name.is_empty())
+        .map(|f| f.name.clone())
+        .collect();
+
+    let state_vars: Vec<String> = contract
+        .state_vars
+        .iter()
+        .map(|sv| sv.name.clone())
+        .collect();
+
+    let events: Vec<String> = contract
+        .events
+        .iter()
+        .map(|e| e.name.clone())
+        .collect();
+
+    // Collect unique external calls from all paths
+    let mut ext_calls = std::collections::HashSet::new();
+    for ((c, _), pt) in &state.path_trees {
+        if c != &name { continue; }
+        for path in &pt.paths {
+            for call in &path.annotations.external_calls {
+                ext_calls.insert(format!("{}.{}", call.target, call.function));
+            }
+        }
+    }
+    let external_calls: Vec<String> = ext_calls.into_iter().collect();
+
+    let categories = vec![
+        SuggestionCategory {
+            label: "Functions".into(),
+            items: functions.clone(),
+        },
+        SuggestionCategory {
+            label: "State Variables".into(),
+            items: state_vars.clone(),
+        },
+        SuggestionCategory {
+            label: "Events".into(),
+            items: events.clone(),
+        },
+        SuggestionCategory {
+            label: "External Calls".into(),
+            items: external_calls.clone(),
+        },
+        SuggestionCategory {
+            label: "Path Types".into(),
+            items: vec!["revert".into(), "return".into(), "assembly".into()],
+        },
+    ];
+
+    Ok(Json(SearchSuggestions {
+        functions,
+        state_vars,
+        events,
+        external_calls,
+        categories,
+    }))
+}
+
+// ============================================================================
 // Helpers
 // ============================================================================
 

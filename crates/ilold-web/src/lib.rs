@@ -1,5 +1,6 @@
 pub mod api;
 pub mod state;
+pub mod ws;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -26,10 +27,12 @@ pub async fn serve(paths: Vec<PathBuf>, port: u16, max_seq_depth: usize) -> anyh
         .route("/api/contract/{name}/{func}/cfg", get(api::contract::get_cfg))
         .route("/api/contract/{name}/{func}/paths", get(api::contract::get_paths))
         .route("/api/contract/{name}/sequences", get(api::contract::get_sequences))
+        .route("/api/contract/{name}/suggestions", get(api::contract::get_search_suggestions))
         .route("/api/annotations", get(api::annotations::list_annotations))
         .route("/api/annotations", post(api::annotations::create_annotation))
         .route("/api/annotations/{id}", put(api::annotations::update_annotation))
         .route("/api/annotations/{id}", delete(api::annotations::delete_annotation))
+        .route("/ws", get(ws::handler::ws_handler))
         .layer(CorsLayer::permissive())
         .with_state(state);
 

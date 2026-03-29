@@ -2,6 +2,8 @@
   import { page } from '$app/state';
   import { onMount, onDestroy, tick } from 'svelte';
   import { getContract, getCallGraph, type ContractDetail, type CytoscapeGraph } from '$lib/api/rest';
+  import { toggleSearch, setSearchContext } from '$lib/stores/search';
+  import DraggablePanel from '$lib/DraggablePanel.svelte';
 
   let contract: ContractDetail | null = $state(null);
   let error: string | null = $state(null);
@@ -16,6 +18,7 @@
     const contractName = page.params.name;
     if (!contractName) return;
     try {
+      setSearchContext(contractName);
       contract = await getContract(contractName);
       const callgraph = await getCallGraph(contractName);
       await tick();
@@ -125,6 +128,7 @@
       <span class="inherits">inherits {contract.inherits.join(', ')}</span>
     {/if}
     <div class="toolbar">
+      <button class="tool-link" onclick={toggleSearch}>🔍</button>
       <button onclick={fitGraph} title="Fit to screen">⊡</button>
       <button onclick={() => showFunctions = !showFunctions}>
         {showFunctions ? '▶' : '◀'} Functions
@@ -144,29 +148,21 @@
     </div>
 
     {#if selectedNode}
-      <div class="floating-panel info-panel">
-        <div class="panel-header">
-          <strong>{selectedNode.label}</strong>
+      <DraggablePanel title={selectedNode.label} x={window.innerWidth - 320} y={60} width={280} onclose={() => { selectedNode = null; cyInstance?.elements().removeClass('highlighted'); }}>
+        <div class="info-body">
           <span class="badge" class:ext={selectedNode.is_external} class:int={!selectedNode.is_external}>
             {selectedNode.is_external ? 'external' : 'internal'}
           </span>
-          <button class="close" onclick={() => { selectedNode = null; cyInstance?.elements().removeClass('highlighted'); }}>✕</button>
-        </div>
-        <div class="info-body">
           <div class="info-row">Contract: <strong>{selectedNode.contract}</strong></div>
           {#if !selectedNode.is_external}
             <a href="/contract/{contract?.name}/{selectedNode.label}" class="view-paths-btn">View paths →</a>
           {/if}
         </div>
-      </div>
+      </DraggablePanel>
     {/if}
 
     {#if showFunctions && contract}
-      <div class="floating-panel functions-panel">
-        <div class="panel-header">
-          <strong>Functions ({contract.functions.length})</strong>
-          <button class="close" onclick={() => showFunctions = false}>✕</button>
-        </div>
+      <DraggablePanel title="Functions ({contract.functions.length})" x={window.innerWidth - 380} y={60} width={360} onclose={() => showFunctions = false}>
         <div class="func-list">
           {#each contract.functions as func}
             <a href="/contract/{contract.name}/{func.name || 'constructor'}" class="func-row">
@@ -194,7 +190,7 @@
             {/each}
           </div>
         {/if}
-      </div>
+      </DraggablePanel>
     {/if}
   {/if}
 </div>
@@ -224,6 +220,11 @@
     padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 12px;
   }
   .toolbar button:hover { border-color: #58a6ff; }
+  .tool-link {
+    background: #21262d; border: 1px solid #30363d; color: #c9d1d9;
+    padding: 4px 10px; border-radius: 4px; font-size: 12px;
+  }
+  .tool-link:hover { border-color: #58a6ff; text-decoration: none; }
 
   .error { padding: 24px; color: #f85149; }
 

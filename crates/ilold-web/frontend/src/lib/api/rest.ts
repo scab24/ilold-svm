@@ -64,6 +64,14 @@ export interface CytoscapeEdgeData {
 
 // API client
 
+export interface SearchSuggestions {
+  functions: string[];
+  state_vars: string[];
+  events: string[];
+  external_calls: string[];
+  categories: { label: string; items: string[] }[];
+}
+
 const BASE = '';  // same origin in production, proxied in dev
 
 export async function getProject(): Promise<ProjectSummary> {
@@ -89,6 +97,11 @@ export async function getCfg(contractName: string, funcName: string): Promise<Cy
 
 export async function getPaths(contractName: string, funcName: string) {
   const res = await fetch(`${BASE}/api/contract/${contractName}/${funcName}/paths`);
+  return res.json();
+}
+
+export async function getSearchSuggestions(contractName: string): Promise<SearchSuggestions> {
+  const res = await fetch(`${BASE}/api/contract/${contractName}/suggestions`);
   return res.json();
 }
 

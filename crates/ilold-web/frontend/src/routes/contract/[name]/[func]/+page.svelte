@@ -2,6 +2,8 @@
   import { page } from '$app/state';
   import { onMount, onDestroy, tick } from 'svelte';
   import { getCfg, getPaths, type CytoscapeGraph } from '$lib/api/rest';
+  import { toggleSearch, setSearchContext } from '$lib/stores/search';
+  import DraggablePanel from '$lib/DraggablePanel.svelte';
 
   let error: string | null = $state(null);
   let pathTree: any = $state(null);
@@ -15,9 +17,34 @@
 
   const contractName = $derived(page.params.name);
   const funcName = $derived(page.params.func);
+  const pathParam = $derived(page.url.searchParams.get('path'));
 
-  onMount(async () => {
+  let loadedFunc = '';
+
+  onMount(() => {
+    loadFunction();
+  });
+
+  // React to URL changes (different function or different path param)
+  $effect(() => {
+    if (funcName && contractName) {
+      if (loadedFunc !== `${contractName}::${funcName}`) {
+        loadFunction();
+      } else if (pathParam !== null && pathTree) {
+        autoSelectPath();
+      }
+    }
+  });
+
+  async function loadFunction() {
     if (!contractName || !funcName) return;
+    loadedFunc = `${contractName}::${funcName}`;
+    setSearchContext(contractName);
+    error = null;
+    pathTree = null;
+    selectedPath = null;
+    selectedNode = null;
+
     try {
       const [cfg, paths] = await Promise.all([
         getCfg(contractName, funcName),
@@ -26,11 +53,23 @@
       pathTree = paths;
       await tick();
       await new Promise(r => requestAnimationFrame(r));
-      if (cyContainer && cfg) renderCfg(cfg);
+      if (cyContainer && cfg) {
+        renderCfg(cfg);
+        if (pathParam !== null) {
+          setTimeout(() => autoSelectPath(), 200);
+        }
+      }
     } catch (e) {
       error = `Function "${funcName}" not found in ${contractName}`;
     }
-  });
+  }
+
+  function autoSelectPath() {
+    if (!pathTree || pathParam === null) return;
+    const pathId = parseInt(pathParam);
+    const targetPath = pathTree.paths.find((p: any) => p.id === pathId);
+    if (targetPath) highlightPath(targetPath);
+  }
 
   onDestroy(() => {
     if (cyInstance) { cyInstance.destroy(); cyInstance = null; }
@@ -142,6 +181,7 @@
       <span class="revert">{pathTree?.stats.revert_paths ?? 0} ✗</span>
     </span>
     <div class="toolbar">
+      <button class="tool-link" onclick={toggleSearch}>🔍</button>
       <button onclick={fitGraph} title="Fit to screen">⊡</button>
       <button onclick={() => showPaths = !showPaths} title="Toggle paths panel">
         {showPaths ? '▶' : '◀'} Paths
@@ -165,33 +205,25 @@
       <span style="color:#f85149">✗ False</span>
     </div>
 
-    <!-- Floating node detail -->
     {#if selectedNode}
-      <div class="floating-panel node-panel">
-        <div class="panel-header">
-          <strong>{selectedNode.id}</strong>
+      <DraggablePanel title="Block {selectedNode.id}" x={12} y={window.innerHeight - 250} width={320} onclose={() => resetSelection()}>
+        <div class="node-content">
           <span class="node-type" style="color:{terminalColor(selectedNode.node_type)}">{selectedNode.node_type}</span>
-          <button class="close" onclick={() => resetSelection()}>✕</button>
+          {#if selectedNode.statements?.length > 0}
+            <div class="stmt-list">
+              {#each selectedNode.statements as stmt}
+                <div class="stmt">{stmt}</div>
+              {/each}
+            </div>
+          {:else}
+            <div class="empty">No statements</div>
+          {/if}
         </div>
-        {#if selectedNode.statements?.length > 0}
-          <div class="stmt-list">
-            {#each selectedNode.statements as stmt}
-              <div class="stmt">{stmt}</div>
-            {/each}
-          </div>
-        {:else}
-          <div class="empty">No statements</div>
-        {/if}
-      </div>
+      </DraggablePanel>
     {/if}
 
-    <!-- Floating paths panel -->
     {#if showPaths && pathTree}
-      <div class="floating-panel paths-panel">
-        <div class="panel-header">
-          <strong>Paths ({pathTree.paths.length})</strong>
-          <button class="close" onclick={() => showPaths = false}>✕</button>
-        </div>
+      <DraggablePanel title="Paths ({pathTree.paths.length})" x={window.innerWidth - 360} y={60} width={340} onclose={() => showPaths = false}>
         <div class="path-list">
           {#each pathTree.paths as path}
             <button
@@ -248,7 +280,7 @@
             {/if}
           </div>
         {/if}
-      </div>
+      </DraggablePanel>
     {/if}
   {/if}
 </div>
@@ -284,6 +316,11 @@
     padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 12px;
   }
   .toolbar button:hover { border-color: #58a6ff; }
+  .tool-link {
+    background: #21262d; border: 1px solid #30363d; color: #c9d1d9;
+    padding: 4px 10px; border-radius: 4px; font-size: 12px;
+  }
+  .tool-link:hover { border-color: #58a6ff; text-decoration: none; }
 
   .error { padding: 24px; color: #f85149; }
 
