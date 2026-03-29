@@ -15,9 +15,15 @@
     }
   });
 
-  // Group: real contracts vs interfaces
-  const contracts = $derived(projectMap?.contracts.filter(c => c.kind !== 'Interface') ?? []);
-  const interfaces = $derived(projectMap?.contracts.filter(c => c.kind === 'Interface') ?? []);
+  let contracts: any[] = $state([]);
+  let interfaces: any[] = $state([]);
+
+  $effect(() => {
+    if (projectMap) {
+      contracts = projectMap.contracts.filter(c => c.kind !== 'Interface');
+      interfaces = projectMap.contracts.filter(c => c.kind === 'Interface');
+    }
+  });
 
   function mutColor(m: string): string {
     if (m === 'View' || m === 'Pure') return '#1f6feb';

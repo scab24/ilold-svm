@@ -1,125 +1,120 @@
 <script lang="ts">
   import { page } from '$app/state';
-  import { onMount, onDestroy, tick } from 'svelte';
-  import { getContract, getCallGraph, type ContractDetail, type CytoscapeGraph } from '$lib/api/rest';
+  import { onMount, onDestroy } from 'svelte';
+  import { getContract, getPaths, getSequences, type ContractDetail } from '$lib/api/rest';
   import { toggleSearch, setSearchContext } from '$lib/stores/search';
-  import DraggablePanel from '$lib/DraggablePanel.svelte';
 
   let contract: ContractDetail | null = $state(null);
   let error: string | null = $state(null);
-  let showFunctions: boolean = $state(true);
-  let selectedNode: any = $state(null);
+  let funcPaths: Record<string, any> = $state({});
+  let expandedFuncs: Set<string> = $state(new Set());
+  let sequenceInfo: any = $state(null);
 
-  let cyContainer: HTMLDivElement;
-  let cyInstance: any = null;
-  let dagreRegistered = false;
+  // Position state for each function card
+  let positions: Record<string, {x: number, y: number}> = $state({});
+  let dragging: string | null = null;
+  let dragOffset = {x: 0, y: 0};
+
+  // Canvas pan state
+  let canvasOffset = $state({x: 0, y: 0});
+  let panning = false;
+  let panStart = {x: 0, y: 0};
 
   onMount(async () => {
     const contractName = page.params.name;
     if (!contractName) return;
+    setSearchContext(contractName);
     try {
-      setSearchContext(contractName);
       contract = await getContract(contractName);
-      const callgraph = await getCallGraph(contractName);
-      await tick();
-      await new Promise(r => requestAnimationFrame(r));
-      if (cyContainer && callgraph) renderCallGraph(callgraph);
+      try { sequenceInfo = await getSequences(contractName); } catch {}
+
+      // Auto-layout: grid positions
+      if (contract) {
+        const cols = Math.ceil(Math.sqrt(contract.functions.length));
+        contract.functions.forEach((f, i) => {
+          const col = i % cols;
+          const row = Math.floor(i / cols);
+          positions[f.name || 'constructor'] = { x: 40 + col * 320, y: 40 + row * 200 };
+        });
+        positions = { ...positions };
+      }
     } catch (e) {
       error = `Contract "${contractName}" not found`;
     }
+
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
   });
 
   onDestroy(() => {
-    if (cyInstance) { cyInstance.destroy(); cyInstance = null; }
+    window.removeEventListener('mousemove', onMouseMove);
+    window.removeEventListener('mouseup', onMouseUp);
   });
 
-  async function renderCallGraph(graph: CytoscapeGraph) {
-    const cytoscape = (await import('cytoscape')).default;
-    if (!dagreRegistered) {
-      const dagre = (await import('cytoscape-dagre')).default;
-      cytoscape.use(dagre);
-      dagreRegistered = true;
-    }
-    if (cyInstance) cyInstance.destroy();
-
-    const nodes = graph.nodes
-      .filter(n => n.data.label.length > 0)
-      .map(n => ({ group: 'nodes' as const, data: n.data }));
-    const nodeIds = new Set(nodes.map(n => n.data.id));
-    const edges = graph.edges
-      .filter(e => nodeIds.has(e.data.source) && nodeIds.has(e.data.target))
-      .map(e => ({ group: 'edges' as const, data: e.data }));
-
-    cyInstance = cytoscape({
-      container: cyContainer,
-      elements: [...nodes, ...edges],
-      style: [
-        {
-          selector: 'node[node_type = "internal"]',
-          style: {
-            'background-color': '#238636', 'label': 'data(label)', 'color': '#f0f6fc',
-            'font-size': '12px', 'text-valign': 'center', 'text-halign': 'center',
-            'width': '140px', 'height': '36px', 'shape': 'roundrectangle',
-          }
-        },
-        {
-          selector: 'node[node_type = "external"]',
-          style: {
-            'background-color': '#161b22', 'label': 'data(label)', 'color': '#f85149',
-            'font-size': '11px', 'text-valign': 'center', 'text-halign': 'center',
-            'width': '130px', 'height': '32px', 'shape': 'roundrectangle',
-            'border-style': 'dashed', 'border-width': 1, 'border-color': '#f85149',
-          }
-        },
-        { selector: 'node.highlighted', style: { 'border-width': 3, 'border-color': '#58a6ff' } },
-        { selector: 'node:active', style: { 'overlay-opacity': 0 } },
-        {
-          selector: 'edge',
-          style: {
-            'width': 1.5, 'line-color': '#30363d', 'target-arrow-color': '#30363d',
-            'target-arrow-shape': 'triangle', 'curve-style': 'bezier', 'arrow-scale': 0.8,
-          }
-        },
-        {
-          selector: 'edge[kind = "External"]',
-          style: { 'line-color': '#f8514966', 'target-arrow-color': '#f85149', 'line-style': 'dashed' }
-        },
-      ],
-      layout: { name: 'preset' },
-      minZoom: 0.2, maxZoom: 4, wheelSensitivity: 0.3,
-    });
-
-    const layout = cyInstance.layout({ name: 'dagre', rankDir: 'TB', nodeSep: 60, rankSep: 70, animate: false } as any);
-    layout.run(); layout.stop();
-
-    cyInstance.on('tap', 'node[node_type = "internal"]', (evt: any) => {
-      const label = evt.target.data('label');
-      if (label && contract) {
-        window.location.href = `/contract/${contract.name}/${label}`;
-      }
-    });
-
-    cyInstance.on('tap', 'node', (evt: any) => {
-      selectedNode = evt.target.data();
-      cyInstance.elements().removeClass('highlighted');
-      evt.target.addClass('highlighted');
-    });
-
-    cyInstance.on('tap', (evt: any) => {
-      if (evt.target === cyInstance) {
-        selectedNode = null;
-        cyInstance.elements().removeClass('highlighted');
-      }
-    });
-
-    cyInstance.on('mouseover', 'node[node_type = "internal"]', () => { if (cyContainer) cyContainer.style.cursor = 'pointer'; });
-    cyInstance.on('mouseout', 'node', () => { if (cyContainer) cyContainer.style.cursor = 'default'; });
+  function onCardMouseDown(name: string, e: MouseEvent) {
+    if ((e.target as HTMLElement).tagName === 'A' ||
+        (e.target as HTMLElement).tagName === 'BUTTON' ||
+        (e.target as HTMLElement).closest('.func-expanded')) return;
+    dragging = name;
+    const pos = positions[name] || {x: 0, y: 0};
+    dragOffset = { x: e.clientX - pos.x - canvasOffset.x, y: e.clientY - pos.y - canvasOffset.y };
+    e.preventDefault();
   }
 
-  function fitGraph() { if (cyInstance) cyInstance.fit(undefined, 40); }
+  function onCanvasMouseDown(e: MouseEvent) {
+    if (e.target === e.currentTarget) {
+      panning = true;
+      panStart = { x: e.clientX - canvasOffset.x, y: e.clientY - canvasOffset.y };
+    }
+  }
+
+  function onMouseMove(e: MouseEvent) {
+    if (dragging) {
+      positions[dragging] = {
+        x: e.clientX - dragOffset.x - canvasOffset.x,
+        y: e.clientY - dragOffset.y - canvasOffset.y,
+      };
+      positions = { ...positions };
+    } else if (panning) {
+      canvasOffset = {
+        x: e.clientX - panStart.x,
+        y: e.clientY - panStart.y,
+      };
+    }
+  }
+
+  function onMouseUp() {
+    dragging = null;
+    panning = false;
+  }
+
+  async function toggleExpand(funcName: string) {
+    if (expandedFuncs.has(funcName)) {
+      expandedFuncs.delete(funcName);
+      expandedFuncs = new Set(expandedFuncs);
+    } else {
+      expandedFuncs.add(funcName);
+      expandedFuncs = new Set(expandedFuncs);
+      if (!funcPaths[funcName] && contract) {
+        try {
+          funcPaths[funcName] = await getPaths(contract.name, funcName);
+          funcPaths = { ...funcPaths };
+        } catch {}
+      }
+    }
+  }
+
+  function mutColor(m: string): string {
+    if (m === 'View' || m === 'Pure') return '#1f6feb';
+    return '#238636';
+  }
+
+  function termColor(t: string): string {
+    return t === 'Return' ? '#3fb950' : t === 'Revert' ? '#f85149' : '#8b949e';
+  }
 </script>
 
-<div class="fullscreen-view">
+<div class="contract-view">
   <div class="topbar">
     <a href="/">← Contracts</a>
     <span class="contract-kind">{contract?.kind.toLowerCase() ?? ''}</span>
@@ -127,78 +122,104 @@
     {#if contract?.inherits.length}
       <span class="inherits">inherits {contract.inherits.join(', ')}</span>
     {/if}
+    {#if sequenceInfo}
+      <span class="seq-badge">{sequenceInfo.sequences.length} sequences</span>
+    {/if}
     <div class="toolbar">
-      <button class="tool-link" onclick={toggleSearch}>🔍</button>
-      <button onclick={fitGraph} title="Fit to screen">⊡</button>
-      <button onclick={() => showFunctions = !showFunctions}>
-        {showFunctions ? '▶' : '◀'} Functions
-      </button>
+      <button class="tool-btn" onclick={toggleSearch}>🔍</button>
     </div>
   </div>
 
   {#if error}
     <div class="error">{error}</div>
+  {:else if !contract}
+    <div class="loading">Loading...</div>
   {:else}
-    <div class="canvas" bind:this={cyContainer}></div>
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="canvas" onmousedown={onCanvasMouseDown} style="cursor:{panning ? 'grabbing' : 'default'}">
+      <div class="canvas-inner" style="transform: translate({canvasOffset.x}px, {canvasOffset.y}px)">
 
-    <div class="legend">
-      <span><span class="dot" style="background:#238636"></span>Internal</span>
-      <span><span class="dot" style="background:#161b22;border:1px solid #f85149"></span>External</span>
-      <span>Click function → view paths</span>
-    </div>
+        {#each contract.functions as func}
+          {@const name = func.name || 'constructor'}
+          {@const pos = positions[name] || {x: 0, y: 0}}
+          {@const isExpanded = expandedFuncs.has(name)}
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div
+            class="func-card"
+            class:expanded={isExpanded}
+            style="left:{pos.x}px; top:{pos.y}px"
+            onmousedown={(e) => onCardMouseDown(name, e)}
+          >
+            <div class="card-header" style="border-left: 3px solid {mutColor(func.mutability)}">
+              <div class="card-top">
+                <span class="card-name">{name}</span>
+                <span class="card-vis">{func.visibility.toLowerCase()}</span>
+              </div>
+              <div class="card-stats">
+                <span>{func.path_count} paths</span>
+                {#if func.happy_paths > 0}<span class="g">{func.happy_paths}✓</span>{/if}
+                {#if func.revert_paths > 0}<span class="r">{func.revert_paths}✗</span>{/if}
+              </div>
+              {#if func.params.length > 0}
+                <div class="card-params">({func.params.map(p => p.type_name).join(', ')})</div>
+              {/if}
+              <button class="expand-btn" onclick={() => toggleExpand(name)}>
+                {isExpanded ? '▲ Collapse' : '▼ Expand paths'}
+              </button>
+            </div>
 
-    {#if selectedNode}
-      <DraggablePanel title={selectedNode.label} x={window.innerWidth - 320} y={60} width={280} onclose={() => { selectedNode = null; cyInstance?.elements().removeClass('highlighted'); }}>
-        <div class="info-body">
-          <span class="badge" class:ext={selectedNode.is_external} class:int={!selectedNode.is_external}>
-            {selectedNode.is_external ? 'external' : 'internal'}
-          </span>
-          <div class="info-row">Contract: <strong>{selectedNode.contract}</strong></div>
-          {#if !selectedNode.is_external}
-            <a href="/contract/{contract?.name}/{selectedNode.label}" class="view-paths-btn">View paths →</a>
-          {/if}
-        </div>
-      </DraggablePanel>
-    {/if}
+            {#if isExpanded}
+              <div class="func-expanded">
+                <a href="/contract/{contract.name}/{name}" class="view-cfg">View CFG →</a>
 
-    {#if showFunctions && contract}
-      <DraggablePanel title="Functions ({contract.functions.length})" x={window.innerWidth - 380} y={60} width={360} onclose={() => showFunctions = false}>
-        <div class="func-list">
-          {#each contract.functions as func}
-            <a href="/contract/{contract.name}/{func.name || 'constructor'}" class="func-row">
-              <span class="vis">{func.visibility.toLowerCase()}</span>
-              <span class="fname">{func.name || 'constructor'}</span>
-              <span class="fstats">
-                {func.path_count}p
-                {#if func.happy_paths > 0}<span class="happy">{func.happy_paths}✓</span>{/if}
-                {#if func.revert_paths > 0}<span class="revert">{func.revert_paths}✗</span>{/if}
-              </span>
-            </a>
-          {/each}
-        </div>
-
-        {#if contract.state_vars.length > 0}
-          <div class="panel-header" style="margin-top:4px">
-            <strong>State Variables ({contract.state_vars.length})</strong>
+                {#if funcPaths[name]}
+                  {#each funcPaths[name].paths as path}
+                    <a href="/contract/{contract.name}/{name}?path={path.id}" class="path-row">
+                      <span class="pid">#{path.id}</span>
+                      <span style="color:{termColor(path.terminal)};font-weight:600;font-size:11px">{path.terminal}</span>
+                      <span class="pdepth">{path.nodes.length}blk</span>
+                      {#if path.annotations.external_calls.length > 0}
+                        <span class="pb ext">⚡{path.annotations.external_calls.length}</span>
+                      {/if}
+                      {#if path.annotations.state_writes.length > 0}
+                        <span class="pb wr">✏{path.annotations.state_writes.length}</span>
+                      {/if}
+                    </a>
+                  {/each}
+                {:else}
+                  <div class="loading-sm">Loading...</div>
+                {/if}
+              </div>
+            {/if}
           </div>
-          <div class="var-list">
+        {/each}
+
+        <!-- State variables card -->
+        {#if contract.state_vars.length > 0}
+          <div class="vars-card" style="left:{40}px; top:{40 + Math.ceil(contract.functions.length / Math.ceil(Math.sqrt(contract.functions.length))) * 200 + 20}px">
+            <div class="vars-title">State Variables ({contract.state_vars.length})</div>
             {#each contract.state_vars as sv}
               <div class="var-row">
-                <span class="var-name">{sv.name}</span>
-                <span class="var-type">{sv.type_name}</span>
+                <span class="vname">{sv.name}</span>
+                <span class="vtype">{sv.type_name}</span>
               </div>
             {/each}
           </div>
         {/if}
-      </DraggablePanel>
-    {/if}
+      </div>
+    </div>
+
+    <div class="legend">
+      <span><span class="dot" style="background:#238636"></span>State-changing</span>
+      <span><span class="dot" style="background:#1f6feb"></span>View/Pure</span>
+      <span>Drag cards · Pan canvas · Click expand</span>
+    </div>
   {/if}
 </div>
 
 <style>
-  .fullscreen-view {
-    position: fixed;
-    top: 0; left: 0; right: 0; bottom: 0;
+  .contract-view {
+    position: fixed; inset: 0;
     display: flex; flex-direction: column;
     background: #0d1117;
   }
@@ -206,29 +227,108 @@
   .topbar {
     display: flex; align-items: center; gap: 10px;
     padding: 8px 16px;
-    background: #161b22;
-    border-bottom: 1px solid #30363d;
+    background: #161b22; border-bottom: 1px solid #30363d;
     z-index: 10; flex-shrink: 0;
   }
   .topbar a { font-size: 13px; color: #8b949e; }
   .contract-kind { font-size: 12px; color: #8b949e; }
   .contract-name { font-size: 16px; font-weight: 700; color: #f0f6fc; }
   .inherits { font-size: 11px; color: #484f58; font-style: italic; }
+  .seq-badge { font-size: 10px; background: #21262d; border: 1px solid #30363d; padding: 2px 8px; border-radius: 10px; color: #8b949e; }
   .toolbar { margin-left: auto; display: flex; gap: 4px; }
-  .toolbar button {
+  .tool-btn {
     background: #21262d; border: 1px solid #30363d; color: #c9d1d9;
     padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 12px;
   }
-  .toolbar button:hover { border-color: #58a6ff; }
-  .tool-link {
-    background: #21262d; border: 1px solid #30363d; color: #c9d1d9;
-    padding: 4px 10px; border-radius: 4px; font-size: 12px;
-  }
-  .tool-link:hover { border-color: #58a6ff; text-decoration: none; }
+  .tool-btn:hover { border-color: #58a6ff; }
 
   .error { padding: 24px; color: #f85149; }
+  .loading { padding: 24px; color: #8b949e; }
 
-  .canvas { flex: 1; width: 100%; }
+  .canvas {
+    flex: 1; overflow: hidden; position: relative;
+  }
+  .canvas-inner {
+    position: absolute; top: 0; left: 0;
+    width: 10000px; height: 10000px;
+  }
+
+  .func-card {
+    position: absolute;
+    width: 280px;
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 10px;
+    cursor: grab;
+    user-select: none;
+    transition: box-shadow 0.15s;
+    z-index: 1;
+  }
+  .func-card:hover { box-shadow: 0 4px 16px #00000044; }
+  .func-card.expanded { z-index: 2; }
+  .func-card:active { cursor: grabbing; }
+
+  .card-header { padding: 10px 12px; }
+  .card-top { display: flex; align-items: center; gap: 6px; }
+  .card-name { font-weight: 700; font-family: monospace; font-size: 14px; color: #f0f6fc; flex: 1; }
+  .card-vis { font-size: 10px; color: #484f58; }
+  .card-stats { font-size: 11px; color: #8b949e; display: flex; gap: 4px; margin-top: 2px; }
+  .card-stats .g { color: #3fb950; }
+  .card-stats .r { color: #f85149; }
+  .card-params { font-size: 10px; color: #484f58; font-family: monospace; margin-top: 2px; }
+
+  .expand-btn {
+    margin-top: 6px;
+    background: #21262d; border: 1px solid #30363d;
+    color: #8b949e; padding: 3px 10px;
+    border-radius: 4px; cursor: pointer; font-size: 10px;
+    width: 100%;
+  }
+  .expand-btn:hover { border-color: #58a6ff; color: #c9d1d9; }
+
+  .func-expanded {
+    padding: 8px 12px;
+    border-top: 1px solid #21262d;
+    max-height: 300px;
+    overflow-y: auto;
+    cursor: default;
+  }
+
+  .view-cfg {
+    display: inline-block; padding: 4px 10px;
+    background: #21262d; border: 1px solid #30363d;
+    border-radius: 4px; font-size: 11px; color: #58a6ff;
+    margin-bottom: 6px;
+  }
+  .view-cfg:hover { border-color: #58a6ff; text-decoration: none; }
+
+  .path-row {
+    display: flex; align-items: center; gap: 4px;
+    padding: 3px 4px; border-radius: 3px;
+    font-size: 11px; color: inherit;
+  }
+  .path-row:hover { background: #0d1117; text-decoration: none; }
+  .pid { color: #484f58; font-weight: 600; min-width: 20px; }
+  .pdepth { color: #484f58; font-size: 10px; }
+  .pb { font-size: 9px; padding: 1px 4px; border-radius: 6px; }
+  .pb.ext { background: #f851491a; color: #f85149; }
+  .pb.wr { background: #58a6ff1a; color: #58a6ff; }
+
+  .loading-sm { font-size: 11px; color: #484f58; }
+
+  .vars-card {
+    position: absolute;
+    width: 300px;
+    background: #161b22;
+    border: 1px solid #21262d;
+    border-radius: 8px;
+    padding: 8px 12px;
+    z-index: 0;
+  }
+  .vars-title { font-size: 10px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; font-weight: 600; }
+  .var-row { display: flex; justify-content: space-between; padding: 2px 0; font-family: monospace; font-size: 11px; }
+  .vname { color: #c9d1d9; }
+  .vtype { color: #484f58; font-size: 10px; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
   .legend {
     position: fixed; bottom: 12px; left: 16px;
@@ -242,64 +342,4 @@
     display: inline-block; width: 8px; height: 8px;
     border-radius: 2px; vertical-align: middle; margin-right: 3px;
   }
-
-  .floating-panel {
-    position: fixed;
-    background: #161b22; border: 1px solid #30363d;
-    border-radius: 8px; z-index: 20;
-    box-shadow: 0 8px 24px #00000066;
-    max-height: calc(100vh - 80px);
-    overflow-y: auto;
-  }
-  .panel-header {
-    display: flex; align-items: center; gap: 8px;
-    padding: 8px 12px; border-bottom: 1px solid #21262d;
-    font-size: 13px; color: #f0f6fc;
-    position: sticky; top: 0; background: #161b22;
-  }
-  .close {
-    margin-left: auto; background: none; border: none;
-    color: #8b949e; cursor: pointer; font-size: 14px;
-    padding: 2px 6px; border-radius: 4px;
-  }
-  .close:hover { background: #21262d; color: #f0f6fc; }
-
-  .info-panel { top: 60px; right: 16px; width: 280px; }
-  .info-body { padding: 10px 12px; }
-  .info-row { font-size: 12px; color: #8b949e; margin-bottom: 6px; }
-  .info-row strong { color: #c9d1d9; }
-  .badge { font-size: 10px; padding: 2px 6px; border-radius: 8px; }
-  .badge.ext { background: #f851491a; color: #f85149; }
-  .badge.int { background: #2386361a; color: #3fb950; }
-  .view-paths-btn {
-    display: inline-block; padding: 6px 12px;
-    background: #21262d; border: 1px solid #30363d;
-    border-radius: 6px; font-size: 12px; color: #58a6ff;
-  }
-  .view-paths-btn:hover { border-color: #58a6ff; text-decoration: none; }
-
-  .functions-panel { top: 60px; right: 16px; width: 340px; }
-
-  .func-list, .var-list { padding: 4px; }
-
-  .func-row {
-    display: flex; align-items: center; gap: 6px;
-    padding: 6px 8px; border-radius: 4px;
-    color: inherit; font-size: 12px;
-  }
-  .func-row:hover { background: #21262d; text-decoration: none; }
-  .vis { color: #484f58; min-width: 50px; font-size: 11px; }
-  .fname { color: #f0f6fc; font-weight: 600; flex: 1; }
-  .fstats { color: #8b949e; font-size: 11px; display: flex; gap: 4px; }
-  .fstats .happy { color: #3fb950; }
-  .fstats .revert { color: #f85149; }
-
-  .var-row {
-    display: flex; justify-content: space-between; align-items: baseline;
-    padding: 4px 8px; font-size: 11px; font-family: monospace;
-    border-bottom: 1px solid #21262d;
-  }
-  .var-row:last-child { border-bottom: none; }
-  .var-name { color: #c9d1d9; font-weight: 600; }
-  .var-type { color: #484f58; font-size: 10px; text-align: right; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>
