@@ -1,22 +1,21 @@
 <script lang="ts">
   import { page } from '$app/state';
   import { onMount, onDestroy, tick } from 'svelte';
-  import { getContract, getCallGraph, getPaths, getCfg, type ContractDetail, type CytoscapeGraph } from '$lib/api/rest';
+  import { getContract, getCallGraph, getCfg, getPaths, type ContractDetail, type CytoscapeGraph } from '$lib/api/rest';
   import { toggleSearch, setSearchContext } from '$lib/stores/search';
   import DraggablePanel from '$lib/DraggablePanel.svelte';
 
   let contract: ContractDetail | null = $state(null);
   let error: string | null = $state(null);
-  let selectedFunc: any = $state(null);
+  let selectedNode: any = $state(null);
+  let selectedPath: any = $state(null);
   let funcPaths: Record<string, any> = $state({});
-  let expandedCfg: string | null = $state(null);
-  let cfgInstance: any = null;
+  let expandedFuncs: Set<string> = $state(new Set());
 
   let cyContainer: HTMLDivElement;
   let cyInstance: any = null;
   let dagreRegistered = false;
-
-  let cfgContainer: HTMLDivElement;
+  let cfgCache: Record<string, CytoscapeGraph> = {};
 
   onMount(async () => {
     const contractName = page.params.name;
@@ -27,7 +26,7 @@
       const callgraph = await getCallGraph(contractName);
       await tick();
       await new Promise(r => requestAnimationFrame(r));
-      if (cyContainer && callgraph) renderCallGraph(callgraph);
+      if (cyContainer && callgraph) renderGraph(callgraph);
     } catch (e) {
       error = `Contract "${contractName}" not found`;
     }
@@ -35,10 +34,9 @@
 
   onDestroy(() => {
     if (cyInstance) { cyInstance.destroy(); cyInstance = null; }
-    if (cfgInstance) { cfgInstance.destroy(); cfgInstance = null; }
   });
 
-  async function renderCallGraph(graph: CytoscapeGraph) {
+  async function renderGraph(graph: CytoscapeGraph) {
     const cytoscape = (await import('cytoscape')).default;
     if (!dagreRegistered) {
       const dagre = (await import('cytoscape-dagre')).default;
@@ -49,128 +47,309 @@
 
     const nodes = graph.nodes
       .filter(n => n.data.label.length > 0)
-      .map(n => ({ group: 'nodes' as const, data: n.data }));
+      .map(n => ({
+        group: 'nodes' as const,
+        data: { ...n.data, _type: 'function' },
+        classes: n.data.is_external ? 'external' : 'internal',
+      }));
     const nodeIds = new Set(nodes.map(n => n.data.id));
     const edges = graph.edges
       .filter(e => nodeIds.has(e.data.source) && nodeIds.has(e.data.target))
-      .map(e => ({ group: 'edges' as const, data: e.data }));
+      .map(e => ({ group: 'edges' as const, data: { ...e.data, _type: 'call' } }));
 
     cyInstance = cytoscape({
       container: cyContainer,
       elements: [...nodes, ...edges],
-      style: [
-        {
-          selector: 'node[node_type = "internal"]',
-          style: {
-            'background-color': '#238636', 'label': 'data(label)', 'color': '#f0f6fc',
-            'font-size': '12px', 'text-valign': 'center', 'text-halign': 'center',
-            'width': '150px', 'height': '40px', 'shape': 'roundrectangle',
-          }
-        },
-        {
-          selector: 'node[node_type = "external"]',
-          style: {
-            'background-color': '#161b22', 'label': 'data(label)', 'color': '#f85149',
-            'font-size': '11px', 'text-valign': 'center', 'text-halign': 'center',
-            'width': '130px', 'height': '34px', 'shape': 'roundrectangle',
-            'border-style': 'dashed', 'border-width': 1, 'border-color': '#f85149',
-          }
-        },
-        { selector: 'node.selected', style: { 'border-width': 3, 'border-color': '#58a6ff' } },
-        { selector: 'node:active', style: { 'overlay-opacity': 0 } },
-        {
-          selector: 'edge',
-          style: {
-            'width': 1.5, 'line-color': '#484f58', 'target-arrow-color': '#484f58',
-            'target-arrow-shape': 'triangle', 'curve-style': 'bezier', 'arrow-scale': 0.8,
-          }
-        },
-        {
-          selector: 'edge[kind = "External"]',
-          style: { 'line-color': '#f8514966', 'target-arrow-color': '#f85149', 'line-style': 'dashed' }
-        },
-      ],
+      style: getStyles() as any,
       layout: { name: 'preset' },
-      minZoom: 0.15, maxZoom: 4, wheelSensitivity: 0.3,
+      minZoom: 0.1, maxZoom: 5, wheelSensitivity: 0.3,
     });
 
-    const layout = cyInstance.layout({ name: 'dagre', rankDir: 'TB', nodeSep: 60, rankSep: 80, animate: false } as any);
-    layout.run(); layout.stop();
+    runLayout(false);
 
-    // Click function → show detail panel + load paths
+    // Double-click function → expand/collapse CFG
+    cyInstance.on('tap', 'node.internal', async (evt: any) => {
+      const data = evt.target.data();
+      if (data._type === 'function') {
+        await toggleFuncExpand(data.label);
+      }
+    });
+
+    // Click any node → show info
     cyInstance.on('tap', 'node', async (evt: any) => {
       const data = evt.target.data();
-      cyInstance.elements().removeClass('selected');
-      evt.target.addClass('selected');
+      selectedNode = data;
 
-      const funcName = data.label;
-      if (!funcName || !contract) return;
-
-      const func = contract.functions.find(f => f.name === funcName);
-      selectedFunc = { ...data, ...(func || {}) };
-
-      if (!funcPaths[funcName]) {
+      if (data._type === 'function' && data.label && contract && !funcPaths[data.label]) {
         try {
-          funcPaths[funcName] = await getPaths(contract.name, funcName);
+          funcPaths[data.label] = await getPaths(contract.name, data.label);
           funcPaths = { ...funcPaths };
         } catch {}
       }
     });
 
+    // Click background → deselect
     cyInstance.on('tap', (evt: any) => {
       if (evt.target === cyInstance) {
-        selectedFunc = null;
-        expandedCfg = null;
-        if (cfgInstance) { cfgInstance.destroy(); cfgInstance = null; }
-        cyInstance.elements().removeClass('selected');
+        selectedNode = null;
+        selectedPath = null;
+        // Reset CFG block highlights
+        cyInstance.nodes('.block').style({ opacity: 1 });
+        cyInstance.edges('[_type = "cfg-edge"]').style({ opacity: 1 });
       }
     });
 
-    cyInstance.on('mouseover', 'node[node_type = "internal"]', () => { if (cyContainer) cyContainer.style.cursor = 'pointer'; });
+    // Drag function node → move its CFG children together
+    cyInstance.on('drag', 'node[_type = "function"]', (evt: any) => {
+      const node = evt.target;
+      const funcName = node.data('label');
+      if (!expandedFuncs.has(funcName)) return;
+
+      const delta = { x: evt.position.x - node.data('_prevX'), y: evt.position.y - node.data('_prevY') };
+      node.data('_prevX', evt.position.x);
+      node.data('_prevY', evt.position.y);
+
+      const children = cyInstance.nodes(`[_parentFunc = "${funcName}"]`);
+      children.forEach((child: any) => {
+        const pos = child.position();
+        child.position({ x: pos.x + delta.x, y: pos.y + delta.y });
+      });
+    });
+
+    cyInstance.on('grab', 'node[_type = "function"]', (evt: any) => {
+      const pos = evt.target.position();
+      evt.target.data('_prevX', pos.x);
+      evt.target.data('_prevY', pos.y);
+    });
+
+    cyInstance.on('mouseover', 'node.internal', () => { if (cyContainer) cyContainer.style.cursor = 'pointer'; });
     cyInstance.on('mouseout', 'node', () => { if (cyContainer) cyContainer.style.cursor = 'default'; });
   }
 
-  async function showCfg(funcName: string) {
-    if (!contract) return;
-    expandedCfg = funcName;
+  async function toggleFuncExpand(funcName: string) {
+    if (!cyInstance || !contract) return;
 
-    const cfg = await getCfg(contract.name, funcName);
-    await tick();
-    if (!cfgContainer) return;
+    if (expandedFuncs.has(funcName)) {
+      // COLLAPSE: animate children to parent, then remove
+      const children = cyInstance.nodes(`[_parentFunc = "${funcName}"]`);
+      const childEdges = cyInstance.edges(`[_parentFunc = "${funcName}"]`);
+      const parentNode = cyInstance.getElementById(`${contract.name}::${funcName}`);
+      const parentPos = parentNode.position();
 
-    const cytoscape = (await import('cytoscape')).default;
-    if (cfgInstance) cfgInstance.destroy();
+      children.animate({ position: parentPos, style: { opacity: 0 } }, {
+        duration: 250,
+        complete: () => {
+          cyInstance.remove(childEdges);
+          cyInstance.remove(children);
+        }
+      });
 
-    const nodes = cfg.nodes.map(n => ({ group: 'nodes' as const, data: n.data }));
-    const edges = cfg.edges.map(e => ({ group: 'edges' as const, data: e.data }));
+      // Restore all nodes visibility
+      cyInstance.nodes().style({ opacity: 1 });
+      cyInstance.edges().style({ opacity: 1 });
 
-    cfgInstance = cytoscape({
-      container: cfgContainer,
-      elements: [...nodes, ...edges],
-      style: [
-        {
-          selector: 'node', style: {
-            'label': 'data(label)', 'color': '#c9d1d9', 'font-size': '9px',
-            'text-valign': 'center', 'text-halign': 'center',
-            'width': '160px', 'height': '30px', 'shape': 'roundrectangle',
-            'background-color': '#21262d', 'border-width': 1, 'border-color': '#30363d',
-            'text-max-width': '150px', 'text-wrap': 'ellipsis',
-          }
+      expandedFuncs.delete(funcName);
+      expandedFuncs = new Set(expandedFuncs);
+    } else {
+      // EXPAND: fetch CFG and add nodes positioned below the function
+      if (!cfgCache[funcName]) {
+        cfgCache[funcName] = await getCfg(contract.name, funcName);
+      }
+      const cfg = cfgCache[funcName];
+      const parentId = `${contract.name}::${funcName}`;
+      const parentPos = cyInstance.getElementById(parentId).position();
+
+      // First add all nodes at parent position (for animation start)
+      const newNodes = cfg.nodes.map(n => ({
+        group: 'nodes' as const,
+        data: {
+          id: `cfg:${funcName}:${n.data.id}`,
+          label: n.data.label,
+          node_type: n.data.node_type,
+          statements: n.data.statements,
+          _type: 'block',
+          _parentFunc: funcName,
         },
-        { selector: 'node[node_type = "Entry"]', style: { 'background-color': '#1f6feb', 'border-color': '#58a6ff', 'color': '#f0f6fc' } },
-        { selector: 'node[node_type = "Return"]', style: { 'background-color': '#238636', 'border-color': '#3fb950', 'color': '#f0f6fc', 'width': '90px' } },
-        { selector: 'node[node_type = "Revert"]', style: { 'background-color': '#da3633', 'border-color': '#f85149', 'color': '#f0f6fc', 'width': '90px' } },
-        { selector: 'node:active', style: { 'overlay-opacity': 0 } },
-        { selector: 'edge', style: { 'width': 1, 'line-color': '#30363d', 'target-arrow-color': '#30363d', 'target-arrow-shape': 'triangle', 'curve-style': 'bezier', 'arrow-scale': 0.7 } },
-        { selector: 'edge[kind ^= "ConditionalTrue"]', style: { 'line-color': '#3fb95088', 'target-arrow-color': '#3fb950', 'label': '✓', 'font-size': '11px', 'color': '#3fb950' } },
-        { selector: 'edge[kind ^= "ConditionalFalse"]', style: { 'line-color': '#f8514988', 'target-arrow-color': '#f85149', 'label': '✗', 'font-size': '11px', 'color': '#f85149' } },
-      ],
-      layout: { name: 'preset' },
-      minZoom: 0.3, maxZoom: 3, wheelSensitivity: 0.3,
+        position: { x: parentPos.x, y: parentPos.y },
+        classes: `block block-${n.data.node_type.toLowerCase()}`,
+      }));
+
+      const newEdges = cfg.edges.map((e, i) => ({
+        group: 'edges' as const,
+        data: {
+          id: `cfg-edge:${funcName}:${i}`,
+          source: `cfg:${funcName}:${e.data.source}`,
+          target: `cfg:${funcName}:${e.data.target}`,
+          kind: e.data.kind,
+          _type: 'cfg-edge',
+          _parentFunc: funcName,
+        },
+        classes: e.data.kind.includes('ConditionalTrue') ? 'cond-true' :
+                 e.data.kind.includes('ConditionalFalse') ? 'cond-false' :
+                 e.data.kind.includes('LoopBack') ? 'loop-back' : '',
+      }));
+
+      // Connect function node to CFG entry
+      const entryNode = cfg.nodes.find(n => n.data.node_type === 'Entry');
+      if (entryNode) {
+        newEdges.push({
+          group: 'edges' as const,
+          data: {
+            id: `cfg-link:${funcName}`,
+            source: parentId,
+            target: `cfg:${funcName}:${entryNode.data.id}`,
+            kind: 'expand',
+            _type: 'cfg-edge',
+            _parentFunc: funcName,
+          },
+          classes: 'expand-link',
+        });
+      }
+
+      cyInstance.add([...newNodes, ...newEdges]);
+
+      // Layout ONLY the CFG nodes using dagre, offset below the parent
+      const cfgNodes = cyInstance.nodes(`[_parentFunc = "${funcName}"]`);
+      const cfgEdges = cyInstance.edges(`[_parentFunc = "${funcName}"]`);
+      const cfgElements = cfgNodes.union(cfgEdges);
+
+      const subLayout = cfgElements.layout({
+        name: 'dagre',
+        rankDir: 'TB',
+        nodeSep: 30,
+        rankSep: 45,
+        animate: false,
+        fit: false,
+      } as any);
+      subLayout.run();
+      subLayout.stop();
+
+      // Now offset all CFG nodes to be below the parent function
+      const cfgBB = cfgNodes.boundingBox();
+      const offsetX = parentPos.x - (cfgBB.x1 + cfgBB.w / 2);
+      const offsetY = parentPos.y + 60 - cfgBB.y1;
+
+      cfgNodes.forEach((node: any) => {
+        const pos = node.position();
+        const targetPos = { x: pos.x + offsetX, y: pos.y + offsetY };
+        // Animate from parent position to final position
+        node.position(parentPos);
+        node.animate({ position: targetPos }, { duration: 350, easing: 'ease-out' });
+      });
+
+      // Dim all other function nodes and call edges so CFG stands out
+      cyInstance.nodes('[_type = "function"]').style({ opacity: 0.15 });
+      cyInstance.edges('[_type = "call"]').style({ opacity: 0.08 });
+      // Keep the expanded function visible
+      cyInstance.getElementById(parentId).style({ opacity: 1 });
+
+      expandedFuncs.add(funcName);
+      expandedFuncs = new Set(expandedFuncs);
+    }
+  }
+
+  function highlightPath(funcName: string, path: any) {
+    if (!cyInstance) return;
+    selectedPath = path;
+
+    // Dim all CFG blocks of this function
+    const allBlocks = cyInstance.nodes(`[_parentFunc = "${funcName}"]`);
+    const allCfgEdges = cyInstance.edges(`[_parentFunc = "${funcName}"]`);
+    allBlocks.style({ opacity: 0.2 });
+    allCfgEdges.style({ opacity: 0.1 });
+
+    // Highlight nodes in the selected path
+    const blockIds = path.nodes.map((n: any) => `cfg:${funcName}:b${n.block_id}`);
+    blockIds.forEach((id: string) => {
+      const node = cyInstance.getElementById(id);
+      if (node.length) node.style({ opacity: 1 });
     });
 
-    const cfgLayout = cfgInstance.layout({ name: 'dagre', rankDir: 'TB', nodeSep: 35, rankSep: 45, animate: false } as any);
-    cfgLayout.run(); cfgLayout.stop();
+    // Highlight edges between consecutive path nodes
+    for (let i = 0; i < blockIds.length - 1; i++) {
+      const edges = cyInstance.edges(`[source = "${blockIds[i]}"][target = "${blockIds[i + 1]}"]`);
+      edges.style({ opacity: 1 });
+    }
+  }
+
+  function runLayout(animate: boolean) {
+    if (!cyInstance) return;
+    const layout = cyInstance.layout({
+      name: 'dagre',
+      rankDir: 'TB',
+      nodeSep: 40,
+      rankSep: 55,
+      animate,
+      animationDuration: animate ? 400 : 0,
+      animationEasing: 'ease-in-out-quad',
+      fit: !animate, // fit only on initial render
+      padding: 40,
+    } as any);
+    layout.run();
+    layout.stop();
+  }
+
+  function getStyles() {
+    return [
+      // Function nodes
+      {
+        selector: 'node.internal',
+        style: {
+          'background-color': '#238636', 'label': 'data(label)', 'color': '#f0f6fc',
+          'font-size': '12px', 'text-valign': 'center', 'text-halign': 'center',
+          'width': '150px', 'height': '40px', 'shape': 'roundrectangle',
+        }
+      },
+      {
+        selector: 'node.external',
+        style: {
+          'background-color': '#161b22', 'label': 'data(label)', 'color': '#f85149',
+          'font-size': '11px', 'text-valign': 'center', 'text-halign': 'center',
+          'width': '130px', 'height': '34px', 'shape': 'roundrectangle',
+          'border-style': 'dashed', 'border-width': 1, 'border-color': '#f85149',
+        }
+      },
+      // CFG block nodes
+      {
+        selector: 'node.block',
+        style: {
+          'label': 'data(label)', 'color': '#c9d1d9', 'font-size': '9px',
+          'text-valign': 'center', 'text-halign': 'center',
+          'width': '160px', 'height': '30px', 'shape': 'roundrectangle',
+          'background-color': '#21262d', 'border-width': 1, 'border-color': '#30363d',
+          'text-max-width': '150px', 'text-wrap': 'ellipsis',
+        }
+      },
+      { selector: 'node.block-entry', style: { 'background-color': '#1f6feb', 'border-color': '#58a6ff', 'color': '#f0f6fc' } },
+      { selector: 'node.block-return', style: { 'background-color': '#238636', 'border-color': '#3fb950', 'color': '#f0f6fc', 'width': '90px' } },
+      { selector: 'node.block-revert', style: { 'background-color': '#da3633', 'border-color': '#f85149', 'color': '#f0f6fc', 'width': '90px' } },
+      { selector: 'node.block-loopcondition', style: { 'background-color': '#9e6a03', 'border-color': '#d29922', 'color': '#f0f6fc', 'shape': 'diamond', 'width': '90px', 'height': '45px' } },
+      { selector: 'node:active', style: { 'overlay-opacity': 0 } },
+      // Call edges
+      {
+        selector: 'edge[_type = "call"]',
+        style: {
+          'width': 1.5, 'line-color': '#484f58', 'target-arrow-color': '#484f58',
+          'target-arrow-shape': 'triangle', 'curve-style': 'bezier', 'arrow-scale': 0.8,
+        }
+      },
+      {
+        selector: 'edge[kind = "External"]',
+        style: { 'line-color': '#f8514966', 'target-arrow-color': '#f85149', 'line-style': 'dashed' }
+      },
+      // CFG edges
+      {
+        selector: 'edge[_type = "cfg-edge"]',
+        style: {
+          'width': 1, 'line-color': '#30363d', 'target-arrow-color': '#30363d',
+          'target-arrow-shape': 'triangle', 'curve-style': 'bezier', 'arrow-scale': 0.6,
+        }
+      },
+      { selector: 'edge.cond-true', style: { 'line-color': '#3fb95088', 'target-arrow-color': '#3fb950', 'label': '✓', 'font-size': '11px', 'color': '#3fb950' } },
+      { selector: 'edge.cond-false', style: { 'line-color': '#f8514988', 'target-arrow-color': '#f85149', 'label': '✗', 'font-size': '11px', 'color': '#f85149' } },
+      { selector: 'edge.loop-back', style: { 'line-color': '#d29922', 'target-arrow-color': '#d29922', 'line-style': 'dashed' } },
+      { selector: 'edge.expand-link', style: { 'line-color': '#58a6ff44', 'target-arrow-color': '#58a6ff', 'line-style': 'dotted', 'width': 2 } },
+    ];
   }
 
   function termColor(t: string): string {
@@ -178,104 +357,113 @@
   }
 </script>
 
-<div class="contract-view">
+<div class="view">
   <div class="topbar">
     <a href="/">← Contracts</a>
     <span class="kind">{contract?.kind.toLowerCase() ?? ''}</span>
-    <span class="name">{contract?.name ?? 'Loading...'}</span>
+    <span class="cname">{contract?.name ?? 'Loading...'}</span>
     {#if contract?.inherits.length}
       <span class="inherits">inherits {contract.inherits.join(', ')}</span>
     {/if}
     <div class="toolbar">
-      <button class="tool-btn" onclick={toggleSearch}>🔍</button>
+      <button class="tbtn" onclick={toggleSearch}>🔍</button>
+      <button class="tbtn" onclick={() => { if (cyInstance) cyInstance.fit(undefined, 40); }}>⊡</button>
     </div>
   </div>
 
   {#if error}
     <div class="error">{error}</div>
   {:else}
-    <div class="canvas-area">
-      <!-- Call graph canvas -->
-      <div class="cy-main" bind:this={cyContainer}></div>
+    <div class="canvas" bind:this={cyContainer}></div>
 
-      <!-- Inline CFG canvas (appears when function CFG is opened) -->
-      {#if expandedCfg}
-        <div class="cfg-pane">
-          <div class="cfg-header">
-            <span>CFG: {expandedCfg}</span>
-            <button onclick={() => { expandedCfg = null; if (cfgInstance) { cfgInstance.destroy(); cfgInstance = null; } }}>✕</button>
-          </div>
-          <div class="cy-cfg" bind:this={cfgContainer}></div>
-          <a href="/contract/{contract?.name}/{expandedCfg}" class="full-link">Open full view →</a>
-        </div>
-      {/if}
-    </div>
-
-    <!-- Function detail panel -->
-    {#if selectedFunc && contract}
+    {#if selectedNode && contract}
       <DraggablePanel
-        title={selectedFunc.label || selectedFunc.name}
-        x={window.innerWidth - 380} y={60} width={360}
-        onclose={() => { selectedFunc = null; cyInstance?.elements().removeClass('selected'); }}
+        title={selectedNode.label || ''}
+        x={window.innerWidth - 370} y={60} width={350}
+        onclose={() => selectedNode = null}
       >
-        <div class="func-detail">
-          <div class="fd-row">
-            <span class="fd-label">Visibility</span>
-            <span>{selectedFunc.visibility?.toLowerCase()}</span>
-          </div>
-          <div class="fd-row">
-            <span class="fd-label">Mutability</span>
-            <span>{selectedFunc.mutability?.toLowerCase()}</span>
-          </div>
-          {#if selectedFunc.params?.length > 0}
-            <div class="fd-row">
-              <span class="fd-label">Params</span>
-              <span class="fd-mono">{selectedFunc.params.map((p: any) => `${p.type_name} ${p.name}`).join(', ')}</span>
-            </div>
-          {/if}
-          <div class="fd-row">
-            <span class="fd-label">Paths</span>
-            <span>
-              {selectedFunc.path_count} total
-              <span class="g">{selectedFunc.happy_paths}✓</span>
-              <span class="r">{selectedFunc.revert_paths}✗</span>
-            </span>
-          </div>
+        <div class="detail">
+          {#if selectedNode._type === 'function'}
+            <div class="d-row"><span class="d-label">Type</span><span>{selectedNode.is_external ? 'External' : 'Internal'}</span></div>
+            {#if !selectedNode.is_external}
+              <div class="d-hint">Click on the node to {expandedFuncs.has(selectedNode.label) ? 'collapse' : 'expand'} its CFG</div>
+            {/if}
 
-          <button class="show-cfg-btn" onclick={() => showCfg(selectedFunc.label || selectedFunc.name)}>
-            {expandedCfg === (selectedFunc.label || selectedFunc.name) ? 'Hide CFG' : 'Show CFG →'}
-          </button>
+            {#if funcPaths[selectedNode.label]}
+              <div class="d-section">Paths ({funcPaths[selectedNode.label].stats.total_paths})</div>
+              {#each funcPaths[selectedNode.label].paths as path}
+                <button
+                  class="d-path"
+                  class:d-path-selected={selectedPath?.id === path.id}
+                  onclick={() => highlightPath(selectedNode.label, path)}
+                >
+                  <span class="pid">#{path.id}</span>
+                  <span style="color:{termColor(path.terminal)};font-weight:600">{path.terminal}</span>
+                  <span class="pdepth">{path.nodes.length}blk</span>
+                  {#if path.annotations.external_calls.length > 0}
+                    <span class="pb ext">⚡{path.annotations.external_calls.length}</span>
+                  {/if}
+                  {#if path.annotations.state_writes.length > 0}
+                    <span class="pb wr">✏{path.annotations.state_writes.length}</span>
+                  {/if}
+                </button>
+              {/each}
 
-          {#if funcPaths[selectedFunc.label || selectedFunc.name]}
-            <div class="fd-paths-title">Paths</div>
-            {#each funcPaths[selectedFunc.label || selectedFunc.name].paths as path}
-              <a href="/contract/{contract.name}/{selectedFunc.label || selectedFunc.name}?path={path.id}" class="fd-path">
-                <span class="pid">#{path.id}</span>
-                <span style="color:{termColor(path.terminal)};font-weight:600">{path.terminal}</span>
-                <span class="pdepth">{path.nodes.length}blk</span>
-                {#if path.annotations.external_calls.length > 0}
-                  <span class="pb ext">⚡{path.annotations.external_calls.length}</span>
-                {/if}
-                {#if path.annotations.state_writes.length > 0}
-                  <span class="pb wr">✏{path.annotations.state_writes.length}</span>
-                {/if}
-              </a>
-            {/each}
+              {#if selectedPath}
+                <div class="path-detail-inline">
+                  {#if selectedPath.annotations.require_checks.length > 0}
+                    <div class="pd-title">Checks</div>
+                    {#each selectedPath.annotations.require_checks as c}
+                      <div class="pd-item check">{c}</div>
+                    {/each}
+                  {/if}
+                  {#if selectedPath.annotations.external_calls.length > 0}
+                    <div class="pd-title">External calls</div>
+                    {#each selectedPath.annotations.external_calls as c}
+                      <div class="pd-item ext">{c.target}.{c.function}()</div>
+                    {/each}
+                  {/if}
+                  {#if selectedPath.annotations.state_writes.length > 0}
+                    <div class="pd-title">State writes</div>
+                    {#each selectedPath.annotations.state_writes as w}
+                      <div class="pd-item wr">{w}</div>
+                    {/each}
+                  {/if}
+                  {#if selectedPath.annotations.events_emitted.length > 0}
+                    <div class="pd-title">Events</div>
+                    {#each selectedPath.annotations.events_emitted as e}
+                      <div class="pd-item ev">{e}</div>
+                    {/each}
+                  {/if}
+                </div>
+              {/if}
+            {/if}
+          {:else if selectedNode._type === 'block'}
+            <div class="d-row"><span class="d-label">Block</span><span>{selectedNode.node_type}</span></div>
+            {#if selectedNode.statements?.length > 0}
+              <div class="d-section">Statements</div>
+              {#each selectedNode.statements as stmt}
+                <div class="d-stmt">{stmt}</div>
+              {/each}
+            {/if}
           {/if}
         </div>
       </DraggablePanel>
     {/if}
 
     <div class="legend">
-      <span><span class="dot" style="background:#238636"></span>Internal</span>
+      <span><span class="dot" style="background:#238636"></span>Function</span>
       <span><span class="dot" style="background:#161b22;border:1px solid #f85149"></span>External</span>
-      <span>Click function → details · Scroll zoom · Drag pan</span>
+      <span><span class="dot" style="background:#1f6feb"></span>Entry</span>
+      <span><span class="dot" style="background:#da3633"></span>Revert</span>
+      <span><span class="dot" style="background:#238636"></span>Return</span>
+      <span>Click function to expand CFG</span>
     </div>
   {/if}
 </div>
 
 <style>
-  .contract-view { position: fixed; inset: 0; display: flex; flex-direction: column; background: #0d1117; }
+  .view { position: fixed; inset: 0; display: flex; flex-direction: column; background: #0d1117; }
 
   .topbar {
     display: flex; align-items: center; gap: 10px;
@@ -284,66 +472,43 @@
   }
   .topbar a { font-size: 13px; color: #8b949e; }
   .kind { font-size: 12px; color: #8b949e; }
-  .name { font-size: 16px; font-weight: 700; color: #f0f6fc; }
+  .cname { font-size: 16px; font-weight: 700; color: #f0f6fc; }
   .inherits { font-size: 11px; color: #484f58; font-style: italic; }
   .toolbar { margin-left: auto; display: flex; gap: 4px; }
-  .tool-btn {
-    background: #21262d; border: 1px solid #30363d; color: #c9d1d9;
-    padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 12px;
-  }
-  .tool-btn:hover { border-color: #58a6ff; }
+  .tbtn { background: #21262d; border: 1px solid #30363d; color: #c9d1d9; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+  .tbtn:hover { border-color: #58a6ff; }
 
   .error { padding: 24px; color: #f85149; }
+  .canvas { flex: 1; }
 
-  .canvas-area { flex: 1; display: flex; overflow: hidden; }
-  .cy-main { flex: 1; }
-  .cfg-pane {
-    width: 400px; flex-shrink: 0;
-    border-left: 1px solid #30363d;
-    display: flex; flex-direction: column;
-    background: #0d1117;
-  }
-  .cfg-header {
-    display: flex; justify-content: space-between; align-items: center;
-    padding: 8px 12px; border-bottom: 1px solid #21262d;
-    font-size: 13px; color: #58a6ff; font-weight: 600;
-  }
-  .cfg-header button {
-    background: none; border: none; color: #8b949e; cursor: pointer; font-size: 14px;
-  }
-  .cy-cfg { flex: 1; }
-  .full-link {
-    display: block; text-align: center; padding: 8px;
-    font-size: 11px; color: #58a6ff; border-top: 1px solid #21262d;
-  }
-
-  .func-detail { padding: 8px; }
-  .fd-row { display: flex; justify-content: space-between; padding: 4px 0; font-size: 12px; }
-  .fd-label { color: #8b949e; }
-  .fd-mono { font-family: monospace; font-size: 11px; color: #c9d1d9; }
-  .g { color: #3fb950; }
-  .r { color: #f85149; }
-
-  .show-cfg-btn {
-    width: 100%; margin: 8px 0;
-    background: #21262d; border: 1px solid #30363d;
-    color: #58a6ff; padding: 6px; border-radius: 4px;
-    cursor: pointer; font-size: 12px;
-  }
-  .show-cfg-btn:hover { border-color: #58a6ff; }
-
-  .fd-paths-title { font-size: 10px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; margin: 8px 0 4px; }
-
-  .fd-path {
-    display: flex; align-items: center; gap: 4px;
-    padding: 3px 4px; border-radius: 3px; font-size: 11px; color: inherit;
-  }
-  .fd-path:hover { background: #0d1117; text-decoration: none; }
+  .detail { padding: 8px; }
+  .d-row { display: flex; justify-content: space-between; padding: 3px 0; font-size: 12px; }
+  .d-label { color: #8b949e; }
+  .d-hint { font-size: 11px; color: #58a6ff; padding: 6px 0; font-style: italic; }
+  .d-section { font-size: 10px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; margin: 8px 0 4px; font-weight: 600; }
+  .d-path { display: flex; align-items: center; gap: 4px; padding: 3px 4px; border-radius: 3px; font-size: 11px; color: inherit; background: transparent; border: 1px solid transparent; cursor: pointer; width: 100%; text-align: left; font: inherit; }
+  .d-path:hover { background: #0d1117; }
   .pid { color: #484f58; font-weight: 600; }
   .pdepth { color: #484f58; font-size: 10px; }
   .pb { font-size: 9px; padding: 1px 4px; border-radius: 6px; }
   .pb.ext { background: #f851491a; color: #f85149; }
   .pb.wr { background: #58a6ff1a; color: #58a6ff; }
+  .d-path-selected { background: #21262d; border-color: #58a6ff; }
+
+  .path-detail-inline {
+    margin-top: 8px; padding-top: 8px;
+    border-top: 1px solid #21262d;
+  }
+  .pd-title { font-size: 9px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; margin: 6px 0 2px; }
+  .pd-item {
+    font-family: monospace; font-size: 11px;
+    padding: 2px 6px; border-radius: 3px; margin-bottom: 2px;
+  }
+  .pd-item.check { background: #d299221a; color: #d29922; }
+  .pd-item.ext { background: #f851491a; color: #f85149; }
+  .pd-item.wr { background: #58a6ff1a; color: #58a6ff; }
+  .pd-item.ev { background: #3fb9501a; color: #3fb950; }
+  .d-stmt { font-family: monospace; font-size: 11px; padding: 3px 6px; background: #0d1117; border-radius: 3px; margin-bottom: 2px; color: #c9d1d9; }
 
   .legend {
     position: fixed; bottom: 12px; left: 16px;
