@@ -72,7 +72,7 @@
 
     runLayout(false);
 
-    // Click internal function → behavior depends on mode
+    // Single click → depends on mode
     cyInstance.on('tap', 'node.internal', async (evt: any) => {
       const data = evt.target.data();
       if (data._type === 'function') {
@@ -81,9 +81,23 @@
         } else if (mode === 'sequences') {
           await toggleSeqExpand(data.label, data.id);
         }
-      } else if (data._type === 'seq-next') {
-        // Click on a sequence next-step node → expand deeper
-        await toggleSeqExpand(data.label, data.id);
+      }
+    });
+
+    // Single click on sequence nodes → expand next level
+    cyInstance.on('tap', 'node.seq-next', async (evt: any) => {
+      const data = evt.target.data();
+      await toggleSeqExpand(data.label, data.id);
+    });
+
+    // Double click on ANY function node (original or seq-next) → expand its CFG
+    cyInstance.on('dbltap', 'node', async (evt: any) => {
+      const data = evt.target.data();
+      const funcName = data.label;
+      const nodeId = data.id;
+      if (!funcName) return;
+      if (contract?.functions.some(f => f.name === funcName)) {
+        await toggleFuncExpand(funcName, nodeId);
       }
     });
 
@@ -138,15 +152,18 @@
     cyInstance.on('mouseout', 'node', () => { if (cyContainer) cyContainer.style.cursor = 'default'; });
   }
 
-  async function toggleFuncExpand(funcName: string) {
+  async function toggleFuncExpand(funcName: string, anchorNodeId?: string) {
     if (!cyInstance || !contract) return;
+
+    // Find the anchor node: either specified or the original function node
+    const parentId = anchorNodeId || `${contract.name}::${funcName}`;
 
     if (expandedFuncs.has(funcName)) {
       // COLLAPSE: animate children to parent, then remove
       const children = cyInstance.nodes(`[_parentFunc = "${funcName}"]`);
       const childEdges = cyInstance.edges(`[_parentFunc = "${funcName}"]`);
-      const parentNode = cyInstance.getElementById(`${contract.name}::${funcName}`);
-      const parentPos = parentNode.position();
+      const parentNode = cyInstance.getElementById(parentId);
+      const parentPos = parentNode.length ? parentNode.position() : { x: 0, y: 0 };
 
       children.animate({ position: parentPos, style: { opacity: 0 } }, {
         duration: 250,
@@ -168,8 +185,8 @@
         cfgCache[funcName] = await getCfg(contract.name, funcName);
       }
       const cfg = cfgCache[funcName];
-      const parentId = `${contract.name}::${funcName}`;
-      const parentPos = cyInstance.getElementById(parentId).position();
+      const anchorNode = cyInstance.getElementById(parentId);
+      const parentPos = anchorNode.length ? anchorNode.position() : { x: 0, y: 0 };
 
       // First add all nodes at parent position (for animation start)
       const newNodes = cfg.nodes.map(n => ({
@@ -612,7 +629,7 @@
       {:else}
         <span><span class="dot" style="background:#238636"></span>State-changing</span>
         <span><span class="dot" style="background:#1f6feb"></span>Read-only</span>
-        <span>Click function → show next-step combinations</span>
+        <span>Click → next steps · Double-click → expand CFG</span>
       {/if}
     </div>
   {/if}
