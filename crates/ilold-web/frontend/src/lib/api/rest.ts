@@ -72,7 +72,43 @@ export interface SearchSuggestions {
   categories: { label: string; items: string[] }[];
 }
 
+export interface ProjectMap {
+  contracts: MapContract[];
+  relationships: MapRelationship[];
+}
+
+export interface MapContract {
+  name: string;
+  kind: string;
+  inherits: string[];
+  functions: MapFunction[];
+  state_vars: { name: string; type_name: string; is_constant: boolean }[];
+}
+
+export interface MapFunction {
+  name: string;
+  visibility: string;
+  mutability: string;
+  path_count: number;
+  happy_paths: number;
+  revert_paths: number;
+  has_external_calls: boolean;
+}
+
+export interface MapRelationship {
+  from_contract: string;
+  from_function: string;
+  to_contract: string;
+  to_function: string;
+  kind: string;
+}
+
 const BASE = '';  // same origin in production, proxied in dev
+
+export async function getProjectMap(): Promise<ProjectMap> {
+  const res = await fetch(`${BASE}/api/project/map`);
+  return res.json();
+}
 
 export async function getProject(): Promise<ProjectSummary> {
   const res = await fetch(`${BASE}/api/project`);

@@ -22,6 +22,7 @@ pub async fn serve(paths: Vec<PathBuf>, port: u16, max_seq_depth: usize) -> anyh
 
     let app = Router::new()
         .route("/api/project", get(api::project::get_project))
+        .route("/api/project/map", get(api::project::get_project_map))
         .route("/api/contract/{name}", get(api::contract::get_contract))
         .route("/api/contract/{name}/callgraph", get(api::contract::get_callgraph))
         .route("/api/contract/{name}/{func}/cfg", get(api::contract::get_cfg))

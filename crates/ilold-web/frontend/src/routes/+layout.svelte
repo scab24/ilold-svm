@@ -5,7 +5,7 @@
   import { toggleSearch } from '$lib/stores/search';
 
   let { children } = $props();
-  const isHome = $derived(page.url.pathname === '/');
+  const isHome = false; // All pages are now fullscreen with their own topbar
 
   onMount(() => {
     function handleKeydown(e: KeyboardEvent) {
