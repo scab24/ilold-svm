@@ -10,6 +10,7 @@ use ilold_core::model::contract::{ContractDef, ContractKind};
 use ilold_core::model::function::Visibility;
 use ilold_core::model::project::Project;
 use ilold_core::parse::solar_frontend::SolarParser;
+use ilold_core::sequence::analysis::analyze_sequences;
 use ilold_core::parse::ProjectParser;
 use ilold_core::pathtree::config::PruningConfig;
 use ilold_core::pathtree::types::PathTree;
@@ -218,6 +219,62 @@ fn print_contract(
                 }
                 println!();
             }
+        }
+
+        // Function behavior tree
+        let pt_map: std::collections::HashMap<(String, String), _> = path_trees
+            .iter()
+            .map(|pt| ((pt.contract.clone(), pt.function.clone()), pt.clone()))
+            .collect();
+        let analysis = analyze_sequences(&pt_map, &contract.name);
+
+        if verbose {
+            println!("  Function behaviors:");
+            let func_count = analysis.functions.len();
+            for (i, func) in analysis.functions.iter().enumerate() {
+                let is_last_func = i == func_count - 1;
+                let branch = if is_last_func { "└── " } else { "├── " };
+                let pipe = if is_last_func { "    " } else { "│   " };
+
+                println!("  {}{}{}", branch, func.name, if func.read_only { " (view)" } else { "" });
+
+                if !func.preconditions.is_empty() {
+                    println!("  {}├── requires: {}", pipe, func.preconditions.join(", "));
+                }
+                if !func.state_writes.is_empty() {
+                    println!("  {}├── writes: {}", pipe, func.state_writes.join(", "));
+                }
+                if !func.external_calls.is_empty() {
+                    println!("  {}├── calls: {}", pipe, func.external_calls.join(", "));
+                }
+                if !func.events.is_empty() {
+                    println!("  {}├── emits: {}", pipe, func.events.join(", "));
+                }
+
+                let outgoing: Vec<_> = analysis.transitions.iter()
+                    .filter(|t| t.from == func.name && (!t.shared_state.is_empty() || !t.conditions_affected.is_empty()))
+                    .collect();
+
+                if !outgoing.is_empty() {
+                    println!("  {}└── transitions:", pipe);
+                    let out_count = outgoing.len();
+                    for (j, t) in outgoing.iter().enumerate() {
+                        let is_last_t = j == out_count - 1;
+                        let t_branch = if is_last_t { "└── " } else { "├── " };
+                        let t_pipe = if is_last_t { "    " } else { "│   " };
+
+                        println!("  {}    {}→ {}", pipe, t_branch, t.to);
+
+                        if !t.shared_state.is_empty() {
+                            println!("  {}    {}shared: {}", pipe, t_pipe, t.shared_state.join(", "));
+                        }
+                        for cond in &t.conditions_affected {
+                            println!("  {}    {}{}", pipe, t_pipe, cond);
+                        }
+                    }
+                }
+            }
+            println!();
         }
     }
 

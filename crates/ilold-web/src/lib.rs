@@ -28,6 +28,7 @@ pub async fn serve(paths: Vec<PathBuf>, port: u16, max_seq_depth: usize) -> anyh
         .route("/api/contract/{name}/{func}/cfg", get(api::contract::get_cfg))
         .route("/api/contract/{name}/{func}/paths", get(api::contract::get_paths))
         .route("/api/contract/{name}/sequences", get(api::contract::get_sequences))
+        .route("/api/contract/{name}/analysis", get(api::contract::get_sequence_analysis))
         .route("/api/contract/{name}/suggestions", get(api::contract::get_search_suggestions))
         .route("/api/annotations", get(api::annotations::list_annotations))
         .route("/api/annotations", post(api::annotations::create_annotation))

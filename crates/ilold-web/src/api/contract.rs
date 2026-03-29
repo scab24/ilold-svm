@@ -282,6 +282,20 @@ pub async fn get_sequences(
 }
 
 // ============================================================================
+// Sequence analysis — conditions between function transitions
+// ============================================================================
+
+use ilold_core::sequence::analysis::{analyze_sequences, SequenceAnalysis};
+
+pub async fn get_sequence_analysis(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Result<Json<SequenceAnalysis>, StatusCode> {
+    let analysis = analyze_sequences(&state.path_trees, &name);
+    Ok(Json(analysis))
+}
+
+// ============================================================================
 // Search suggestions — what's searchable in this contract
 // ============================================================================
 
