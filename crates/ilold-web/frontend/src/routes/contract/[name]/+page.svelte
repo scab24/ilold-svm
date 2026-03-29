@@ -366,6 +366,7 @@
       <span class="inherits">inherits {contract.inherits.join(', ')}</span>
     {/if}
     <div class="toolbar">
+      <a href="/contract/{contract?.name}/sequences" class="tbtn">⚡ Sequences</a>
       <button class="tbtn" onclick={toggleSearch}>🔍</button>
       <button class="tbtn" onclick={() => { if (cyInstance) cyInstance.fit(undefined, 40); }}>⊡</button>
     </div>
