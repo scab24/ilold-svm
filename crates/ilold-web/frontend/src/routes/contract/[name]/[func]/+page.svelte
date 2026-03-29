@@ -124,7 +124,28 @@
     layout.run(); layout.stop();
 
     cyInstance.on('tap', 'node', (evt: any) => {
-      selectedNode = evt.target.data();
+      const data = evt.target.data();
+      // Enrich terminal nodes with incoming edge info
+      const incomingEdges = evt.target.incomers('edge');
+      const incomingConditions: string[] = [];
+      incomingEdges.forEach((edge: any) => {
+        const kind = edge.data('kind') || '';
+        if (kind.includes('ConditionalFalse')) {
+          const cond = kind.match(/condition: "(.+?)"/)?.[1] || '';
+          incomingConditions.push(`Failed: ${cond}`);
+        } else if (kind.includes('ConditionalTrue')) {
+          const cond = kind.match(/condition: "(.+?)"/)?.[1] || '';
+          incomingConditions.push(`Passed: ${cond}`);
+        } else if (kind.includes('Unconditional')) {
+          const sourceNode = edge.source();
+          const sourceStmts = sourceNode.data('statements') || [];
+          if (sourceStmts.length > 0) {
+            incomingConditions.push(`After: ${sourceStmts[sourceStmts.length - 1]}`);
+          }
+        }
+      });
+      data._conditions = incomingConditions;
+      selectedNode = data;
       cyInstance.elements().removeClass('highlighted dimmed');
       evt.target.addClass('highlighted');
     });
@@ -206,17 +227,29 @@
     </div>
 
     {#if selectedNode}
-      <DraggablePanel title="Block {selectedNode.id}" x={12} y={window.innerHeight - 250} width={320} onclose={() => resetSelection()}>
+      <DraggablePanel title="Block {selectedNode.id}" x={12} y={window.innerHeight - 280} width={340} onclose={() => resetSelection()}>
         <div class="node-content">
           <span class="node-type" style="color:{terminalColor(selectedNode.node_type)}">{selectedNode.node_type}</span>
+
+          {#if selectedNode._conditions?.length > 0}
+            <div class="conditions">
+              {#each selectedNode._conditions as cond}
+                <div class="condition-item">{cond}</div>
+              {/each}
+            </div>
+          {/if}
+
           {#if selectedNode.statements?.length > 0}
+            <div class="stmt-label">Statements</div>
             <div class="stmt-list">
               {#each selectedNode.statements as stmt}
                 <div class="stmt">{stmt}</div>
               {/each}
             </div>
-          {:else}
-            <div class="empty">No statements</div>
+          {:else if selectedNode.node_type === 'Revert'}
+            <div class="terminal-info revert-info">Transaction reverts here. The require/assert condition above failed.</div>
+          {:else if selectedNode.node_type === 'Return'}
+            <div class="terminal-info return-info">Function returns successfully from this point.</div>
           {/if}
         </div>
       </DraggablePanel>
@@ -399,6 +432,34 @@
     color: #c9d1d9;
   }
 
+  .conditions {
+    padding: 6px 8px;
+    border-bottom: 1px solid #21262d;
+  }
+  .condition-item {
+    font-family: monospace;
+    font-size: 11px;
+    padding: 3px 6px;
+    background: #0d1117;
+    border-radius: 3px;
+    margin-bottom: 2px;
+    color: #d29922;
+  }
+  .stmt-label {
+    padding: 4px 8px 0;
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #484f58;
+  }
+  .terminal-info {
+    padding: 8px;
+    font-size: 11px;
+    border-radius: 4px;
+    margin: 6px 8px;
+  }
+  .revert-info { background: #f851491a; color: #f85149; }
+  .return-info { background: #3fb9501a; color: #3fb950; }
   .empty { padding: 8px 12px; font-size: 12px; color: #484f58; }
 
   .paths-panel {
