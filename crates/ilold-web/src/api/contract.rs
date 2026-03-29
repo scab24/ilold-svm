@@ -126,6 +126,8 @@ pub struct CytoscapeNodeData {
     pub node_type: String,
     pub contract: String,
     pub is_external: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub statements: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -162,6 +164,7 @@ pub async fn get_callgraph(
                     node_type: if node.is_external { "external" } else { "internal" }.into(),
                     contract: node.contract.clone(),
                     is_external: node.is_external,
+                    statements: Vec::new(),
                 },
             }
         })
@@ -203,13 +206,16 @@ pub async fn get_cfg(
         .node_indices()
         .map(|idx| {
             let block = &cfg[idx];
+            let stmts: Vec<String> = block.statements.iter().map(|s| summarize_stmt(s)).collect();
+            let label = make_block_label(block, &stmts);
             CytoscapeNode {
                 data: CytoscapeNodeData {
                     id: format!("b{}", block.id),
-                    label: format!("{:?} ({} stmts)", block.kind, block.statements.len()),
+                    label,
                     node_type: format!("{:?}", block.kind),
                     contract: key.0.clone(),
                     is_external: false,
+                    statements: stmts,
                 },
             }
         })
@@ -267,11 +273,74 @@ pub async fn get_sequences(
     Path(name): Path<String>,
     Query(_query): Query<SequenceQuery>,
 ) -> Result<Json<SequenceTree>, StatusCode> {
-    // For now return pre-computed tree. In the future, recompute with custom depth.
     state
         .sequence_trees
         .get(&name)
         .cloned()
         .map(Json)
         .ok_or(StatusCode::NOT_FOUND)
+}
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
+use ilold_core::cfg::types::{BasicBlock, BlockKind, CfgStatement};
+
+fn summarize_stmt(stmt: &CfgStatement) -> String {
+    match stmt {
+        CfgStatement::RequireCheck { condition, .. } => format!("require({})", condition),
+        CfgStatement::AssertCheck { condition, .. } => format!("assert({})", condition),
+        CfgStatement::ExternalCall { target, function, .. } => format!("{}.{}()", target, function),
+        CfgStatement::InternalCall { function, .. } => format!("{}()", function),
+        CfgStatement::EmitEvent { event, .. } => format!("emit {}", event),
+        CfgStatement::StateWrite { variable, .. } => format!("{} = ...", variable),
+        CfgStatement::StateRead { variable, .. } => format!("read {}", variable),
+        CfgStatement::EthTransfer { to, .. } => format!("transfer → {}", to),
+        CfgStatement::Assignment { target, .. } => {
+            if target.is_empty() {
+                "...".into()
+            } else {
+                format!("{} = ...", target)
+            }
+        }
+        CfgStatement::AssemblyBlock { .. } => "assembly { ... }".into(),
+    }
+}
+
+fn make_block_label(block: &BasicBlock, stmts: &[String]) -> String {
+    match block.kind {
+        BlockKind::Entry => {
+            if stmts.is_empty() {
+                "▶ Entry".into()
+            } else {
+                let s = truncate_label(&stmts[0], 24);
+                format!("▶ {s}")
+            }
+        }
+        BlockKind::Return => "✓ Return".into(),
+        BlockKind::Revert => "✗ Revert".into(),
+        BlockKind::Assembly => "⚙ Assembly".into(),
+        BlockKind::LoopCondition => "⟳ Loop".into(),
+        BlockKind::Normal => {
+            if stmts.is_empty() {
+                "·".into()
+            } else {
+                let first = truncate_label(&stmts[0], 24);
+                if stmts.len() == 1 {
+                    first
+                } else {
+                    format!("{first}  (+{})", stmts.len() - 1)
+                }
+            }
+        }
+    }
+}
+
+fn truncate_label(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        format!("{}…", &s[..max])
+    }
 }

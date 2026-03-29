@@ -51,6 +51,7 @@ export interface CytoscapeNodeData {
   node_type: string;
   contract: string;
   is_external: boolean;
+  statements?: string[];
 }
 
 export interface CytoscapeEdgeData {
