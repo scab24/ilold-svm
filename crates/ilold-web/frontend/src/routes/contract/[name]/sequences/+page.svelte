@@ -1,6 +1,6 @@
 <script lang="ts">
   import { page } from '$app/state';
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy, tick } from 'svelte';
   import { getSequences, getContract, type ContractDetail } from '$lib/api/rest';
   import { toggleSearch, setSearchContext } from '$lib/stores/search';
 
@@ -8,12 +8,16 @@
   let seqTree: any = $state(null);
   let error: string | null = $state(null);
 
-  // Filters
   let filterDepth: number | null = $state(null);
   let filterFunc: string | null = $state(null);
   let sortBy: string = $state('paths');
   let onlyStateChange: boolean = $state(false);
   let selectedSeq: any = $state(null);
+  let viewMode: string = $state('tree'); // 'tree' or 'list'
+
+  let cyContainer: HTMLDivElement;
+  let cyInstance: any = null;
+  let dagreRegistered = false;
 
   const contractName = $derived(page.params.name);
 
@@ -28,76 +32,163 @@
     }
   });
 
-  const filteredSequences = $derived(() => {
-    if (!seqTree) return [];
-    let seqs = [...seqTree.sequences];
-
-    if (filterDepth !== null) {
-      seqs = seqs.filter((s: any) => s.depth === filterDepth);
-    }
-    if (filterFunc !== null) {
-      seqs = seqs.filter((s: any) => s.steps.some((i: number) => seqTree.functions[i].name === filterFunc));
-    }
-    if (onlyStateChange) {
-      seqs = seqs.filter((s: any) => s.has_state_change);
-    }
-
-    if (sortBy === 'paths') {
-      seqs.sort((a: any, b: any) => b.path_count - a.path_count);
-    } else if (sortBy === 'depth') {
-      seqs.sort((a: any, b: any) => b.depth - a.depth);
-    }
-
-    return seqs;
+  onDestroy(() => {
+    if (cyInstance) { cyInstance.destroy(); cyInstance = null; }
   });
 
-  // Build 8x8 matrix
-  const matrix = $derived(() => {
-    if (!seqTree) return [];
-    const funcs = seqTree.functions;
-    const n = funcs.length;
-    const grid: {from: string, to: string, count: number, totalPaths: number, hasStateChange: boolean}[][] = [];
+  // Computed filtered sequences
+  let filtered: any[] = $state([]);
+  $effect(() => {
+    if (!seqTree) { filtered = []; return; }
+    let seqs = [...seqTree.sequences];
+    if (filterDepth !== null) seqs = seqs.filter((s: any) => s.depth === filterDepth);
+    if (filterFunc !== null) seqs = seqs.filter((s: any) => s.steps.some((i: number) => seqTree.functions[i].name === filterFunc));
+    if (onlyStateChange) seqs = seqs.filter((s: any) => s.has_state_change);
+    if (sortBy === 'paths') seqs.sort((a: any, b: any) => b.path_count - a.path_count);
+    else if (sortBy === 'depth') seqs.sort((a: any, b: any) => b.depth - a.depth);
+    filtered = seqs;
+  });
 
-    for (let i = 0; i < n; i++) {
-      grid[i] = [];
-      for (let j = 0; j < n; j++) {
-        const matching = seqTree.sequences.filter((s: any) =>
-          s.depth >= 2 && s.steps[0] === i && s.steps[1] === j
-        );
-        grid[i][j] = {
-          from: funcs[i].name,
-          to: funcs[j].name,
-          count: matching.length,
-          totalPaths: matching.reduce((sum: number, s: any) => sum + Number(s.path_count), 0),
-          hasStateChange: matching.some((s: any) => s.has_state_change),
-        };
+  // Render tree when view mode changes or data loads
+  $effect(() => {
+    if (viewMode === 'tree' && seqTree && cyContainer) {
+      setTimeout(() => renderTree(), 100);
+    }
+  });
+
+  async function renderTree() {
+    if (!seqTree || !cyContainer) return;
+
+    const cytoscape = (await import('cytoscape')).default;
+    if (!dagreRegistered) {
+      const dagre = (await import('cytoscape-dagre')).default;
+      cytoscape.use(dagre);
+      dagreRegistered = true;
+    }
+    if (cyInstance) cyInstance.destroy();
+
+    // Build tree from sequences: shared prefix structure
+    const tree: Record<string, {children: Record<string, any>, pathCount: number, hasStateChange: boolean}> = {};
+
+    for (const seq of seqTree.sequences) {
+      let current = tree;
+      for (let i = 0; i < seq.steps.length; i++) {
+        const funcName = seqTree.functions[seq.steps[i]].name;
+        const key = funcName;
+        if (!current[key]) {
+          current[key] = { children: {}, pathCount: 0, hasStateChange: false };
+        }
+        current[key].pathCount += Number(seq.path_count);
+        if (seq.has_state_change) current[key].hasStateChange = true;
+        current = current[key].children;
       }
     }
-    return grid;
-  });
+
+    // Convert tree to Cytoscape elements
+    const elements: any[] = [];
+    let nodeId = 0;
+
+    // Root node
+    elements.push({
+      group: 'nodes',
+      data: { id: 'root', label: contract?.name || 'Contract', _type: 'root' },
+      classes: 'root',
+    });
+
+    function addNodes(subtree: Record<string, any>, parentId: string, depth: number) {
+      for (const [funcName, data] of Object.entries(subtree)) {
+        const id = `n${nodeId++}`;
+        const readOnly = seqTree.functions.find((f: any) => f.name === funcName)?.read_only ?? false;
+        elements.push({
+          group: 'nodes',
+          data: {
+            id,
+            label: funcName,
+            pathCount: data.pathCount,
+            hasStateChange: data.hasStateChange,
+            readOnly,
+            depth,
+            _type: 'seq-func',
+          },
+          classes: `seq-func ${readOnly ? 'readonly' : ''} ${data.hasStateChange ? 'state-change' : ''}`,
+        });
+        elements.push({
+          group: 'edges',
+          data: { source: parentId, target: id },
+        });
+        if (Object.keys(data.children).length > 0 && depth < 2) {
+          addNodes(data.children, id, depth + 1);
+        }
+      }
+    }
+
+    addNodes(tree, 'root', 0);
+
+    cyInstance = cytoscape({
+      container: cyContainer,
+      elements,
+      style: [
+        {
+          selector: 'node.root',
+          style: {
+            'background-color': '#1f6feb', 'label': 'data(label)', 'color': '#f0f6fc',
+            'font-size': '13px', 'font-weight': 'bold',
+            'text-valign': 'center', 'text-halign': 'center',
+            'width': '140px', 'height': '40px', 'shape': 'roundrectangle',
+          }
+        },
+        {
+          selector: 'node.seq-func',
+          style: {
+            'background-color': '#238636', 'label': 'data(label)', 'color': '#f0f6fc',
+            'font-size': '10px', 'text-valign': 'center', 'text-halign': 'center',
+            'width': '110px', 'height': '30px', 'shape': 'roundrectangle',
+          }
+        },
+        {
+          selector: 'node.seq-func.readonly',
+          style: { 'background-color': '#1f6feb' }
+        },
+        {
+          selector: 'node.seq-func.state-change',
+          style: { 'background-color': '#238636' }
+        },
+        { selector: 'node:active', style: { 'overlay-opacity': 0 } },
+        {
+          selector: 'edge',
+          style: {
+            'width': 1, 'line-color': '#30363d', 'target-arrow-color': '#484f58',
+            'target-arrow-shape': 'triangle', 'curve-style': 'bezier', 'arrow-scale': 0.6,
+          }
+        },
+      ] as any,
+      layout: { name: 'preset' },
+      minZoom: 0.05, maxZoom: 4, wheelSensitivity: 0.3,
+    });
+
+    const layout = cyInstance.layout({
+      name: 'dagre',
+      rankDir: 'LR',
+      nodeSep: 15,
+      rankSep: 60,
+      animate: false,
+    } as any);
+    layout.run();
+    layout.stop();
+
+    cyInstance.on('tap', 'node.seq-func', (evt: any) => {
+      const funcName = evt.target.data('label');
+      if (funcName && contractName) {
+        window.location.href = `/contract/${contractName}/${funcName}`;
+      }
+    });
+
+    cyInstance.on('mouseover', 'node.seq-func', () => { if (cyContainer) cyContainer.style.cursor = 'pointer'; });
+    cyInstance.on('mouseout', 'node', () => { if (cyContainer) cyContainer.style.cursor = 'default'; });
+  }
 
   function seqSteps(seq: any): string {
     return seq.steps.map((i: number) => seqTree.functions[i].name).join(' → ');
-  }
-
-  function cellColor(totalPaths: number, maxPaths: number): string {
-    if (totalPaths === 0) return 'transparent';
-    const intensity = Math.min(totalPaths / Math.max(maxPaths, 1), 1);
-    const r = Math.round(30 + intensity * 180);
-    const g = Math.round(30 + intensity * 40);
-    const b = Math.round(50);
-    return `rgb(${r},${g},${b})`;
-  }
-
-  function maxMatrixPaths(): number {
-    const m = matrix();
-    let max = 0;
-    for (const row of m) {
-      for (const cell of row) {
-        if (cell.totalPaths > max) max = cell.totalPaths;
-      }
-    }
-    return max;
   }
 </script>
 
@@ -106,9 +197,11 @@
     <a href="/contract/{contractName}">← {contractName}</a>
     <span class="title">Function Sequences</span>
     {#if seqTree}
-      <span class="stats">{seqTree.sequences.length} sequences · depth {seqTree.max_depth} · {seqTree.functions.length} functions</span>
+      <span class="stats">{seqTree.sequences.length} sequences · depth {seqTree.max_depth}</span>
     {/if}
     <div class="toolbar">
+      <button class="tbtn" class:active={viewMode === 'tree'} onclick={() => viewMode = 'tree'}>🌳 Tree</button>
+      <button class="tbtn" class:active={viewMode === 'list'} onclick={() => viewMode = 'list'}>📋 List</button>
       <button class="tbtn" onclick={toggleSearch}>🔍</button>
     </div>
   </div>
@@ -118,209 +211,129 @@
   {:else if !seqTree}
     <div class="loading">Loading...</div>
   {:else}
-    <div class="content">
-      <!-- Transition Matrix -->
-      <div class="section">
-        <h2>Transition Matrix</h2>
-        <p class="desc">Each cell shows the combined paths when function (row) is followed by function (column). Darker = more paths.</p>
-        <div class="matrix-wrapper">
-          <table class="matrix">
-            <thead>
-              <tr>
-                <th></th>
-                {#each seqTree.functions as f}
-                  <th class="matrix-header">{f.name}</th>
-                {/each}
-              </tr>
-            </thead>
-            <tbody>
-              {#each matrix() as row, i}
-                <tr>
-                  <td class="matrix-row-label">{seqTree.functions[i].name}</td>
-                  {#each row as cell}
-                    <td
-                      class="matrix-cell"
-                      style="background:{cellColor(cell.totalPaths, maxMatrixPaths())}"
-                      title="{cell.from} → {cell.to}: {cell.totalPaths} combined paths"
-                      onclick={() => { filterFunc = null; filterDepth = 2; selectedSeq = null; }}
-                    >
-                      {#if cell.totalPaths > 0}
-                        {cell.totalPaths}
-                      {/if}
-                    </td>
-                  {/each}
-                </tr>
-              {/each}
-            </tbody>
-          </table>
-        </div>
+    {#if viewMode === 'tree'}
+      <div class="tree-canvas" bind:this={cyContainer}></div>
+      <div class="legend">
+        <span><span class="dot" style="background:#1f6feb"></span>Contract / Read-only</span>
+        <span><span class="dot" style="background:#238636"></span>State-changing</span>
+        <span>Left→Right = sequence depth · Click function → view paths</span>
       </div>
-
-      <!-- Filters -->
-      <div class="filters">
-        <div class="filter-group">
-          <label>Depth:</label>
-          <button class:active={filterDepth === null} onclick={() => filterDepth = null}>All</button>
-          {#each Array.from({length: seqTree.max_depth}, (_, i) => i + 1) as d}
-            <button class:active={filterDepth === d} onclick={() => filterDepth = d}>{d}</button>
-          {/each}
-        </div>
-        <div class="filter-group">
-          <label>Contains:</label>
-          <button class:active={filterFunc === null} onclick={() => filterFunc = null}>Any</button>
-          {#each seqTree.functions as f}
-            <button class:active={filterFunc === f.name} onclick={() => filterFunc = f.name}>{f.name}</button>
-          {/each}
-        </div>
-        <div class="filter-group">
-          <label>Sort:</label>
-          <button class:active={sortBy === 'paths'} onclick={() => sortBy = 'paths'}>Paths ↓</button>
-          <button class:active={sortBy === 'depth'} onclick={() => sortBy = 'depth'}>Depth ↓</button>
-        </div>
-        <div class="filter-group">
-          <label>
-            <input type="checkbox" bind:checked={onlyStateChange} /> State-changing only
-          </label>
-        </div>
-        <div class="filter-result">{filteredSequences().length} sequences</div>
-      </div>
-
-      <!-- Sequence List -->
-      <div class="seq-list">
-        {#each filteredSequences().slice(0, 200) as seq}
-          <button
-            class="seq-row"
-            class:selected={selectedSeq === seq}
-            onclick={() => selectedSeq = selectedSeq === seq ? null : seq}
-          >
-            <span class="seq-depth">D{seq.depth}</span>
-            <span class="seq-steps">{seqSteps(seq)}</span>
-            <span class="seq-paths">{seq.path_count}p</span>
-            {#if seq.has_state_change}
-              <span class="seq-badge sc">state</span>
-            {:else}
-              <span class="seq-badge ro">read</span>
-            {/if}
-          </button>
-        {/each}
-        {#if filteredSequences().length > 200}
-          <div class="more">Showing 200 of {filteredSequences().length}. Use filters to narrow down.</div>
-        {/if}
-      </div>
-
-      <!-- Selected sequence detail -->
-      {#if selectedSeq}
-        <div class="seq-detail">
-          <h3>{seqSteps(selectedSeq)}</h3>
-          <div class="detail-row">
-            <span class="dl">Depth</span>
-            <span>{selectedSeq.depth}</span>
-          </div>
-          <div class="detail-row">
-            <span class="dl">Combined paths</span>
-            <span>{selectedSeq.path_count}</span>
-          </div>
-          <div class="detail-row">
-            <span class="dl">State change</span>
-            <span style="color:{selectedSeq.has_state_change ? '#d29922' : '#3fb950'}">{selectedSeq.has_state_change ? 'Yes' : 'No (read-only)'}</span>
-          </div>
-          <div class="detail-steps">
-            {#each selectedSeq.steps as stepIdx, i}
-              {@const func = seqTree.functions[stepIdx]}
-              <div class="step">
-                <span class="step-num">{i + 1}</span>
-                <a href="/contract/{contractName}/{func.name}" class="step-name">{func.name}</a>
-                <span class="step-info">{func.path_count}p · {func.read_only ? 'view' : 'state-changing'}</span>
-              </div>
+    {:else}
+      <div class="list-content">
+        <!-- Filters -->
+        <div class="filters">
+          <div class="fg">
+            <span class="fl">Depth:</span>
+            <button class:active={filterDepth === null} onclick={() => filterDepth = null}>All</button>
+            {#each Array.from({length: seqTree.max_depth}, (_, i) => i + 1) as d}
+              <button class:active={filterDepth === d} onclick={() => filterDepth = d}>{d}</button>
             {/each}
           </div>
+          <div class="fg">
+            <span class="fl">Contains:</span>
+            <button class:active={filterFunc === null} onclick={() => filterFunc = null}>Any</button>
+            {#each seqTree.functions as f}
+              <button class:active={filterFunc === f.name} onclick={() => filterFunc = f.name}>{f.name}</button>
+            {/each}
+          </div>
+          <div class="fg">
+            <span class="fl">Sort:</span>
+            <button class:active={sortBy === 'paths'} onclick={() => sortBy = 'paths'}>Paths ↓</button>
+            <button class:active={sortBy === 'depth'} onclick={() => sortBy = 'depth'}>Depth ↓</button>
+          </div>
+          <div class="fg">
+            <label><input type="checkbox" bind:checked={onlyStateChange} /> State-changing only</label>
+          </div>
+          <span class="filter-count">{filtered.length} sequences</span>
         </div>
-      {/if}
-    </div>
+
+        <div class="seq-list">
+          {#each filtered.slice(0, 200) as seq}
+            <button class="seq-row" class:selected={selectedSeq === seq} onclick={() => selectedSeq = selectedSeq === seq ? null : seq}>
+              <span class="sd">D{seq.depth}</span>
+              <span class="ss">{seqSteps(seq)}</span>
+              <span class="sp">{seq.path_count}p</span>
+              {#if seq.has_state_change}
+                <span class="sb sc">state</span>
+              {:else}
+                <span class="sb ro">read</span>
+              {/if}
+            </button>
+          {/each}
+          {#if filtered.length > 200}
+            <div class="more">Showing 200 of {filtered.length}</div>
+          {/if}
+        </div>
+
+        {#if selectedSeq}
+          <div class="seq-detail">
+            <h3>{seqSteps(selectedSeq)}</h3>
+            <div class="dr"><span class="dl">Combined paths</span><span>{selectedSeq.path_count}</span></div>
+            <div class="dr"><span class="dl">State change</span><span style="color:{selectedSeq.has_state_change ? '#d29922' : '#3fb950'}">{selectedSeq.has_state_change ? 'Yes' : 'No'}</span></div>
+            <div class="steps">
+              {#each selectedSeq.steps as stepIdx, i}
+                {@const func = seqTree.functions[stepIdx]}
+                <div class="step">
+                  <span class="sn">{i + 1}</span>
+                  <a href="/contract/{contractName}/{func.name}">{func.name}</a>
+                  <span class="si">{func.path_count}p · {func.read_only ? 'view' : 'state'}</span>
+                </div>
+              {/each}
+            </div>
+          </div>
+        {/if}
+      </div>
+    {/if}
   {/if}
 </div>
 
 <style>
   .seq-view { position: fixed; inset: 0; display: flex; flex-direction: column; background: #0d1117; }
-
-  .topbar {
-    display: flex; align-items: center; gap: 10px;
-    padding: 8px 16px; background: #161b22; border-bottom: 1px solid #30363d;
-    z-index: 10; flex-shrink: 0;
-  }
+  .topbar { display: flex; align-items: center; gap: 10px; padding: 8px 16px; background: #161b22; border-bottom: 1px solid #30363d; z-index: 10; flex-shrink: 0; }
   .topbar a { font-size: 13px; color: #8b949e; }
   .title { font-size: 16px; font-weight: 700; color: #f0f6fc; }
   .stats { font-size: 12px; color: #8b949e; }
-  .toolbar { margin-left: auto; }
+  .toolbar { margin-left: auto; display: flex; gap: 4px; }
   .tbtn { background: #21262d; border: 1px solid #30363d; color: #c9d1d9; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; }
-
+  .tbtn:hover { border-color: #58a6ff; }
+  .tbtn.active { background: #1f6feb; border-color: #58a6ff; }
   .error { padding: 24px; color: #f85149; }
   .loading { padding: 24px; color: #8b949e; }
 
-  .content { flex: 1; overflow-y: auto; padding: 20px 24px; max-width: 1200px; margin: 0 auto; width: 100%; box-sizing: border-box; }
+  /* Tree view */
+  .tree-canvas { flex: 1; }
+  .legend { position: fixed; bottom: 12px; left: 16px; display: flex; gap: 10px; font-size: 11px; color: #8b949e; background: #161b22cc; padding: 6px 12px; border-radius: 6px; border: 1px solid #30363d; z-index: 10; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; vertical-align: middle; margin-right: 3px; }
 
-  .section { margin-bottom: 24px; }
-  .section h2 { font-size: 16px; color: #f0f6fc; margin: 0 0 4px; }
-  .desc { font-size: 12px; color: #8b949e; margin: 0 0 12px; }
-
-  .matrix-wrapper { overflow-x: auto; }
-  .matrix { border-collapse: collapse; font-size: 11px; }
-  .matrix th, .matrix td { padding: 4px 6px; text-align: center; }
-  .matrix-header { color: #8b949e; font-weight: 600; writing-mode: vertical-rl; transform: rotate(180deg); max-width: 30px; font-size: 10px; }
-  .matrix-row-label { color: #8b949e; font-weight: 600; text-align: right; padding-right: 8px; font-size: 10px; white-space: nowrap; }
-  .matrix-cell {
-    min-width: 40px; height: 32px;
-    border: 1px solid #21262d; border-radius: 2px;
-    color: #c9d1d9; font-size: 10px; font-family: monospace;
-    cursor: pointer;
-  }
-  .matrix-cell:hover { border-color: #58a6ff; }
-
-  .filters {
-    display: flex; flex-wrap: wrap; gap: 12px; align-items: center;
-    padding: 12px 0; border-top: 1px solid #21262d; border-bottom: 1px solid #21262d;
-    margin-bottom: 12px;
-  }
-  .filter-group { display: flex; align-items: center; gap: 4px; font-size: 11px; color: #8b949e; }
-  .filter-group label { font-size: 11px; color: #8b949e; display: flex; align-items: center; gap: 4px; }
-  .filter-group button {
-    background: #21262d; border: 1px solid #30363d; color: #8b949e;
-    padding: 2px 8px; border-radius: 4px; cursor: pointer; font-size: 10px;
-  }
-  .filter-group button:hover { border-color: #58a6ff; color: #c9d1d9; }
-  .filter-group button.active { background: #1f6feb; border-color: #58a6ff; color: #f0f6fc; }
-  .filter-result { font-size: 12px; color: #58a6ff; margin-left: auto; }
+  /* List view */
+  .list-content { flex: 1; overflow-y: auto; padding: 16px 24px; max-width: 1100px; margin: 0 auto; width: 100%; box-sizing: border-box; }
+  .filters { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 10px 0; border-bottom: 1px solid #21262d; margin-bottom: 10px; }
+  .fg { display: flex; align-items: center; gap: 3px; }
+  .fl { font-size: 10px; color: #8b949e; margin-right: 2px; }
+  .fg button { background: #21262d; border: 1px solid #30363d; color: #8b949e; padding: 2px 7px; border-radius: 4px; cursor: pointer; font-size: 10px; }
+  .fg button:hover { border-color: #58a6ff; color: #c9d1d9; }
+  .fg button.active { background: #1f6feb; border-color: #58a6ff; color: #f0f6fc; }
+  .fg label { font-size: 10px; color: #8b949e; display: flex; align-items: center; gap: 3px; }
+  .filter-count { font-size: 11px; color: #58a6ff; margin-left: auto; }
 
   .seq-list { display: flex; flex-direction: column; gap: 2px; }
-  .seq-row {
-    display: flex; align-items: center; gap: 8px;
-    padding: 6px 10px; background: #161b22; border: 1px solid #21262d;
-    border-radius: 4px; cursor: pointer; font: inherit; font-size: 12px;
-    color: inherit; text-align: left; width: 100%;
-  }
+  .seq-row { display: flex; align-items: center; gap: 6px; padding: 5px 8px; background: #161b22; border: 1px solid #21262d; border-radius: 4px; cursor: pointer; font: inherit; font-size: 11px; color: inherit; text-align: left; width: 100%; }
   .seq-row:hover { border-color: #30363d; }
-  .seq-row.selected { border-color: #58a6ff; background: #161b22ee; }
-  .seq-depth { color: #484f58; font-size: 10px; font-weight: 600; min-width: 24px; }
-  .seq-steps { flex: 1; font-family: monospace; color: #c9d1d9; }
-  .seq-paths { color: #8b949e; font-size: 11px; }
-  .seq-badge { font-size: 9px; padding: 1px 6px; border-radius: 8px; }
-  .seq-badge.sc { background: #d299221a; color: #d29922; }
-  .seq-badge.ro { background: #3fb9501a; color: #3fb950; }
-  .more { text-align: center; padding: 12px; font-size: 11px; color: #484f58; }
+  .seq-row.selected { border-color: #58a6ff; }
+  .sd { color: #484f58; font-size: 10px; font-weight: 600; min-width: 22px; }
+  .ss { flex: 1; font-family: monospace; color: #c9d1d9; }
+  .sp { color: #8b949e; font-size: 10px; }
+  .sb { font-size: 9px; padding: 1px 5px; border-radius: 6px; }
+  .sb.sc { background: #d299221a; color: #d29922; }
+  .sb.ro { background: #3fb9501a; color: #3fb950; }
+  .more { text-align: center; padding: 10px; font-size: 11px; color: #484f58; }
 
-  .seq-detail {
-    margin-top: 16px; padding: 14px;
-    background: #161b22; border: 1px solid #30363d; border-radius: 8px;
-  }
-  .seq-detail h3 { font-size: 14px; font-family: monospace; color: #f0f6fc; margin: 0 0 10px; }
-  .detail-row { display: flex; justify-content: space-between; font-size: 12px; padding: 3px 0; }
+  .seq-detail { margin-top: 12px; padding: 12px; background: #161b22; border: 1px solid #30363d; border-radius: 8px; }
+  .seq-detail h3 { font-size: 13px; font-family: monospace; color: #f0f6fc; margin: 0 0 8px; }
+  .dr { display: flex; justify-content: space-between; font-size: 12px; padding: 2px 0; }
   .dl { color: #8b949e; }
-  .detail-steps { margin-top: 10px; display: flex; flex-direction: column; gap: 4px; }
-  .step {
-    display: flex; align-items: center; gap: 8px;
-    padding: 6px 10px; background: #0d1117; border-radius: 4px;
-  }
-  .step-num { font-size: 10px; color: #484f58; font-weight: 700; min-width: 18px; }
-  .step-name { font-family: monospace; font-weight: 600; color: #58a6ff; }
-  .step-info { font-size: 11px; color: #8b949e; margin-left: auto; }
+  .steps { margin-top: 8px; display: flex; flex-direction: column; gap: 3px; }
+  .step { display: flex; align-items: center; gap: 8px; padding: 5px 8px; background: #0d1117; border-radius: 4px; }
+  .sn { font-size: 10px; color: #484f58; font-weight: 700; }
+  .si { font-size: 10px; color: #8b949e; margin-left: auto; }
 </style>
