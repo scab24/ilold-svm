@@ -1,7 +1,7 @@
 <script lang="ts">
   import { page } from '$app/state';
   import { onMount, onDestroy, tick } from 'svelte';
-  import { getContract, getCallGraph, getCfg, getPaths, type ContractDetail, type CytoscapeGraph } from '$lib/api/rest';
+  import { getContract, getCallGraph, getCfg, getPaths, getSequences, type ContractDetail, type CytoscapeGraph } from '$lib/api/rest';
   import { toggleSearch, setSearchContext } from '$lib/stores/search';
   import DraggablePanel from '$lib/DraggablePanel.svelte';
 
@@ -11,6 +11,10 @@
   let selectedPath: any = $state(null);
   let funcPaths: Record<string, any> = $state({});
   let expandedFuncs: Set<string> = $state(new Set());
+  let mode: 'cfg' | 'sequences' = $state('cfg');
+  let seqTree: any = $state(null);
+  let seqExpanded: Map<string, boolean> = $state(new Map()); // "deposit" → expanded, "deposit→withdraw" → expanded
+  let seqBreadcrumb: string[] = $state([]);
 
   let cyContainer: HTMLDivElement;
   let cyInstance: any = null;
@@ -24,6 +28,7 @@
     try {
       contract = await getContract(contractName);
       const callgraph = await getCallGraph(contractName);
+      try { seqTree = await getSequences(contractName); } catch {}
       await tick();
       await new Promise(r => requestAnimationFrame(r));
       if (cyContainer && callgraph) renderGraph(callgraph);
@@ -67,11 +72,18 @@
 
     runLayout(false);
 
-    // Double-click function → expand/collapse CFG
+    // Click internal function → behavior depends on mode
     cyInstance.on('tap', 'node.internal', async (evt: any) => {
       const data = evt.target.data();
       if (data._type === 'function') {
-        await toggleFuncExpand(data.label);
+        if (mode === 'cfg') {
+          await toggleFuncExpand(data.label);
+        } else if (mode === 'sequences') {
+          await toggleSeqExpand(data.label, data.id);
+        }
+      } else if (data._type === 'seq-next') {
+        // Click on a sequence next-step node → expand deeper
+        await toggleSeqExpand(data.label, data.id);
       }
     });
 
@@ -248,6 +260,125 @@
     }
   }
 
+  async function toggleSeqExpand(funcName: string, parentNodeId: string) {
+    if (!cyInstance || !contract || !seqTree) return;
+    const seqKey = parentNodeId;
+
+    if (seqExpanded.has(seqKey)) {
+      // Collapse: remove seq children
+      const children = cyInstance.nodes(`[_seqParent = "${seqKey}"]`);
+      const childEdges = cyInstance.edges(`[_seqParent = "${seqKey}"]`);
+      // Also remove grandchildren recursively
+      const allDesc = cyInstance.nodes().filter((n: any) => {
+        const sp = n.data('_seqParent');
+        return sp && (sp === seqKey || sp.startsWith(seqKey + '→'));
+      });
+      const allDescEdges = cyInstance.edges().filter((e: any) => {
+        const sp = e.data('_seqParent');
+        return sp && (sp === seqKey || sp.startsWith(seqKey + '→'));
+      });
+      cyInstance.remove(allDescEdges);
+      cyInstance.remove(allDesc);
+      seqExpanded.delete(seqKey);
+      // Remove deeper keys too
+      for (const k of seqExpanded.keys()) {
+        if (k.startsWith(seqKey + '→')) seqExpanded.delete(k);
+      }
+      seqExpanded = new Map(seqExpanded);
+    } else {
+      // Expand: add next-step function nodes
+      const parentPos = cyInstance.getElementById(parentNodeId).position();
+      const funcs = seqTree.functions;
+      const newNodes: any[] = [];
+      const newEdges: any[] = [];
+
+      funcs.forEach((f: any, i: number) => {
+        const nodeId = `${seqKey}→${f.name}`;
+        const readOnly = f.read_only;
+        newNodes.push({
+          group: 'nodes',
+          data: {
+            id: nodeId,
+            label: f.name,
+            _type: 'seq-next',
+            _seqParent: seqKey,
+            pathCount: f.path_count,
+            readOnly,
+          },
+          position: { x: parentPos.x, y: parentPos.y },
+          classes: `seq-next ${readOnly ? 'readonly' : 'state-change'}`,
+        });
+        newEdges.push({
+          group: 'edges',
+          data: {
+            id: `se:${seqKey}→${f.name}`,
+            source: parentNodeId,
+            target: nodeId,
+            _seqParent: seqKey,
+          },
+          classes: 'seq-edge',
+        });
+      });
+
+      cyInstance.add([...newNodes, ...newEdges]);
+
+      // Layout only the new nodes below parent
+      const seqNodes = cyInstance.nodes(`[_seqParent = "${seqKey}"]`);
+      const seqEdges = cyInstance.edges(`[_seqParent = "${seqKey}"]`);
+      const seqElements = seqNodes.union(seqEdges);
+
+      const subLayout = seqElements.layout({
+        name: 'dagre',
+        rankDir: 'LR',
+        nodeSep: 15,
+        rankSep: 50,
+        animate: false,
+        fit: false,
+      } as any);
+      subLayout.run();
+      subLayout.stop();
+
+      // Offset to be to the right of parent
+      const bb = seqNodes.boundingBox();
+      const offsetX = parentPos.x + 180 - bb.x1;
+      const offsetY = parentPos.y - bb.y1 - bb.h / 2 + 15;
+
+      seqNodes.forEach((node: any) => {
+        const pos = node.position();
+        const targetPos = { x: pos.x + offsetX, y: pos.y + offsetY };
+        node.position(parentPos);
+        node.animate({ position: targetPos }, { duration: 300, easing: 'ease-out' });
+      });
+
+      seqExpanded.set(seqKey, true);
+      seqExpanded = new Map(seqExpanded);
+    }
+  }
+
+  function switchMode(newMode: 'cfg' | 'sequences') {
+    // Clear all expanded states when switching modes
+    if (cyInstance) {
+      // Remove all CFG blocks
+      const cfgNodes = cyInstance.nodes('[_type = "block"]');
+      const cfgEdges = cyInstance.edges('[_type = "cfg-edge"]');
+      cyInstance.remove(cfgEdges);
+      cyInstance.remove(cfgNodes);
+      // Remove all seq nodes
+      const seqNodes = cyInstance.nodes('[_type = "seq-next"]');
+      const seqEdges = cyInstance.edges('.seq-edge');
+      cyInstance.remove(seqEdges);
+      cyInstance.remove(seqNodes);
+      // Restore opacity
+      cyInstance.nodes().style({ opacity: 1 });
+      cyInstance.edges().style({ opacity: 1 });
+    }
+    expandedFuncs = new Set();
+    seqExpanded = new Map();
+    selectedNode = null;
+    selectedPath = null;
+    mode = newMode;
+  }
+
   function highlightPath(funcName: string, path: any) {
     if (!cyInstance) return;
     selectedPath = path;
@@ -349,6 +480,25 @@
       { selector: 'edge.cond-false', style: { 'line-color': '#f8514988', 'target-arrow-color': '#f85149', 'label': '✗', 'font-size': '11px', 'color': '#f85149' } },
       { selector: 'edge.loop-back', style: { 'line-color': '#d29922', 'target-arrow-color': '#d29922', 'line-style': 'dashed' } },
       { selector: 'edge.expand-link', style: { 'line-color': '#58a6ff44', 'target-arrow-color': '#58a6ff', 'line-style': 'dotted', 'width': 2 } },
+      // Sequence nodes
+      {
+        selector: 'node.seq-next',
+        style: {
+          'label': 'data(label)', 'color': '#c9d1d9', 'font-size': '10px',
+          'text-valign': 'center', 'text-halign': 'center',
+          'width': '110px', 'height': '28px', 'shape': 'roundrectangle',
+          'background-color': '#238636', 'border-width': 1, 'border-color': '#3fb950',
+        }
+      },
+      { selector: 'node.seq-next.readonly', style: { 'background-color': '#1f6feb', 'border-color': '#58a6ff' } },
+      { selector: 'node.seq-next.state-change', style: { 'background-color': '#238636', 'border-color': '#3fb950' } },
+      {
+        selector: 'edge.seq-edge',
+        style: {
+          'width': 1.5, 'line-color': '#d2992244', 'target-arrow-color': '#d29922',
+          'target-arrow-shape': 'triangle', 'curve-style': 'bezier', 'arrow-scale': 0.7,
+        }
+      },
     ];
   }
 
@@ -366,7 +516,8 @@
       <span class="inherits">inherits {contract.inherits.join(', ')}</span>
     {/if}
     <div class="toolbar">
-      <a href="/contract/{contract?.name}/sequences" class="tbtn">⚡ Sequences</a>
+      <button class="tbtn" class:active={mode === 'cfg'} onclick={() => switchMode('cfg')}>🔧 CFG</button>
+      <button class="tbtn" class:active={mode === 'sequences'} onclick={() => switchMode('sequences')}>⚡ Sequences</button>
       <button class="tbtn" onclick={toggleSearch}>🔍</button>
       <button class="tbtn" onclick={() => { if (cyInstance) cyInstance.fit(undefined, 40); }}>⊡</button>
     </div>
@@ -453,12 +604,16 @@
     {/if}
 
     <div class="legend">
-      <span><span class="dot" style="background:#238636"></span>Function</span>
-      <span><span class="dot" style="background:#161b22;border:1px solid #f85149"></span>External</span>
-      <span><span class="dot" style="background:#1f6feb"></span>Entry</span>
-      <span><span class="dot" style="background:#da3633"></span>Revert</span>
-      <span><span class="dot" style="background:#238636"></span>Return</span>
-      <span>Click function to expand CFG</span>
+      {#if mode === 'cfg'}
+        <span><span class="dot" style="background:#238636"></span>Function</span>
+        <span><span class="dot" style="background:#1f6feb"></span>Entry</span>
+        <span><span class="dot" style="background:#da3633"></span>Revert</span>
+        <span>Click function → expand CFG</span>
+      {:else}
+        <span><span class="dot" style="background:#238636"></span>State-changing</span>
+        <span><span class="dot" style="background:#1f6feb"></span>Read-only</span>
+        <span>Click function → show next-step combinations</span>
+      {/if}
     </div>
   {/if}
 </div>
@@ -478,6 +633,7 @@
   .toolbar { margin-left: auto; display: flex; gap: 4px; }
   .tbtn { background: #21262d; border: 1px solid #30363d; color: #c9d1d9; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; }
   .tbtn:hover { border-color: #58a6ff; }
+  .tbtn.active { background: #1f6feb; border-color: #58a6ff; color: #f0f6fc; }
 
   .error { padding: 24px; color: #f85149; }
   .canvas { flex: 1; }
