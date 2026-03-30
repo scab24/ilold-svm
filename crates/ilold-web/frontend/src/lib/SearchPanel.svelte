@@ -1,8 +1,7 @@
 <script lang="ts">
-  import { searchOpen, searchContext, toggleSearch } from '$lib/stores/search';
+  import { searchOpen, searchContext, searchNavigate, toggleSearch } from '$lib/stores/search';
   import { search, type SearchResult } from '$lib/api/ws';
   import { getSearchSuggestions, type SearchSuggestions } from '$lib/api/rest';
-  import { goto } from '$app/navigation';
   import DraggablePanel from '$lib/DraggablePanel.svelte';
 
   let query = $state('');
@@ -47,7 +46,7 @@
   }
 
   function goToResult(r: SearchResult) {
-    goto(`/contract/${r.contract}/${r.function}?path=${r.path_id}`);
+    searchNavigate.set({ contract: r.contract, func: r.function, pathId: r.path_id });
   }
 
   function fieldColor(f: string): string {

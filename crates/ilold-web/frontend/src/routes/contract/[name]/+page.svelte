@@ -2,8 +2,9 @@
   import { page } from '$app/state';
   import { onMount, onDestroy, tick } from 'svelte';
   import { getContract, getCallGraph, getCfg, getPaths, getSequences, getSequenceAnalysis, type ContractDetail, type CytoscapeGraph, type SequenceAnalysis } from '$lib/api/rest';
-  import { toggleSearch, setSearchContext } from '$lib/stores/search';
+  import { toggleSearch, setSearchContext, searchNavigate } from '$lib/stores/search';
   import DraggablePanel from '$lib/DraggablePanel.svelte';
+  import Collapsible from '$lib/Collapsible.svelte';
 
   let contract: ContractDetail | null = $state(null);
   let error: string | null = $state(null);
@@ -20,6 +21,34 @@
 
   // Branch menu: Shift+click shows a menu to add a branch
   let branchMenu: { x: number; y: number; parentNodeId: string; parentFuncName: string } | null = $state(null);
+
+  // Context menu: right-click on nodes
+  let contextMenu: { x: number; y: number; nodeId: string; funcName: string; nodeType: string } | null = $state(null);
+
+  // Draggable toolbar
+  let toolbarX = $state(0);
+  let toolbarY = $state(10);
+  let toolbarDragging = false;
+  let toolbarOffX = 0;
+  let toolbarOffY = 0;
+  function onToolbarDown(e: MouseEvent) {
+    if ((e.target as HTMLElement).tagName === 'BUTTON' || (e.target as HTMLElement).tagName === 'A') return;
+    toolbarDragging = true;
+    toolbarOffX = e.clientX - toolbarX;
+    toolbarOffY = e.clientY - toolbarY;
+    window.addEventListener('mousemove', onToolbarMove);
+    window.addEventListener('mouseup', onToolbarUp);
+  }
+  function onToolbarMove(e: MouseEvent) {
+    if (!toolbarDragging) return;
+    toolbarX = e.clientX - toolbarOffX;
+    toolbarY = Math.max(0, e.clientY - toolbarOffY);
+  }
+  function onToolbarUp() {
+    toolbarDragging = false;
+    window.removeEventListener('mousemove', onToolbarMove);
+    window.removeEventListener('mouseup', onToolbarUp);
+  }
 
   // Sidebar: functions panel
   let sidebarOpen: boolean = $state(true);
@@ -43,12 +72,52 @@
       await tick();
       await new Promise(r => requestAnimationFrame(r));
       if (cyContainer && callgraph) renderGraph(callgraph);
+      toolbarX = Math.floor(window.innerWidth / 2 - 150);
     } catch (e) {
       error = `Contract "${contractName}" not found`;
     }
   });
 
+  // Listen for search result navigation
+  const unsubSearch = searchNavigate.subscribe(async (nav) => {
+    if (!nav || !cyInstance || !contract) return;
+    if (nav.contract !== contract.name) return;
+
+    // Add function to canvas if not already there
+    if (!canvasFuncs.has(nav.func)) {
+      addFuncToCanvas(nav.func);
+      await tick();
+    }
+
+    // Load paths if needed
+    if (!funcPaths[nav.func]) {
+      try {
+        funcPaths[nav.func] = await getPaths(contract.name, nav.func);
+        funcPaths = { ...funcPaths };
+      } catch { return; }
+    }
+
+    // Expand CFG if not already expanded
+    if (!expandedFuncs.has(nav.func)) {
+      await toggleFuncExpand(nav.func);
+    }
+
+    // Select the function node and the path
+    const funcNode = cyInstance.nodes().filter((n: any) => n.data('label') === nav.func && n.data('_type') === 'function');
+    if (funcNode.length) {
+      selectedNode = funcNode.data();
+      const path = funcPaths[nav.func]?.paths?.find((p: any) => p.id === nav.pathId);
+      if (path) {
+        highlightPath(nav.func, path);
+      }
+      cyInstance.animate({ center: { eles: funcNode }, zoom: cyInstance.zoom() }, { duration: 300 });
+    }
+
+    searchNavigate.set(null);
+  });
+
   onDestroy(() => {
+    unsubSearch();
     if (cyInstance) { cyInstance.destroy(); cyInstance = null; }
   });
 
@@ -72,6 +141,30 @@
 
     canvasFuncs.add(funcName);
     canvasFuncs = new Set(canvasFuncs);
+  }
+
+  function removeSeqNode(nodeId: string) {
+    if (!cyInstance) return;
+    const node = cyInstance.getElementById(nodeId);
+    if (!node.length) return;
+    // Remove all descendants recursively
+    const toRemove = cyInstance.collection();
+    const toRemoveEdges = cyInstance.collection();
+    function collect(nid: string) {
+      const ch = cyInstance.nodes().filter((n: any) => n.data('_seqParent') === nid);
+      ch.forEach((c: any) => { toRemove.merge(c); collect(c.id()); });
+      toRemoveEdges.merge(cyInstance.edges().filter((e: any) => e.data('_seqParent') === nid));
+    }
+    collect(nodeId);
+    // Also remove edges pointing to this node
+    toRemoveEdges.merge(node.connectedEdges());
+    toRemove.merge(node);
+    cyInstance.remove(toRemoveEdges);
+    cyInstance.remove(toRemove);
+    seqExpanded.delete(nodeId);
+    for (const k of seqExpanded.keys()) {
+      if (cyInstance.getElementById(k).length === 0) seqExpanded.delete(k);
+    }
   }
 
   function removeFuncFromCanvas(funcName: string) {
@@ -130,8 +223,7 @@
       if (mode === 'cfg') {
         await toggleFuncExpand(data.label);
       } else if (mode === 'sequences') {
-        if (evt.originalEvent?.shiftKey && seqExpanded.has(data.id)) {
-          // Shift+click on expanded node → show branch menu
+        if (evt.originalEvent?.shiftKey) {
           const rect = cyContainer.getBoundingClientRect();
           const pos = evt.renderedPosition || evt.position;
           branchMenu = { x: pos.x + rect.left, y: pos.y + rect.top, parentNodeId: data.id, parentFuncName: data.label };
@@ -166,23 +258,33 @@
         return;
       }
 
-      // Auto-expanded node: remove other auto-expanded siblings (keep branches)
+      // Auto-expanded node: remove other auto-expanded siblings (keep ALL branches everywhere)
       const parentKey = data._seqParent;
       const me = cyInstance.getElementById(nodeId);
-      const siblings = cyInstance.nodes(`[_seqParent = "${parentKey}"]`).not(me).filter((n: any) => !n.data('_isBranch'));
+      const siblings = cyInstance.nodes().filter((n: any) => n.data('_seqParent') === parentKey && n.id() !== nodeId && !n.data('_isBranch'));
       const toRemove = cyInstance.collection();
       const toRemoveEdges = cyInstance.collection();
-      function collectAll(nid: string) {
-        const ch = cyInstance.nodes(`[_seqParent = "${nid}"]`);
-        ch.forEach((c: any) => { toRemove.merge(c); collectAll(c.id()); });
-        toRemoveEdges.merge(cyInstance.edges().filter((e: any) => e.data('_seqParent') === nid));
+      // Recursively collect descendants but NEVER touch _isBranch nodes or their subtrees
+      function collectNonBranch(nid: string) {
+        const ch = cyInstance.nodes().filter((n: any) => n.data('_seqParent') === nid);
+        ch.forEach((c: any) => {
+          if (c.data('_isBranch')) return; // skip branches and all their descendants
+          toRemove.merge(c);
+          collectNonBranch(c.id());
+        });
+        toRemoveEdges.merge(cyInstance.edges().filter((e: any) => {
+          if (e.data('_seqParent') !== nid) return false;
+          const tgt = cyInstance.getElementById(e.data('target'));
+          return !tgt.length || !tgt.data('_isBranch');
+        }));
       }
-      siblings.forEach((sib: any) => { toRemove.merge(sib); collectAll(sib.id()); });
-      const sibEdges = cyInstance.edges(`[_seqParent = "${parentKey}"]`).filter((e: any) => {
+      siblings.forEach((sib: any) => { toRemove.merge(sib); collectNonBranch(sib.id()); });
+      // Remove edges from parent to auto-siblings
+      toRemoveEdges.merge(cyInstance.edges().filter((e: any) => {
+        if (e.data('_seqParent') !== parentKey) return false;
         const tgt = cyInstance.getElementById(e.data('target'));
         return tgt.length && !tgt.data('_isBranch') && e.data('target') !== nodeId;
-      });
-      toRemoveEdges.merge(sibEdges);
+      }));
       cyInstance.remove(toRemoveEdges);
       cyInstance.remove(toRemove);
       for (const k of seqExpanded.keys()) {
@@ -192,31 +294,39 @@
       await toggleSeqExpand(funcName, nodeId);
     });
 
-    // Double click on ANY function node (original or seq-next) → expand its CFG
-    cyInstance.on('dbltap', 'node', async (evt: any) => {
-      const data = evt.target.data();
-      const funcName = data.label;
-      const nodeId = data.id;
-      if (!funcName) return;
-      if (contract?.functions.some(f => f.name === funcName)) {
-        await toggleFuncExpand(funcName, nodeId);
-      }
-    });
+    // No double-click for CFG — use panel button instead
 
-    // Click any node → show info
+    // Click any node → show info panel (reset previous selection state)
     cyInstance.on('tap', 'node', async (evt: any) => {
       const data = evt.target.data();
-      selectedNode = data;
 
-      if (data._type === 'function' && data.label && contract && !funcPaths[data.label]) {
+      // If clicking a DIFFERENT node, reset path selection
+      if (!selectedNode || selectedNode.id !== data.id) {
+        selectedPath = null;
+        // Reset CFG block highlights when switching nodes
+        cyInstance.nodes('.block').style({ opacity: 1 });
+        cyInstance.edges('[_type = "cfg-edge"]').style({ opacity: 1 });
+      }
+
+      selectedNode = data;
+      branchMenu = null;
+      contextMenu = null;
+
+      // Load paths for function nodes
+      const funcName = data._type === 'function' ? data.label
+        : data._type === 'block' ? data._parentFunc
+        : data._type === 'seq-next' ? (data._funcName || data.label)
+        : null;
+
+      if (funcName && contract && !funcPaths[funcName]) {
         try {
-          funcPaths[data.label] = await getPaths(contract.name, data.label);
+          funcPaths[funcName] = await getPaths(contract.name, funcName);
           funcPaths = { ...funcPaths };
         } catch {}
       }
     });
 
-    // Click background → deselect
+    // Click background → deselect everything
     cyInstance.on('tap', (evt: any) => {
       if (evt.target === cyInstance) {
         selectedNode = null;
@@ -227,34 +337,40 @@
       }
     });
 
-    // Drag ANY node → move its children together (CFG blocks, seq descendants)
+    // Collect all descendants of a node recursively via _seqParent
+    function collectAllDescendants(rootId: string) {
+      let result = cyInstance.collection();
+      const direct = cyInstance.nodes().filter((n: any) => n.data('_seqParent') === rootId);
+      direct.forEach((c: any) => {
+        result = result.union(c);
+        result = result.union(collectAllDescendants(c.id()));
+      });
+      return result;
+    }
+
+    // Drag node → move its children together
     cyInstance.on('drag', 'node', (evt: any) => {
       const node = evt.target;
-      const nodeId = node.id();
-      const nodeType = node.data('_type');
-      const delta = { x: evt.position.x - node.data('_prevX'), y: evt.position.y - node.data('_prevY') };
+      const prevX = node.data('_prevX');
+      const prevY = node.data('_prevY');
+      if (prevX === undefined || prevY === undefined) return;
+
+      const delta = { x: evt.position.x - prevX, y: evt.position.y - prevY };
       node.data('_prevX', evt.position.x);
       node.data('_prevY', evt.position.y);
 
+      const nodeId = node.id();
+      const nodeType = node.data('_type');
       let children = cyInstance.collection();
+
       if (nodeType === 'function') {
         const funcName = node.data('label');
         if (expandedFuncs.has(funcName)) {
-          children = cyInstance.nodes(`[_parentFunc = "${funcName}"]`);
+          children = children.union(cyInstance.nodes(`[_parentFunc = "${funcName}"]`));
         }
-        // Also move seq descendants if this function has seq expansions
-        const seqDesc = cyInstance.nodes().filter((n: any) => {
-          const sp = n.data('_seqParent');
-          return sp && (sp === nodeId || sp.startsWith(nodeId + '→'));
-        });
-        children = children.union(seqDesc);
+        children = children.union(collectAllDescendants(nodeId));
       } else if (nodeType === 'seq-next') {
-        children = cyInstance.nodes().filter((n: any) => {
-          const sp = n.data('_seqParent');
-          return sp && (sp === nodeId || sp.startsWith(nodeId + '→'));
-        });
-      } else if (nodeType === 'block') {
-        // CFG blocks don't have children, nothing extra
+        children = collectAllDescendants(nodeId);
       }
 
       children.forEach((child: any) => {
@@ -272,6 +388,22 @@
     cyInstance.on('mouseover', 'node.internal', () => { if (cyContainer) cyContainer.style.cursor = 'pointer'; });
     cyInstance.on('mouseover', 'node.seq-next', () => { if (cyContainer) cyContainer.style.cursor = 'pointer'; });
     cyInstance.on('mouseout', 'node', () => { if (cyContainer) cyContainer.style.cursor = 'default'; });
+
+    // Right-click → context menu
+    // Right-click → context menu
+    cyInstance.on('cxttap', 'node', (evt: any) => {
+      evt.originalEvent?.preventDefault();
+      const data = evt.target.data();
+      const rect = cyContainer.getBoundingClientRect();
+      const pos = evt.renderedPosition || evt.position;
+      contextMenu = {
+        x: pos.x + rect.left,
+        y: pos.y + rect.top,
+        nodeId: data.id,
+        funcName: data._type === 'function' ? data.label : (data._parentFunc || data._funcName || data.label),
+        nodeType: data._type,
+      };
+    });
 
     // Grid follows zoom and pan
     function updateGrid() {
@@ -460,8 +592,16 @@
       const removeEdges = cyInstance.collection();
       function collectDescs(nid: string) {
         const ch = cyInstance.nodes().filter((n: any) => n.data('_seqParent') === nid);
-        ch.forEach((c: any) => { removeNodes.merge(c); collectDescs(c.id()); });
-        removeEdges.merge(cyInstance.edges().filter((e: any) => e.data('_seqParent') === nid));
+        ch.forEach((c: any) => {
+          if (c.data('_isBranch')) return; // never touch branches
+          removeNodes.merge(c);
+          collectDescs(c.id());
+        });
+        removeEdges.merge(cyInstance.edges().filter((e: any) => {
+          if (e.data('_seqParent') !== nid) return false;
+          const tgt = cyInstance.getElementById(e.data('target'));
+          return !tgt.length || !tgt.data('_isBranch');
+        }));
       }
       siblings.forEach((sib: any) => { removeNodes.merge(sib); collectDescs(sib.id()); });
       removeEdges.merge(cyInstance.edges().filter((e: any) => {
@@ -525,31 +665,33 @@
     const parentNode = cyInstance.getElementById(parentNodeId);
 
     if (seqExpanded.has(seqKey)) {
-      // Collapse: remove this node's auto-expanded descendants, but keep branches
-      const directChildren = cyInstance.nodes(`[_seqParent = "${seqKey}"]`);
+      // Collapse: remove auto-expanded descendants, keep branches
+      const directChildren = cyInstance.nodes().filter((n: any) => n.data('_seqParent') === seqKey);
       const autoChildren = directChildren.filter((n: any) => !n.data('_isBranch'));
-      // Collect all descendants of auto-children (recursively)
       const toRemoveNodes = cyInstance.collection();
       const toRemoveEdges = cyInstance.collection();
-      function collectDesc(nodeId: string) {
-        const children = cyInstance.nodes(`[_seqParent = "${nodeId}"]`);
-        children.forEach((c: any) => {
+      function collectDesc(nid: string) {
+        const ch = cyInstance.nodes().filter((n: any) => n.data('_seqParent') === nid);
+        ch.forEach((c: any) => {
+          if (c.data('_isBranch')) return;
           toRemoveNodes.merge(c);
           collectDesc(c.id());
         });
-        const edges = cyInstance.edges().filter((e: any) => e.data('_seqParent') === nodeId);
-        toRemoveEdges.merge(edges);
+        toRemoveEdges.merge(cyInstance.edges().filter((e: any) => {
+          if (e.data('_seqParent') !== nid) return false;
+          const tgt = cyInstance.getElementById(e.data('target'));
+          return !tgt.length || !tgt.data('_isBranch');
+        }));
       }
       autoChildren.forEach((n: any) => {
         toRemoveNodes.merge(n);
         collectDesc(n.id());
       });
-      // Edges from parent to auto-children
-      const parentEdges = cyInstance.edges(`[_seqParent = "${seqKey}"]`).filter((e: any) => {
-        const targetNode = cyInstance.getElementById(e.data('target'));
-        return targetNode.length && !targetNode.data('_isBranch');
-      });
-      toRemoveEdges.merge(parentEdges);
+      toRemoveEdges.merge(cyInstance.edges().filter((e: any) => {
+        if (e.data('_seqParent') !== seqKey) return false;
+        const tgt = cyInstance.getElementById(e.data('target'));
+        return tgt.length && !tgt.data('_isBranch');
+      }));
       cyInstance.remove(toRemoveEdges);
       cyInstance.remove(toRemoveNodes);
       seqExpanded.delete(seqKey);
@@ -845,7 +987,7 @@
         selector: 'edge.seq-edge',
         style: {
           'width': 1.5, 'line-color': C.edge, 'target-arrow-color': C.textMuted,
-          'target-arrow-shape': 'triangle', 'curve-style': 'bezier', 'arrow-scale': 0.7,
+          'target-arrow-shape': 'triangle', 'curve-style': 'straight', 'arrow-scale': 0.7,
         }
       },
       {
@@ -864,31 +1006,25 @@
 </script>
 
 <div class="view">
-  <div class="topbar">
-    <a href="/">← Contracts</a>
-    <span class="kind">{contract?.kind.toLowerCase() ?? ''}</span>
-    <span class="cname">{contract?.name ?? 'Loading...'}</span>
-    {#if contract?.inherits.length}
-      <span class="inherits">inherits {contract.inherits.join(', ')}</span>
-    {/if}
-    <div class="toolbar">
-      <button class="tbtn" class:active={mode === 'cfg'} onclick={() => switchMode('cfg')}>🔧 CFG</button>
-      <button class="tbtn" class:active={mode === 'sequences'} onclick={() => switchMode('sequences')}>⚡ Sequences</button>
-      {#if mode === 'sequences'}
-        <span class="tsep"></span>
-        <button class="tbtn" class:active={seqDirection === 'TB'} onclick={() => { seqDirection = 'TB'; }} title="Expand vertically">↓</button>
-        <button class="tbtn" class:active={seqDirection === 'LR'} onclick={() => { seqDirection = 'LR'; }} title="Expand horizontally">→</button>
-      {/if}
-      <span class="tsep"></span>
-      <button class="tbtn" onclick={() => runLayout(true)} title="Re-layout">⟳</button>
-      <button class="tbtn" onclick={toggleSearch}>🔍</button>
-      <button class="tbtn" onclick={() => { if (cyInstance) cyInstance.fit(undefined, 40); }}>⊡</button>
-    </div>
-  </div>
-
   {#if error}
     <div class="error">{error}</div>
   {:else}
+    <!-- Floating toolbar -->
+    <div class="float-toolbar" style="left:{toolbarX}px;top:{toolbarY}px" onmousedown={onToolbarDown}>
+      <a href="/" class="ft-back" title="Back to contracts">←</a>
+      <span class="ft-name">{contract?.name ?? '...'}</span>
+      <span class="ft-sep"></span>
+      <button class="ft-btn" class:active={mode === 'cfg'} onclick={() => switchMode('cfg')}>CFG</button>
+      <button class="ft-btn" class:active={mode === 'sequences'} onclick={() => switchMode('sequences')}>Seq</button>
+      {#if mode === 'sequences'}
+        <span class="ft-sep"></span>
+        <button class="ft-btn" class:active={seqDirection === 'TB'} onclick={() => { seqDirection = 'TB'; }} title="Vertical">↓</button>
+        <button class="ft-btn" class:active={seqDirection === 'LR'} onclick={() => { seqDirection = 'LR'; }} title="Horizontal">→</button>
+      {/if}
+      <span class="ft-sep"></span>
+      <button class="ft-btn" onclick={toggleSearch} title="Cmd+K">Search</button>
+      <button class="ft-btn" onclick={() => { if (cyInstance) cyInstance.fit(undefined, 40); }} title="Center all nodes">Center</button>
+    </div>
     <div class="workspace">
       <!-- Sidebar with functions -->
       <div class="sidebar" class:collapsed={!sidebarOpen}>
@@ -917,7 +1053,7 @@
 
       <!-- Canvas with grid -->
       <div class="canvas-wrap" bind:this={canvasWrap}>
-        <div class="canvas" bind:this={cyContainer}></div>
+        <div class="canvas" bind:this={cyContainer} oncontextmenu={(e) => e.preventDefault()}></div>
       </div>
     </div>
 
@@ -930,59 +1066,118 @@
         <div class="detail">
           {#if selectedNode._type === 'function'}
             <div class="d-row"><span class="d-label">Type</span><span>{selectedNode.is_external ? 'External' : 'Internal'}</span></div>
-            {#if !selectedNode.is_external && mode === 'cfg'}
-              <div class="d-hint">Click → {expandedFuncs.has(selectedNode.label) ? 'collapse' : 'expand'} CFG</div>
-            {:else if !selectedNode.is_external && mode === 'sequences'}
-              <div class="d-hint">Click → expand · Shift+click → branch</div>
+            {#if !selectedNode.is_external}
+              <div class="d-actions">
+                <button class="d-action-btn" onclick={() => toggleFuncExpand(selectedNode.label, selectedNode.id)}>
+                  {expandedFuncs.has(selectedNode.label) ? '▼ Collapse CFG' : '▶ Expand CFG'}
+                </button>
+                {#if mode === 'sequences'}
+                  <div class="d-hint">Click → expand · Shift+click → branch</div>
+                {/if}
+              </div>
             {/if}
 
             {#if funcPaths[selectedNode.label]}
-              <div class="d-section">Paths ({funcPaths[selectedNode.label].stats.total_paths})</div>
-              {#each funcPaths[selectedNode.label].paths as path}
-                <button
-                  class="d-path"
-                  class:d-path-selected={selectedPath?.id === path.id}
-                  onclick={() => highlightPath(selectedNode.label, path)}
-                >
-                  <span class="pid">#{path.id}</span>
-                  <span style="color:{termColor(path.terminal)};font-weight:600">{path.terminal}</span>
-                  <span class="pdepth">{path.nodes.length}blk</span>
-                  {#if path.annotations.external_calls.length > 0}
-                    <span class="pb ext">⚡{path.annotations.external_calls.length}</span>
-                  {/if}
-                  {#if path.annotations.state_writes.length > 0}
-                    <span class="pb wr">✏{path.annotations.state_writes.length}</span>
-                  {/if}
-                </button>
-              {/each}
+              {@const fp = funcPaths[selectedNode.label]}
+              <div class="d-row"><span class="d-label">Paths</span><span>{fp.stats.total_paths} ({fp.stats.happy_paths} return, {fp.stats.revert_paths} revert)</span></div>
+
+              <Collapsible title="Paths" count={fp.stats.total_paths} open={true}>
+                {#each fp.paths as path}
+                  <button
+                    class="d-path"
+                    class:d-path-selected={selectedPath?.id === path.id}
+                    onclick={() => highlightPath(selectedNode.label, path)}
+                  >
+                    <span class="pid">#{path.id}</span>
+                    <span style="color:{termColor(path.terminal)};font-weight:600">{path.terminal}</span>
+                    <span class="pdepth">{path.nodes.length} steps</span>
+                    {#if path.annotations.external_calls.length > 0}
+                      <span class="pb ext">⚡{path.annotations.external_calls.length}</span>
+                    {/if}
+                  </button>
+                {/each}
+              </Collapsible>
 
               {#if selectedPath}
-                <div class="path-detail-inline">
-                  {#if selectedPath.annotations.require_checks.length > 0}
-                    <div class="pd-title">Checks</div>
-                    {#each selectedPath.annotations.require_checks as c}
-                      <div class="pd-item check">{c}</div>
+                {@const ann = selectedPath.annotations}
+                {@const pFunc = selectedNode.label}
+                <div class="narrative">
+                  {#if ann.require_checks.length > 0}
+                    <div class="narr-label">Conditions required</div>
+                    {#each ann.require_checks as c}
+                      <div class="narr-condition">{c}</div>
                     {/each}
                   {/if}
-                  {#if selectedPath.annotations.external_calls.length > 0}
-                    <div class="pd-title">External calls</div>
-                    {#each selectedPath.annotations.external_calls as c}
-                      <div class="pd-item ext">{c.target}.{c.function}()</div>
+
+                  <div class="narr-label" style="margin-top:8px">Execution flow</div>
+                  <div class="flow-list">
+                    {#each selectedPath.nodes as step, i}
+                      {@const cyNode = cyInstance?.getElementById(`cfg:${pFunc}:b${step.block_id}`)}
+                      {@const stmts = cyNode?.data('statements') || []}
+                      {@const kind = cyNode?.data('node_type') || ''}
+                      {@const isLast = i === selectedPath.nodes.length - 1}
+                      {@const branchKind = typeof step.branch_taken === 'string' ? step.branch_taken : step.branch_taken?.kind || ''}
+                      {#if kind === 'Entry'}
+                        <div class="flow-step flow-entry">{pFunc}()</div>
+                      {:else if kind === 'Return'}
+                        <div class="flow-step flow-return">return</div>
+                      {:else if kind === 'Revert'}
+                        <div class="flow-step flow-revert">revert</div>
+                      {:else}
+                        {#each stmts as s}
+                          {@const isRequire = s.startsWith('require(') || s.startsWith('require (')}
+                          {@const isCall = s.includes('.') && s.includes('(') && !isRequire}
+                          {@const isWrite = s.includes('=') && !s.includes('==') && !isCall}
+                          <div
+                            class="flow-step"
+                            class:flow-check={isRequire}
+                            class:flow-call={isCall}
+                            class:flow-write={isWrite}
+                          >
+                            {#if branchKind === 'True' && isRequire}
+                              <span class="flow-badge pass">✓</span>
+                            {:else if branchKind === 'False' && isRequire}
+                              <span class="flow-badge fail">✗</span>
+                            {:else if isCall}
+                              <span class="flow-badge call">→</span>
+                            {:else if isWrite}
+                              <span class="flow-badge write">✏</span>
+                            {/if}
+                            {s}
+                          </div>
+                        {/each}
+                      {/if}
+                      {#if !isLast}
+                        <div class="flow-arrow">│</div>
+                      {/if}
                     {/each}
-                  {/if}
-                  {#if selectedPath.annotations.state_writes.length > 0}
-                    <div class="pd-title">State writes</div>
-                    {#each selectedPath.annotations.state_writes as w}
-                      <div class="pd-item wr">{w}</div>
-                    {/each}
-                  {/if}
-                  {#if selectedPath.annotations.events_emitted.length > 0}
-                    <div class="pd-title">Events</div>
-                    {#each selectedPath.annotations.events_emitted as e}
-                      <div class="pd-item ev">{e}</div>
-                    {/each}
+                  </div>
+
+                  {#if ann.external_calls.length > 0 || ann.state_writes.length > 0 || ann.events_emitted.length > 0}
+                    <Collapsible title="Side effects" count={ann.external_calls.length + ann.state_writes.length + ann.events_emitted.length} open={false}>
+                      {#if ann.external_calls.length > 0}
+                        <div class="narr-sub">Calls</div>
+                        {#each ann.external_calls as c}
+                          <div class="pd-item ext">{c.target}.{c.function}()</div>
+                        {/each}
+                      {/if}
+                      {#if ann.state_writes.length > 0}
+                        <div class="narr-sub">Writes</div>
+                        {#each ann.state_writes as w}
+                          <div class="pd-item wr">{w}</div>
+                        {/each}
+                      {/if}
+                      {#if ann.events_emitted.length > 0}
+                        <div class="narr-sub">Emits</div>
+                        {#each ann.events_emitted as e}
+                          <div class="pd-item ev">{e}</div>
+                        {/each}
+                      {/if}
+                    </Collapsible>
                   {/if}
                 </div>
+              {:else}
+                <div class="d-hint">Click a path to see its execution flow</div>
               {/if}
             {/if}
           {:else if selectedNode._type === 'seq-next'}
@@ -994,7 +1189,14 @@
             {#if pathParts.length > 1}
               <div class="d-path-chain">{pathParts.join(' → ')}</div>
             {/if}
-            <div class="d-hint">Click → expand · Shift+click → branch</div>
+            <div class="d-actions">
+              <div class="d-hint">Click → expand · Shift+click → branch</div>
+              {#if contract?.functions.some(f => f.name === (selectedNode._funcName || selectedNode.label))}
+                <button class="d-action-btn" onclick={() => toggleFuncExpand(selectedNode._funcName || selectedNode.label, selectedNode.id)}>
+                  ▶ Expand CFG
+                </button>
+              {/if}
+            </div>
 
             {#if selectedNode._chainTransitions?.length > 0}
               <div class="d-section">Chain conditions ({selectedNode._chainTransitions.length} transitions)</div>
@@ -1029,12 +1231,116 @@
               <div class="d-hint" style="color:#484f58">No state dependencies in chain</div>
             {/if}
           {:else if selectedNode._type === 'block'}
-            <div class="d-row"><span class="d-label">Block</span><span>{selectedNode.node_type}</span></div>
-            {#if selectedNode.statements?.length > 0}
-              <div class="d-section">Statements</div>
-              {#each selectedNode.statements as stmt}
-                <div class="d-stmt">{stmt}</div>
+            {@const parentFunc = selectedNode._parentFunc || ''}
+            {@const paths = funcPaths[parentFunc]?.paths || []}
+            {@const passingPaths = paths.filter((p: any) => p.nodes.some((n: any) => `cfg:${parentFunc}:b${n.block_id}` === selectedNode.id))}
+            <div class="d-row"><span class="d-label">Function</span><span>{parentFunc}</span></div>
+            <div class="d-row"><span class="d-label">Reachable via</span><span>{passingPaths.length} of {paths.length} paths</span></div>
+
+            {#if passingPaths.length > 0}
+              <div class="d-section-label">Select a path to explore</div>
+              {#each passingPaths as path}
+                <button
+                  class="d-path"
+                  class:d-path-selected={selectedPath?.id === path.id}
+                  onclick={() => highlightPath(parentFunc, path)}
+                >
+                  <span class="pid">#{path.id}</span>
+                  <span style="color:{termColor(path.terminal)};font-weight:600">{path.terminal}</span>
+                  <span class="pdepth">{path.nodes.length} steps</span>
+                  {#if path.annotations.external_calls.length > 0}
+                    <span class="pb ext">⚡{path.annotations.external_calls.length}</span>
+                  {/if}
+                </button>
               {/each}
+            {/if}
+
+            {#if selectedPath}
+              {@const currentBlockIdx = selectedPath.nodes.findIndex((n: any) => `cfg:${parentFunc}:b${n.block_id}` === selectedNode.id)}
+              {@const routeToHere = currentBlockIdx >= 0 ? selectedPath.nodes.slice(0, currentBlockIdx + 1) : []}
+              {@const ann = selectedPath.annotations}
+
+              <div class="narrative">
+                {#if ann.require_checks.length > 0}
+                  <div class="narr-label">Conditions required</div>
+                  {#each ann.require_checks as c}
+                    <div class="narr-condition">{c}</div>
+                  {/each}
+                {/if}
+
+                {#if routeToHere.length > 0}
+                  <div class="narr-label" style="margin-top:8px">Execution flow</div>
+                  <div class="flow-list">
+                    {#each routeToHere as step, i}
+                      {@const cyNode = cyInstance?.getElementById(`cfg:${parentFunc}:b${step.block_id}`)}
+                      {@const stmts = cyNode?.data('statements') || []}
+                      {@const kind = cyNode?.data('node_type') || ''}
+                      {@const isHere = i === routeToHere.length - 1}
+                      {@const branchKind = typeof step.branch_taken === 'string' ? step.branch_taken : step.branch_taken?.kind || ''}
+                      {#if kind === 'Entry'}
+                        <div class="flow-step flow-entry">{parentFunc}()</div>
+                      {:else if kind === 'Return'}
+                        <div class="flow-step flow-return" class:flow-here={isHere}>return {isHere ? '← here' : ''}</div>
+                      {:else if kind === 'Revert'}
+                        <div class="flow-step flow-revert" class:flow-here={isHere}>revert {isHere ? '← here' : ''}</div>
+                      {:else}
+                        {#each stmts as s}
+                          {@const isRequire = s.startsWith('require(') || s.startsWith('require (')}
+                          {@const isCall = s.includes('.') && s.includes('(') && !isRequire}
+                          {@const isWrite = s.includes('=') && !s.includes('==') && !isCall}
+                          <div
+                            class="flow-step"
+                            class:flow-check={isRequire}
+                            class:flow-call={isCall}
+                            class:flow-write={isWrite}
+                            class:flow-here={isHere}
+                          >
+                            {#if branchKind === 'True' && isRequire}
+                              <span class="flow-badge pass">✓</span>
+                            {:else if branchKind === 'False' && isRequire}
+                              <span class="flow-badge fail">✗</span>
+                            {:else if isCall}
+                              <span class="flow-badge call">→</span>
+                            {:else if isWrite}
+                              <span class="flow-badge write">✏</span>
+                            {/if}
+                            {s}
+                            {#if isHere}<span class="flow-here-tag">← here</span>{/if}
+                          </div>
+                        {/each}
+                      {/if}
+                      {#if !isHere && i < routeToHere.length - 1}
+                        <div class="flow-arrow">│</div>
+                      {/if}
+                    {/each}
+                  </div>
+                {/if}
+
+                {#if ann.external_calls.length > 0 || ann.state_writes.length > 0 || ann.events_emitted.length > 0}
+                  <Collapsible title="Side effects" count={ann.external_calls.length + ann.state_writes.length + ann.events_emitted.length} open={false}>
+                    {#if ann.external_calls.length > 0}
+                      <div class="narr-sub">Calls</div>
+                      {#each ann.external_calls as c}
+                        <div class="pd-item ext">{c.target}.{c.function}()</div>
+                      {/each}
+                    {/if}
+                    {#if ann.state_writes.length > 0}
+                      <div class="narr-sub">Writes</div>
+                      {#each ann.state_writes as w}
+                        <div class="pd-item wr">{w}</div>
+                      {/each}
+                    {/if}
+                    {#if ann.events_emitted.length > 0}
+                      <div class="narr-sub">Emits</div>
+                      {#each ann.events_emitted as e}
+                        <div class="pd-item ev">{e}</div>
+                      {/each}
+                    {/if}
+                  </Collapsible>
+                {/if}
+              </div>
+            {:else}
+              <div class="d-hint">Click a path above to see the execution flow</div>
             {/if}
           {/if}
         </div>
@@ -1051,6 +1357,44 @@
           </button>
         {/each}
         <button class="branch-close" onclick={() => branchMenu = null}>Cancel</button>
+      </div>
+    {/if}
+
+    {#if contextMenu}
+      <div class="ctx-menu" style="left:{contextMenu.x}px;top:{contextMenu.y}px">
+        {#if contextMenu.nodeType === 'function'}
+          <button class="ctx-item" onclick={() => { toggleFuncExpand(contextMenu!.funcName, contextMenu!.nodeId); contextMenu = null; }}>
+            {expandedFuncs.has(contextMenu.funcName) ? '▼ Collapse CFG' : '▶ Expand CFG'}
+          </button>
+          {#if mode === 'sequences'}
+            <button class="ctx-item" onclick={() => { branchMenu = { x: contextMenu!.x, y: contextMenu!.y, parentNodeId: contextMenu!.nodeId, parentFuncName: contextMenu!.funcName }; contextMenu = null; }}>
+              + Add branch
+            </button>
+          {/if}
+          <button class="ctx-item ctx-danger" onclick={() => { removeFuncFromCanvas(contextMenu!.funcName); contextMenu = null; selectedNode = null; }}>
+            ✕ Remove from canvas
+          </button>
+        {:else if contextMenu.nodeType === 'seq-next'}
+          <button class="ctx-item" onclick={() => { branchMenu = { x: contextMenu!.x, y: contextMenu!.y, parentNodeId: contextMenu!.nodeId, parentFuncName: contextMenu!.funcName }; contextMenu = null; }}>
+            + Add branch
+          </button>
+          {#if seqExpanded.has(contextMenu.nodeId)}
+            <button class="ctx-item" onclick={() => { toggleSeqExpand(contextMenu!.funcName, contextMenu!.nodeId); contextMenu = null; }}>
+              ▼ Collapse
+            </button>
+          {/if}
+          <button class="ctx-item ctx-danger" onclick={() => { removeSeqNode(contextMenu!.nodeId); contextMenu = null; selectedNode = null; }}>
+            ✕ Remove node
+          </button>
+        {:else if contextMenu.nodeType === 'block'}
+          <button class="ctx-item" onclick={() => { if (contextMenu?.funcName) { toggleFuncExpand(contextMenu.funcName); } contextMenu = null; }}>
+            ▼ Collapse CFG
+          </button>
+          <button class="ctx-item ctx-danger" onclick={() => { if (contextMenu?.funcName) { removeFuncFromCanvas(contextMenu.funcName); } contextMenu = null; selectedNode = null; }}>
+            ✕ Remove function
+          </button>
+        {/if}
+        <button class="ctx-item" onclick={() => contextMenu = null}>Cancel</button>
       </div>
     {/if}
 
@@ -1074,25 +1418,43 @@
 <style>
   .view { position: fixed; inset: 0; display: flex; flex-direction: column; background: #121215; }
 
-  .topbar {
-    display: flex; align-items: center; gap: 10px;
-    padding: 8px 16px; background: #18181e; border-bottom: 1px solid #252530;
-    z-index: 10; flex-shrink: 0;
+  /* Floating toolbar */
+  .float-toolbar {
+    position: fixed; z-index: 20;
+    display: flex; align-items: center; gap: 3px;
+    padding: 5px 10px;
+    background: #18181eee; border: 1px solid #252530;
+    border-radius: 8px; cursor: grab; user-select: none;
+    box-shadow: 0 4px 20px #08080a66; backdrop-filter: blur(12px);
   }
-  .topbar a { font-size: 13px; color: #6b7a8d; text-decoration: none; }
-  .topbar a:hover { color: #8bb8e8; }
-  .kind { font-size: 12px; color: #6b7a8d; }
-  .cname { font-size: 16px; font-weight: 700; color: #b8c4d4; }
-  .inherits { font-size: 11px; color: #4a5568; font-style: italic; }
-  .toolbar { margin-left: auto; display: flex; gap: 4px; align-items: center; }
-  .tbtn { background: #18181e; border: 1px solid #252530; color: #8bb8e8; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; }
-  .tbtn:hover { border-color: #5b9bd5; }
-  .tbtn.active { background: #3a6b9f; border-color: #5b9bd5; color: #dce8f4; }
-  .tsep { width: 1px; height: 18px; background: #252530; }
+  .float-toolbar:active { cursor: grabbing; }
+  .ft-back { color: #6b7a8d; text-decoration: none; font-size: 14px; padding: 3px 6px; border-radius: 4px; }
+  .ft-back:hover { background: #252530; color: #8bb8e8; }
+  .ft-name { font-size: 13px; font-weight: 700; color: #b8c4d4; padding: 0 4px; }
+  .ft-sep { width: 1px; height: 16px; background: #252530; margin: 0 2px; }
+  .ft-btn { background: none; border: 1px solid transparent; color: #6b7a8d; padding: 3px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; }
+  .ft-btn:hover { border-color: #5b9bd5; color: #8bb8e8; }
+  .ft-btn.active { background: #3a6b9f; border-color: #5b9bd5; color: #dce8f4; }
+
+  /* Context menu */
+  .ctx-menu {
+    position: fixed; z-index: 60;
+    background: #18181e; border: 1px solid #252530;
+    border-radius: 8px; padding: 4px; min-width: 160px;
+    box-shadow: 0 8px 32px #08080a88; backdrop-filter: blur(12px);
+  }
+  .ctx-item {
+    display: block; width: 100%; padding: 6px 10px;
+    background: none; border: none; color: #b8c4d4;
+    font-size: 12px; cursor: pointer; border-radius: 4px;
+    text-align: left; font-family: inherit;
+  }
+  .ctx-item:hover { background: #1e1e28; color: #8bb8e8; }
+  .ctx-item.ctx-danger:hover { background: #b0505015; color: #b05050; }
 
   .error { padding: 24px; color: #b05050; }
 
-  .workspace { flex: 1; display: flex; overflow: hidden; }
+  .workspace { flex: 1; display: flex; overflow: hidden; height: 100%; }
 
   /* Sidebar */
   .sidebar {
@@ -1134,19 +1496,66 @@
   .canvas-wrap::before {
     content: '';
     position: absolute; inset: 0; z-index: 0; pointer-events: none;
-    background-image: radial-gradient(circle, #2a2a35 0.8px, transparent 0.8px);
+    background-image: radial-gradient(circle, #333340 1px, transparent 1px);
     background-size: var(--grid-size) var(--grid-size);
     background-position: var(--grid-x) var(--grid-y);
   }
   .canvas { position: absolute; inset: 0; z-index: 1; }
 
-  .detail { padding: 8px; max-height: calc(100vh - 140px); overflow-y: auto; scrollbar-width: thin; scrollbar-color: #252530 transparent; }
+  .detail { padding: 8px; }
   .d-row { display: flex; justify-content: space-between; padding: 3px 0; font-size: 12px; color: #b8c4d4; }
   .d-label { color: #6b7a8d; }
   .d-hint { font-size: 11px; color: #5b9bd5; padding: 6px 0; font-style: italic; }
+  .d-actions { padding: 6px 0; display: flex; flex-direction: column; gap: 4px; }
+  .d-action-btn {
+    background: #1a1a22; border: 1px solid #252530; color: #8bb8e8;
+    padding: 6px 10px; border-radius: 4px; cursor: pointer;
+    font-size: 11px; font-family: monospace; text-align: left;
+  }
+  .d-action-btn:hover { border-color: #5b9bd5; background: #1e1e28; }
   .d-section { font-size: 10px; color: #6b7a8d; text-transform: uppercase; letter-spacing: 0.5px; margin: 8px 0 4px; font-weight: 600; }
   .d-chain-step { font-size: 11px; color: #8bb8e8; font-weight: 600; margin: 6px 0 2px; padding-top: 4px; border-top: 1px solid #2a2d38; }
   .d-path-chain { font-size: 10px; color: #4a5568; padding: 4px 0; font-family: monospace; word-break: break-all; }
+
+  .d-section-label { font-size: 10px; color: #4a5568; margin: 8px 0 4px; }
+
+  /* Narrative panel */
+  .narrative { margin-top: 6px; }
+  .narr-label { font-size: 10px; color: #6b7a8d; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+  .narr-sub { font-size: 9px; color: #4a5568; text-transform: uppercase; margin: 6px 0 2px; }
+  .narr-condition {
+    font-family: monospace; font-size: 11px;
+    padding: 3px 8px; margin: 2px 0;
+    background: #c49a4a12; border-left: 2px solid #c49a4a;
+    color: #c49a4a; border-radius: 0 3px 3px 0;
+  }
+
+  /* Flow list */
+  .flow-list { display: flex; flex-direction: column; gap: 0; }
+  .flow-arrow { color: #252530; font-size: 10px; padding-left: 6px; line-height: 1; }
+  .flow-step {
+    font-family: monospace; font-size: 11px; color: #b8c4d4;
+    padding: 4px 8px; border-radius: 4px;
+    display: flex; align-items: center; gap: 5px;
+    border-left: 2px solid #252530;
+  }
+  .flow-step.flow-entry { color: #8bb8e8; font-weight: 600; border-left-color: #5b9bd5; }
+  .flow-step.flow-return { color: #5a9a6a; border-left-color: #5a9a6a; }
+  .flow-step.flow-revert { color: #b05050; border-left-color: #b05050; }
+  .flow-step.flow-check { color: #c49a4a; border-left-color: #c49a4a; background: #c49a4a08; }
+  .flow-step.flow-call { color: #b8c4d4; border-left-color: #b05050; }
+  .flow-step.flow-write { color: #6b7a8d; border-left-color: #5b9bd5; }
+  .flow-step.flow-here { background: #5b9bd512; border-left-color: #5b9bd5; }
+  .flow-badge {
+    font-size: 9px; width: 14px; height: 14px;
+    display: inline-flex; align-items: center; justify-content: center;
+    border-radius: 3px; flex-shrink: 0;
+  }
+  .flow-badge.pass { background: #5a9a6a22; color: #5a9a6a; }
+  .flow-badge.fail { background: #b0505022; color: #b05050; }
+  .flow-badge.call { background: #b0505015; color: #b05050; }
+  .flow-badge.write { background: #5b9bd515; color: #5b9bd5; }
+  .flow-here-tag { color: #5b9bd5; font-size: 9px; margin-left: auto; }
   .d-path { display: flex; align-items: center; gap: 4px; padding: 3px 4px; border-radius: 3px; font-size: 11px; color: inherit; background: transparent; border: 1px solid transparent; cursor: pointer; width: 100%; text-align: left; font: inherit; }
   .d-path:hover { background: #121215; }
   .pid { color: #4a5568; font-weight: 600; }
