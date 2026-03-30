@@ -52,27 +52,27 @@
 
   function fieldColor(f: string): string {
     switch (f) {
-      case 'require': return '#d29922';
-      case 'external_call': return '#f85149';
-      case 'state_write': return '#58a6ff';
-      case 'event': return '#3fb950';
-      case 'assembly': return '#8b5cf6';
-      default: return '#8b949e';
+      case 'require': return '#c49a4a';
+      case 'external_call': return '#b05050';
+      case 'state_write': return '#5b9bd5';
+      case 'event': return '#5a9a6a';
+      case 'assembly': return '#8b7ec8';
+      default: return '#6b7a8d';
     }
   }
 
   function terminalColor(t: string): string {
-    return t === 'Return' ? '#3fb950' : t === 'Revert' ? '#f85149' : '#8b949e';
+    return t === 'Return' ? '#5a9a6a' : t === 'Revert' ? '#b05050' : '#6b7a8d';
   }
 
   function categoryColor(label: string): string {
     switch (label) {
-      case 'Functions': return '#3fb950';
-      case 'State Variables': return '#58a6ff';
-      case 'Events': return '#d29922';
-      case 'External Calls': return '#f85149';
-      case 'Path Types': return '#8b949e';
-      default: return '#8b949e';
+      case 'Functions': return '#8bb8e8';
+      case 'State Variables': return '#5b9bd5';
+      case 'Events': return '#c49a4a';
+      case 'External Calls': return '#b05050';
+      case 'Path Types': return '#6b7a8d';
+      default: return '#6b7a8d';
     }
   }
 </script>
@@ -155,33 +155,33 @@
 <style>
   .back-btn {
     background: none; border: none;
-    color: #8b949e; cursor: pointer;
+    color: #6b7a8d; cursor: pointer;
     font-size: 14px; padding: 4px 6px;
     border-radius: 4px; flex-shrink: 0;
   }
-  .back-btn:hover { background: #21262d; color: #f0f6fc; }
+  .back-btn:hover { background: #252830; color: #b8c4d4; }
 
   .search-input-wrap {
     display: flex; align-items: center;
     padding: 6px; gap: 4px;
-    border-bottom: 1px solid #21262d;
+    border-bottom: 1px solid #2a2d38;
   }
 
   .search-input-wrap input {
     flex: 1;
     padding: 6px 10px;
     background: transparent;
-    border: 1px solid #30363d;
+    border: 1px solid #2a2d38;
     border-radius: 6px;
-    color: #f0f6fc;
+    color: #b8c4d4;
     font-size: 12px;
     font-family: inherit;
     outline: none;
   }
-  .search-input-wrap input:focus { border-color: #58a6ff; }
-  .search-input-wrap input::placeholder { color: #484f58; }
+  .search-input-wrap input:focus { border-color: #5b9bd5; }
+  .search-input-wrap input::placeholder { color: #4a5568; }
 
-  .status { font-size: 10px; color: #8b949e; padding: 0 4px; }
+  .status { font-size: 10px; color: #6b7a8d; padding: 0 4px; }
 
   .panel-body {
     flex: 1;
@@ -206,12 +206,12 @@
     display: flex; flex-wrap: wrap; gap: 4px; padding: 8px;
   }
   .pill {
-    background: #21262d; border: 1px solid #30363d;
-    color: #8b949e; padding: 3px 10px;
+    background: #1e2028; border: 1px solid #2a2d38;
+    color: #6b7a8d; padding: 3px 10px;
     border-radius: 12px; cursor: pointer;
     font-size: 11px; font-family: monospace;
   }
-  .pill:hover { border-color: #58a6ff; color: #c9d1d9; }
+  .pill:hover { border-color: #5b9bd5; color: #b8c4d4; }
 
   .result {
     display: block; width: 100%;
@@ -223,30 +223,30 @@
     text-align: left;
     color: inherit; font: inherit;
   }
-  .result:hover { background: #21262d; }
+  .result:hover { background: #252830; }
 
   .result-top {
     display: flex; align-items: center;
     gap: 4px; font-size: 11px;
   }
-  .func { color: #f0f6fc; font-weight: 600; font-family: monospace; font-size: 11px; }
-  .pid { color: #484f58; font-size: 9px; }
+  .func { color: #b8c4d4; font-weight: 600; font-family: monospace; font-size: 11px; }
+  .pid { color: #4a5568; font-size: 9px; }
 
   .result-matches {
     display: flex; gap: 3px; margin-top: 1px; flex-wrap: wrap;
   }
   .match {
     font-size: 9px; font-family: monospace;
-    background: #0d111788; padding: 1px 4px;
+    background: #181a2088; padding: 1px 4px;
     border-radius: 3px;
   }
 
   .result-contract {
-    font-size: 9px; color: #484f58; margin-top: 1px;
+    font-size: 9px; color: #4a5568; margin-top: 1px;
   }
 
   .more, .empty {
     text-align: center; padding: 12px;
-    font-size: 11px; color: #484f58;
+    font-size: 11px; color: #4a5568;
   }
 </style>

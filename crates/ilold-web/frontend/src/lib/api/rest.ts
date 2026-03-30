@@ -136,6 +136,33 @@ export async function getPaths(contractName: string, funcName: string) {
   return res.json();
 }
 
+export interface SequenceAnalysis {
+  functions: {
+    name: string;
+    preconditions: string[];
+    state_writes: string[];
+    state_reads: string[];
+    external_calls: string[];
+    events: string[];
+    can_revert: boolean;
+    always_reverts: boolean;
+    read_only: boolean;
+  }[];
+  transitions: {
+    from: string;
+    to: string;
+    shared_state: string[];
+    conditions_affected: string[];
+    has_external_in_from: boolean;
+    has_external_in_to: boolean;
+  }[];
+}
+
+export async function getSequenceAnalysis(contractName: string): Promise<SequenceAnalysis> {
+  const res = await fetch(`${BASE}/api/contract/${contractName}/analysis`);
+  return res.json();
+}
+
 export async function getSearchSuggestions(contractName: string): Promise<SearchSuggestions> {
   const res = await fetch(`${BASE}/api/contract/${contractName}/suggestions`);
   return res.json();

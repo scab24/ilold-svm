@@ -42,12 +42,12 @@
   :global(body) {
     margin: 0;
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace;
-    background: #0d1117;
-    color: #c9d1d9;
+    background: #181a20;
+    color: #b8c4d4;
     overflow: hidden;
   }
-  :global(a) { color: #58a6ff; text-decoration: none; }
-  :global(a:hover) { text-decoration: underline; }
+  :global(a) { color: #5b9bd5; text-decoration: none; }
+  :global(a:hover) { color: #8bb8e8; text-decoration: none; }
   :global(button) { font-family: inherit; }
 
   .app {
@@ -57,27 +57,27 @@
   }
 
   header {
-    background: #161b22;
-    border-bottom: 1px solid #30363d;
+    background: #1e2028;
+    border-bottom: 1px solid #2a2d38;
     padding: 12px 24px;
   }
   nav { display: flex; align-items: center; gap: 12px; }
 
-  .logo { font-size: 20px; font-weight: 700; color: #f0f6fc; letter-spacing: -0.5px; }
+  .logo { font-size: 20px; font-weight: 700; color: #b8c4d4; letter-spacing: -0.5px; }
   .logo:hover { text-decoration: none; }
-  .subtitle { font-size: 13px; color: #8b949e; }
+  .subtitle { font-size: 13px; color: #6b7a8d; }
 
   .search-btn {
     margin-left: auto;
-    background: #21262d; border: 1px solid #30363d;
-    color: #8b949e; padding: 5px 12px;
+    background: #1e2028; border: 1px solid #2a2d38;
+    color: #6b7a8d; padding: 5px 12px;
     border-radius: 6px; cursor: pointer;
     font-size: 12px; display: flex; align-items: center; gap: 6px;
   }
-  .search-btn:hover { border-color: #58a6ff; color: #c9d1d9; }
+  .search-btn:hover { border-color: #5b9bd5; color: #b8c4d4; }
   .search-btn kbd {
-    background: #161b22; padding: 1px 5px;
-    border-radius: 3px; font-size: 10px; border: 1px solid #30363d;
+    background: #181a20; padding: 1px 5px;
+    border-radius: 3px; font-size: 10px; border: 1px solid #2a2d38;
   }
 
   main {

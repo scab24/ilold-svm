@@ -1,7 +1,7 @@
 <script lang="ts">
   import { page } from '$app/state';
   import { onMount, onDestroy, tick } from 'svelte';
-  import { getContract, getCallGraph, getCfg, getPaths, getSequences, type ContractDetail, type CytoscapeGraph } from '$lib/api/rest';
+  import { getContract, getCallGraph, getCfg, getPaths, getSequences, getSequenceAnalysis, type ContractDetail, type CytoscapeGraph, type SequenceAnalysis } from '$lib/api/rest';
   import { toggleSearch, setSearchContext } from '$lib/stores/search';
   import DraggablePanel from '$lib/DraggablePanel.svelte';
 
@@ -13,8 +13,13 @@
   let expandedFuncs: Set<string> = $state(new Set());
   let mode: 'cfg' | 'sequences' = $state('cfg');
   let seqTree: any = $state(null);
-  let seqExpanded: Map<string, boolean> = $state(new Map()); // "deposit" → expanded, "deposit→withdraw" → expanded
+  let seqAnalysis: SequenceAnalysis | null = $state(null);
+  let seqExpanded: Map<string, boolean> = $state(new Map());
   let seqBreadcrumb: string[] = $state([]);
+  let seqDirection: 'TB' | 'LR' = $state('TB');
+
+  // Branch menu: Shift+click shows a menu to add a branch
+  let branchMenu: { x: number; y: number; parentNodeId: string; parentFuncName: string } | null = $state(null);
 
   let cyContainer: HTMLDivElement;
   let cyInstance: any = null;
@@ -29,6 +34,7 @@
       contract = await getContract(contractName);
       const callgraph = await getCallGraph(contractName);
       try { seqTree = await getSequences(contractName); } catch {}
+      try { seqAnalysis = await getSequenceAnalysis(contractName); } catch {}
       await tick();
       await new Promise(r => requestAnimationFrame(r));
       if (cyContainer && callgraph) renderGraph(callgraph);
@@ -72,22 +78,74 @@
 
     runLayout(false);
 
-    // Single click → depends on mode
+    // Single click on function nodes
     cyInstance.on('tap', 'node.internal', async (evt: any) => {
       const data = evt.target.data();
-      if (data._type === 'function') {
-        if (mode === 'cfg') {
-          await toggleFuncExpand(data.label);
-        } else if (mode === 'sequences') {
+      if (data._type !== 'function') return;
+      branchMenu = null;
+      if (mode === 'cfg') {
+        await toggleFuncExpand(data.label);
+      } else if (mode === 'sequences') {
+        if (evt.originalEvent?.shiftKey && seqExpanded.has(data.id)) {
+          // Shift+click on expanded node → show branch menu
+          const rect = cyContainer.getBoundingClientRect();
+          const pos = evt.renderedPosition || evt.position;
+          branchMenu = { x: pos.x + rect.left, y: pos.y + rect.top, parentNodeId: data.id, parentFuncName: data.label };
+        } else {
           await toggleSeqExpand(data.label, data.id);
         }
       }
     });
 
-    // Single click on sequence nodes → expand next level
+    // Single click on seq-next nodes
     cyInstance.on('tap', 'node.seq-next', async (evt: any) => {
       const data = evt.target.data();
-      await toggleSeqExpand(data.label, data.id);
+      const funcName = data._funcName || data.label;
+      const nodeId = data.id;
+      branchMenu = null;
+
+      if (evt.originalEvent?.shiftKey) {
+        const rect = cyContainer.getBoundingClientRect();
+        const pos = evt.renderedPosition || evt.position;
+        branchMenu = { x: pos.x + rect.left, y: pos.y + rect.top, parentNodeId: nodeId, parentFuncName: funcName };
+        return;
+      }
+
+      if (seqExpanded.has(nodeId)) {
+        await toggleSeqExpand(funcName, nodeId);
+        return;
+      }
+
+      // If this is a branch node, just expand it — don't touch siblings
+      if (data._isBranch) {
+        await toggleSeqExpand(funcName, nodeId);
+        return;
+      }
+
+      // Auto-expanded node: remove other auto-expanded siblings (keep branches)
+      const parentKey = data._seqParent;
+      const me = cyInstance.getElementById(nodeId);
+      const siblings = cyInstance.nodes(`[_seqParent = "${parentKey}"]`).not(me).filter((n: any) => !n.data('_isBranch'));
+      const toRemove = cyInstance.collection();
+      const toRemoveEdges = cyInstance.collection();
+      function collectAll(nid: string) {
+        const ch = cyInstance.nodes(`[_seqParent = "${nid}"]`);
+        ch.forEach((c: any) => { toRemove.merge(c); collectAll(c.id()); });
+        toRemoveEdges.merge(cyInstance.edges().filter((e: any) => e.data('_seqParent') === nid));
+      }
+      siblings.forEach((sib: any) => { toRemove.merge(sib); collectAll(sib.id()); });
+      const sibEdges = cyInstance.edges(`[_seqParent = "${parentKey}"]`).filter((e: any) => {
+        const tgt = cyInstance.getElementById(e.data('target'));
+        return tgt.length && !tgt.data('_isBranch') && e.data('target') !== nodeId;
+      });
+      toRemoveEdges.merge(sibEdges);
+      cyInstance.remove(toRemoveEdges);
+      cyInstance.remove(toRemove);
+      for (const k of seqExpanded.keys()) {
+        if (cyInstance.getElementById(k).length === 0) seqExpanded.delete(k);
+      }
+
+      await toggleSeqExpand(funcName, nodeId);
     });
 
     // Double click on ANY function node (original or seq-next) → expand its CFG
@@ -119,30 +177,49 @@
       if (evt.target === cyInstance) {
         selectedNode = null;
         selectedPath = null;
-        // Reset CFG block highlights
+        branchMenu = null;
         cyInstance.nodes('.block').style({ opacity: 1 });
         cyInstance.edges('[_type = "cfg-edge"]').style({ opacity: 1 });
       }
     });
 
-    // Drag function node → move its CFG children together
-    cyInstance.on('drag', 'node[_type = "function"]', (evt: any) => {
+    // Drag ANY node → move its children together (CFG blocks, seq descendants)
+    cyInstance.on('drag', 'node', (evt: any) => {
       const node = evt.target;
-      const funcName = node.data('label');
-      if (!expandedFuncs.has(funcName)) return;
-
+      const nodeId = node.id();
+      const nodeType = node.data('_type');
       const delta = { x: evt.position.x - node.data('_prevX'), y: evt.position.y - node.data('_prevY') };
       node.data('_prevX', evt.position.x);
       node.data('_prevY', evt.position.y);
 
-      const children = cyInstance.nodes(`[_parentFunc = "${funcName}"]`);
+      let children = cyInstance.collection();
+      if (nodeType === 'function') {
+        const funcName = node.data('label');
+        if (expandedFuncs.has(funcName)) {
+          children = cyInstance.nodes(`[_parentFunc = "${funcName}"]`);
+        }
+        // Also move seq descendants if this function has seq expansions
+        const seqDesc = cyInstance.nodes().filter((n: any) => {
+          const sp = n.data('_seqParent');
+          return sp && (sp === nodeId || sp.startsWith(nodeId + '→'));
+        });
+        children = children.union(seqDesc);
+      } else if (nodeType === 'seq-next') {
+        children = cyInstance.nodes().filter((n: any) => {
+          const sp = n.data('_seqParent');
+          return sp && (sp === nodeId || sp.startsWith(nodeId + '→'));
+        });
+      } else if (nodeType === 'block') {
+        // CFG blocks don't have children, nothing extra
+      }
+
       children.forEach((child: any) => {
         const pos = child.position();
         child.position({ x: pos.x + delta.x, y: pos.y + delta.y });
       });
     });
 
-    cyInstance.on('grab', 'node[_type = "function"]', (evt: any) => {
+    cyInstance.on('grab', 'node', (evt: any) => {
       const pos = evt.target.position();
       evt.target.data('_prevX', pos.x);
       evt.target.data('_prevY', pos.y);
@@ -266,9 +343,9 @@
         node.animate({ position: targetPos }, { duration: 350, easing: 'ease-out' });
       });
 
-      // Dim all other function nodes and call edges so CFG stands out
-      cyInstance.nodes('[_type = "function"]').style({ opacity: 0.15 });
-      cyInstance.edges('[_type = "call"]').style({ opacity: 0.08 });
+      // Dim other function nodes (still readable) and hide call edges
+      cyInstance.nodes('[_type = "function"]').style({ opacity: 0.55 });
+      cyInstance.edges('[_type = "call"]').style({ opacity: 0.1 });
       // Keep the expanded function visible
       cyInstance.getElementById(parentId).style({ opacity: 1 });
 
@@ -277,54 +354,179 @@
     }
   }
 
+  let branchCounter = 0;
+
+  function addBranch(parentNodeId: string, parentFuncName: string, branchFuncName: string) {
+    if (!cyInstance || !seqTree || !seqAnalysis) return;
+    branchMenu = null;
+
+    const parentNode = cyInstance.getElementById(parentNodeId);
+    const parentPos = parentNode.position();
+    const seqKey = parentNodeId;
+    // Unique ID — allows multiple branches of the same function
+    const uid = ++branchCounter;
+    const nodeId = `${seqKey}→${branchFuncName}:b${uid}`;
+
+    const f = seqTree.functions.find((fn: any) => fn.name === branchFuncName);
+    if (!f) return;
+
+    const chainParts = (seqKey.includes('::') ? seqKey.split('::')[1].split('→') : seqKey.split('→')).map((s: string) => s.replace(/:b\d+$/, ''));
+    const transition = seqAnalysis.transitions.find(
+      (t: any) => t.from === parentFuncName && t.to === branchFuncName
+    );
+    const fullChain = [...chainParts, branchFuncName];
+    const chainTransitions: any[] = [];
+    for (let i = 0; i < fullChain.length - 1; i++) {
+      const t = seqAnalysis.transitions.find(
+        (t: any) => t.from === fullChain[i] && t.to === fullChain[i + 1]
+      );
+      if (t && (t.conditions_affected.length > 0 || t.shared_state.length > 0)) {
+        chainTransitions.push(t);
+      }
+    }
+    const hasConditions = chainTransitions.some((t: any) => t.conditions_affected.length > 0);
+    const hasShared = chainTransitions.some((t: any) => t.shared_state.length > 0);
+
+    let label = branchFuncName;
+    if (hasConditions) label += ' ⚠';
+
+    cyInstance.add([
+      {
+        group: 'nodes',
+        data: {
+          id: nodeId, label, _type: 'seq-next', _seqParent: seqKey,
+          pathCount: f.path_count, readOnly: f.read_only,
+          _transition: transition, _chainTransitions: chainTransitions, _funcName: branchFuncName,
+          _isBranch: true,
+        },
+        position: { x: parentPos.x, y: parentPos.y },
+        classes: `seq-next ${f.read_only ? 'readonly' : ''} ${hasConditions ? 'has-conditions' : ''} ${hasShared ? 'has-shared' : ''}`,
+      },
+      {
+        group: 'edges',
+        data: {
+          id: `se:${nodeId}`, source: parentNodeId, target: nodeId,
+          _seqParent: seqKey, label: hasConditions ? '⚠' : hasShared ? '·' : '',
+        },
+        classes: `seq-edge ${hasConditions ? 'seq-cond' : ''}`,
+      },
+    ]);
+
+    // Position the new node offset from existing children
+    const existingChildren = cyInstance.nodes(`[_seqParent = "${seqKey}"]`);
+    const isVertical = seqDirection === 'TB';
+    if (existingChildren.length > 1) {
+      const bb = existingChildren.not(cyInstance.getElementById(nodeId)).boundingBox();
+      const targetPos = isVertical
+        ? { x: bb.x2 + 140, y: bb.y1 + (bb.h / 2) }
+        : { x: bb.x1 + (bb.w / 2), y: bb.y2 + 60 };
+      cyInstance.getElementById(nodeId).animate({ position: targetPos }, { duration: 250, easing: 'ease-out' });
+    } else {
+      const targetPos = isVertical
+        ? { x: parentPos.x, y: parentPos.y + 70 }
+        : { x: parentPos.x + 160, y: parentPos.y };
+      cyInstance.getElementById(nodeId).animate({ position: targetPos }, { duration: 250, easing: 'ease-out' });
+    }
+  }
+
   async function toggleSeqExpand(funcName: string, parentNodeId: string) {
     if (!cyInstance || !contract || !seqTree) return;
     const seqKey = parentNodeId;
+    const parentNode = cyInstance.getElementById(parentNodeId);
 
     if (seqExpanded.has(seqKey)) {
-      // Collapse: remove seq children
-      const children = cyInstance.nodes(`[_seqParent = "${seqKey}"]`);
-      const childEdges = cyInstance.edges(`[_seqParent = "${seqKey}"]`);
-      // Also remove grandchildren recursively
-      const allDesc = cyInstance.nodes().filter((n: any) => {
-        const sp = n.data('_seqParent');
-        return sp && (sp === seqKey || sp.startsWith(seqKey + '→'));
+      // Collapse: remove this node's auto-expanded descendants, but keep branches
+      const directChildren = cyInstance.nodes(`[_seqParent = "${seqKey}"]`);
+      const autoChildren = directChildren.filter((n: any) => !n.data('_isBranch'));
+      // Collect all descendants of auto-children (recursively)
+      const toRemoveNodes = cyInstance.collection();
+      const toRemoveEdges = cyInstance.collection();
+      function collectDesc(nodeId: string) {
+        const children = cyInstance.nodes(`[_seqParent = "${nodeId}"]`);
+        children.forEach((c: any) => {
+          toRemoveNodes.merge(c);
+          collectDesc(c.id());
+        });
+        const edges = cyInstance.edges().filter((e: any) => e.data('_seqParent') === nodeId);
+        toRemoveEdges.merge(edges);
+      }
+      autoChildren.forEach((n: any) => {
+        toRemoveNodes.merge(n);
+        collectDesc(n.id());
       });
-      const allDescEdges = cyInstance.edges().filter((e: any) => {
-        const sp = e.data('_seqParent');
-        return sp && (sp === seqKey || sp.startsWith(seqKey + '→'));
+      // Edges from parent to auto-children
+      const parentEdges = cyInstance.edges(`[_seqParent = "${seqKey}"]`).filter((e: any) => {
+        const targetNode = cyInstance.getElementById(e.data('target'));
+        return targetNode.length && !targetNode.data('_isBranch');
       });
-      cyInstance.remove(allDescEdges);
-      cyInstance.remove(allDesc);
+      toRemoveEdges.merge(parentEdges);
+      cyInstance.remove(toRemoveEdges);
+      cyInstance.remove(toRemoveNodes);
       seqExpanded.delete(seqKey);
-      // Remove deeper keys too
+      // Clean seqExpanded keys for removed nodes only
       for (const k of seqExpanded.keys()) {
-        if (k.startsWith(seqKey + '→')) seqExpanded.delete(k);
+        if (cyInstance.getElementById(k).length === 0) seqExpanded.delete(k);
+      }
+
+      const remainingSeq = cyInstance.nodes('[_type = "seq-next"]');
+      if (remainingSeq.length === 0) {
+        cyInstance.nodes().style({ opacity: 1 });
+        cyInstance.edges().style({ opacity: 1 });
       }
       seqExpanded = new Map(seqExpanded);
     } else {
-      // Expand: add next-step function nodes
-      const parentPos = cyInstance.getElementById(parentNodeId).position();
+      // Expand: add children below this node. Siblings stay — multiple branches can coexist.
+      const parentPos = parentNode.position();
       const funcs = seqTree.functions;
       const newNodes: any[] = [];
       const newEdges: any[] = [];
+      const parentFuncName = funcName;
 
-      funcs.forEach((f: any, i: number) => {
+      const chainParts = (seqKey.includes('::') ? seqKey.split('::')[1].split('→') : seqKey.split('→')).map((s: string) => s.replace(/:b\d+$/, ''));
+
+      funcs.forEach((f: any) => {
         const nodeId = `${seqKey}→${f.name}`;
         const readOnly = f.read_only;
+
+        const transition = seqAnalysis?.transitions.find(
+          t => t.from === parentFuncName && t.to === f.name
+        );
+
+        const fullChain = [...chainParts, f.name];
+        const chainTransitions: any[] = [];
+        for (let i = 0; i < fullChain.length - 1; i++) {
+          const t = seqAnalysis?.transitions.find(
+            t => t.from === fullChain[i] && t.to === fullChain[i + 1]
+          );
+          if (t && (t.conditions_affected.length > 0 || t.shared_state.length > 0)) {
+            chainTransitions.push(t);
+          }
+        }
+
+        const hasConditions = chainTransitions.some(t => t.conditions_affected.length > 0);
+        const hasShared = chainTransitions.some(t => t.shared_state.length > 0);
+
+        let label = f.name;
+        if (hasConditions) label += ' ⚠';
+
         newNodes.push({
           group: 'nodes',
           data: {
             id: nodeId,
-            label: f.name,
+            label,
             _type: 'seq-next',
             _seqParent: seqKey,
             pathCount: f.path_count,
             readOnly,
+            _transition: transition,
+            _chainTransitions: chainTransitions,
+            _funcName: f.name,
           },
           position: { x: parentPos.x, y: parentPos.y },
-          classes: `seq-next ${readOnly ? 'readonly' : 'state-change'}`,
+          classes: `seq-next ${readOnly ? 'readonly' : ''} ${hasConditions ? 'has-conditions' : ''} ${hasShared ? 'has-shared' : ''}`,
         });
+
+        const edgeLabel = hasConditions ? '⚠' : hasShared ? '·' : '';
         newEdges.push({
           group: 'edges',
           data: {
@@ -332,33 +534,51 @@
             source: parentNodeId,
             target: nodeId,
             _seqParent: seqKey,
+            label: edgeLabel,
           },
-          classes: 'seq-edge',
+          classes: `seq-edge ${hasConditions ? 'seq-cond' : ''}`,
         });
       });
 
+      // Dim original function nodes
+      cyInstance.nodes('[_type = "function"]').style({ opacity: 0.55 });
+      cyInstance.edges('[_type = "call"]').style({ opacity: 0.1 });
+      cyInstance.getElementById(parentNodeId).style({ opacity: 1 });
+
       cyInstance.add([...newNodes, ...newEdges]);
 
-      // Layout only the new nodes below parent
+      // Make only the NEW nodes bright (don't touch hidden siblings)
+      const justAdded = cyInstance.nodes(`[_seqParent = "${seqKey}"]`);
+      justAdded.style({ opacity: 1 });
+      cyInstance.edges(`[_seqParent = "${seqKey}"]`).style({ opacity: 1 });
+
+      // Layout ONLY the new children
       const seqNodes = cyInstance.nodes(`[_seqParent = "${seqKey}"]`);
       const seqEdges = cyInstance.edges(`[_seqParent = "${seqKey}"]`);
       const seqElements = seqNodes.union(seqEdges);
+      const isVertical = seqDirection === 'TB';
 
       const subLayout = seqElements.layout({
         name: 'dagre',
-        rankDir: 'LR',
-        nodeSep: 15,
-        rankSep: 50,
+        rankDir: seqDirection,
+        nodeSep: isVertical ? 30 : 15,
+        rankSep: isVertical ? 60 : 50,
         animate: false,
         fit: false,
       } as any);
       subLayout.run();
       subLayout.stop();
 
-      // Offset to be to the right of parent
+      // Position children relative to parent, centered
       const bb = seqNodes.boundingBox();
-      const offsetX = parentPos.x + 180 - bb.x1;
-      const offsetY = parentPos.y - bb.y1 - bb.h / 2 + 15;
+      let offsetX: number, offsetY: number;
+      if (isVertical) {
+        offsetX = parentPos.x - bb.x1 - bb.w / 2;
+        offsetY = parentPos.y + 70 - bb.y1;
+      } else {
+        offsetX = parentPos.x + 160 - bb.x1;
+        offsetY = parentPos.y - bb.y1 - bb.h / 2;
+      }
 
       seqNodes.forEach((node: any) => {
         const pos = node.position();
@@ -437,90 +657,119 @@
     layout.stop();
   }
 
+  // Palette: dark board with blue tones (Excalidraw-like)
+  const C = {
+    bg: '#181a20',        // deep board background
+    surface: '#1e2028',   // node backgrounds
+    border: '#2a2d38',    // subtle borders
+    borderHi: '#4a6fa5',  // highlighted borders (muted blue)
+    text: '#b8c4d4',      // primary text
+    textMuted: '#6b7a8d', // secondary text
+    accent: '#5b9bd5',    // primary blue (functions, links)
+    accentDark: '#3a6b9f',// darker blue
+    accentLight: '#8bb8e8',// light blue (readonly, info)
+    warn: '#c49a4a',      // muted amber (conditions)
+    warnBorder: '#8a6d30',
+    danger: '#b05050',    // muted red (revert, external)
+    dangerLight: '#c07070',
+    ok: '#5a9a6a',        // muted green (return/success only)
+    edge: '#363a48',      // edge color
+    edgeHi: '#5b9bd5',    // highlighted edge
+  };
+
   function getStyles() {
     return [
-      // Function nodes
+      // Function nodes — main contract functions
       {
         selector: 'node.internal',
         style: {
-          'background-color': '#238636', 'label': 'data(label)', 'color': '#f0f6fc',
+          'background-color': C.surface, 'label': 'data(label)', 'color': C.accentLight,
           'font-size': '12px', 'text-valign': 'center', 'text-halign': 'center',
           'width': '150px', 'height': '40px', 'shape': 'roundrectangle',
+          'border-width': 1.5, 'border-color': C.accent,
         }
       },
       {
         selector: 'node.external',
         style: {
-          'background-color': '#161b22', 'label': 'data(label)', 'color': '#f85149',
+          'background-color': C.bg, 'label': 'data(label)', 'color': C.dangerLight,
           'font-size': '11px', 'text-valign': 'center', 'text-halign': 'center',
           'width': '130px', 'height': '34px', 'shape': 'roundrectangle',
-          'border-style': 'dashed', 'border-width': 1, 'border-color': '#f85149',
+          'border-style': 'dashed', 'border-width': 1, 'border-color': C.danger,
         }
       },
       // CFG block nodes
       {
         selector: 'node.block',
         style: {
-          'label': 'data(label)', 'color': '#c9d1d9', 'font-size': '9px',
+          'label': 'data(label)', 'color': C.text, 'font-size': '9px',
           'text-valign': 'center', 'text-halign': 'center',
           'width': '160px', 'height': '30px', 'shape': 'roundrectangle',
-          'background-color': '#21262d', 'border-width': 1, 'border-color': '#30363d',
+          'background-color': C.surface, 'border-width': 1, 'border-color': C.border,
           'text-max-width': '150px', 'text-wrap': 'ellipsis',
         }
       },
-      { selector: 'node.block-entry', style: { 'background-color': '#1f6feb', 'border-color': '#58a6ff', 'color': '#f0f6fc' } },
-      { selector: 'node.block-return', style: { 'background-color': '#238636', 'border-color': '#3fb950', 'color': '#f0f6fc', 'width': '90px' } },
-      { selector: 'node.block-revert', style: { 'background-color': '#da3633', 'border-color': '#f85149', 'color': '#f0f6fc', 'width': '90px' } },
-      { selector: 'node.block-loopcondition', style: { 'background-color': '#9e6a03', 'border-color': '#d29922', 'color': '#f0f6fc', 'shape': 'diamond', 'width': '90px', 'height': '45px' } },
+      { selector: 'node.block-entry', style: { 'background-color': C.accentDark, 'border-color': C.accent, 'color': '#dce8f4' } },
+      { selector: 'node.block-return', style: { 'background-color': '#2a4a35', 'border-color': C.ok, 'color': '#b8d4c4', 'width': '90px' } },
+      { selector: 'node.block-revert', style: { 'background-color': '#3a2020', 'border-color': C.danger, 'color': C.dangerLight, 'width': '90px' } },
+      { selector: 'node.block-loopcondition', style: { 'background-color': '#38301e', 'border-color': C.warn, 'color': '#d4c49a', 'shape': 'diamond', 'width': '90px', 'height': '45px' } },
       { selector: 'node:active', style: { 'overlay-opacity': 0 } },
       // Call edges
       {
         selector: 'edge[_type = "call"]',
         style: {
-          'width': 1.5, 'line-color': '#484f58', 'target-arrow-color': '#484f58',
-          'target-arrow-shape': 'triangle', 'curve-style': 'bezier', 'arrow-scale': 0.8,
+          'width': 1, 'line-color': C.edge, 'target-arrow-color': C.edge,
+          'target-arrow-shape': 'triangle', 'curve-style': 'bezier', 'arrow-scale': 0.7,
         }
       },
       {
         selector: 'edge[kind = "External"]',
-        style: { 'line-color': '#f8514966', 'target-arrow-color': '#f85149', 'line-style': 'dashed' }
+        style: { 'line-color': '#b0505044', 'target-arrow-color': C.danger, 'line-style': 'dashed' }
       },
       // CFG edges
       {
         selector: 'edge[_type = "cfg-edge"]',
         style: {
-          'width': 1, 'line-color': '#30363d', 'target-arrow-color': '#30363d',
+          'width': 1, 'line-color': C.border, 'target-arrow-color': C.border,
           'target-arrow-shape': 'triangle', 'curve-style': 'bezier', 'arrow-scale': 0.6,
         }
       },
-      { selector: 'edge.cond-true', style: { 'line-color': '#3fb95088', 'target-arrow-color': '#3fb950', 'label': '✓', 'font-size': '11px', 'color': '#3fb950' } },
-      { selector: 'edge.cond-false', style: { 'line-color': '#f8514988', 'target-arrow-color': '#f85149', 'label': '✗', 'font-size': '11px', 'color': '#f85149' } },
-      { selector: 'edge.loop-back', style: { 'line-color': '#d29922', 'target-arrow-color': '#d29922', 'line-style': 'dashed' } },
-      { selector: 'edge.expand-link', style: { 'line-color': '#58a6ff44', 'target-arrow-color': '#58a6ff', 'line-style': 'dotted', 'width': 2 } },
+      { selector: 'edge.cond-true', style: { 'line-color': '#5a9a6a66', 'target-arrow-color': C.ok, 'label': '✓', 'font-size': '11px', 'color': C.ok } },
+      { selector: 'edge.cond-false', style: { 'line-color': '#b0505066', 'target-arrow-color': C.danger, 'label': '✗', 'font-size': '11px', 'color': C.danger } },
+      { selector: 'edge.loop-back', style: { 'line-color': C.warn, 'target-arrow-color': C.warn, 'line-style': 'dashed' } },
+      { selector: 'edge.expand-link', style: { 'line-color': '#5b9bd544', 'target-arrow-color': C.accent, 'line-style': 'dotted', 'width': 2 } },
       // Sequence nodes
       {
         selector: 'node.seq-next',
         style: {
-          'label': 'data(label)', 'color': '#c9d1d9', 'font-size': '10px',
+          'label': 'data(label)', 'color': C.accentLight, 'font-size': '10px',
           'text-valign': 'center', 'text-halign': 'center',
           'width': '110px', 'height': '28px', 'shape': 'roundrectangle',
-          'background-color': '#238636', 'border-width': 1, 'border-color': '#3fb950',
+          'background-color': C.surface, 'border-width': 1.5, 'border-color': C.accent,
         }
       },
-      { selector: 'node.seq-next.readonly', style: { 'background-color': '#1f6feb', 'border-color': '#58a6ff' } },
-      { selector: 'node.seq-next.state-change', style: { 'background-color': '#238636', 'border-color': '#3fb950' } },
+      { selector: 'node.seq-next.readonly', style: { 'border-color': C.textMuted, 'color': C.textMuted } },
+      { selector: 'node.seq-next.has-conditions', style: { 'background-color': '#2e2818', 'border-color': C.warn, 'border-width': 2, 'color': '#d4c49a' } },
+      { selector: 'node.seq-next.has-shared', style: { 'border-style': 'dashed' } },
       {
         selector: 'edge.seq-edge',
         style: {
-          'width': 1.5, 'line-color': '#d2992244', 'target-arrow-color': '#d29922',
+          'width': 1.5, 'line-color': C.edge, 'target-arrow-color': C.textMuted,
           'target-arrow-shape': 'triangle', 'curve-style': 'bezier', 'arrow-scale': 0.7,
+        }
+      },
+      {
+        selector: 'edge.seq-cond',
+        style: {
+          'line-color': C.warn, 'target-arrow-color': C.warn, 'width': 2,
+          'label': 'data(label)', 'font-size': '14px', 'color': C.warn,
         }
       },
     ];
   }
 
   function termColor(t: string): string {
-    return t === 'Return' ? '#3fb950' : t === 'Revert' ? '#f85149' : '#8b949e';
+    return t === 'Return' ? C.ok : t === 'Revert' ? C.danger : C.textMuted;
   }
 </script>
 
@@ -535,6 +784,13 @@
     <div class="toolbar">
       <button class="tbtn" class:active={mode === 'cfg'} onclick={() => switchMode('cfg')}>🔧 CFG</button>
       <button class="tbtn" class:active={mode === 'sequences'} onclick={() => switchMode('sequences')}>⚡ Sequences</button>
+      {#if mode === 'sequences'}
+        <span class="tsep"></span>
+        <button class="tbtn" class:active={seqDirection === 'TB'} onclick={() => { seqDirection = 'TB'; }} title="Expand vertically">↓</button>
+        <button class="tbtn" class:active={seqDirection === 'LR'} onclick={() => { seqDirection = 'LR'; }} title="Expand horizontally">→</button>
+      {/if}
+      <span class="tsep"></span>
+      <button class="tbtn" onclick={() => runLayout(true)} title="Re-layout">⟳</button>
       <button class="tbtn" onclick={toggleSearch}>🔍</button>
       <button class="tbtn" onclick={() => { if (cyInstance) cyInstance.fit(undefined, 40); }}>⊡</button>
     </div>
@@ -607,6 +863,44 @@
                 </div>
               {/if}
             {/if}
+          {:else if selectedNode._type === 'seq-next'}
+            <div class="d-row"><span class="d-label">Function</span><span>{selectedNode._funcName || selectedNode.label}</span></div>
+            <div class="d-row"><span class="d-label">Paths</span><span>{selectedNode.pathCount}</span></div>
+            <div class="d-row"><span class="d-label">Type</span><span>{selectedNode.readOnly ? 'Read-only (view)' : 'State-changing'}</span></div>
+            <div class="d-hint">Click → expand next steps · Double-click → expand CFG</div>
+
+            {#if selectedNode._chainTransitions?.length > 0}
+              <div class="d-section">Chain conditions ({selectedNode._chainTransitions.length} transitions)</div>
+              {#each selectedNode._chainTransitions as t}
+                <div class="d-chain-step">{t.from} → {t.to}</div>
+                {#each t.conditions_affected as cond}
+                  <div class="pd-item check">{cond}</div>
+                {/each}
+                {#if t.shared_state?.length > 0}
+                  <div class="pd-item wr">shared: {t.shared_state.join(', ')}</div>
+                {/if}
+                {#if t.has_external_in_from}
+                  <div class="pd-item ext">{t.from} has external calls</div>
+                {/if}
+                {#if t.has_external_in_to}
+                  <div class="pd-item ext">{t.to} has external calls</div>
+                {/if}
+              {/each}
+            {:else if selectedNode._transition}
+              {#if selectedNode._transition.has_external_in_from || selectedNode._transition.has_external_in_to}
+                <div class="d-section">External calls</div>
+                {#if selectedNode._transition.has_external_in_from}
+                  <div class="pd-item ext">Previous function has external calls</div>
+                {/if}
+                {#if selectedNode._transition.has_external_in_to}
+                  <div class="pd-item ext">This function has external calls</div>
+                {/if}
+              {:else}
+                <div class="d-hint" style="color:#484f58">No state dependencies with previous function</div>
+              {/if}
+            {:else}
+              <div class="d-hint" style="color:#484f58">No state dependencies in chain</div>
+            {/if}
           {:else if selectedNode._type === 'block'}
             <div class="d-row"><span class="d-label">Block</span><span>{selectedNode.node_type}</span></div>
             {#if selectedNode.statements?.length > 0}
@@ -620,75 +914,120 @@
       </DraggablePanel>
     {/if}
 
+    {#if branchMenu && seqTree}
+      <div class="branch-menu" style="left:{branchMenu.x}px;top:{branchMenu.y}px">
+        <div class="branch-title">Branch from {branchMenu.parentFuncName}</div>
+        {#each seqTree.functions as f}
+          <button class="branch-item" onclick={() => addBranch(branchMenu!.parentNodeId, branchMenu!.parentFuncName, f.name)}>
+            {f.name}
+            {#if f.read_only}<span class="branch-tag">view</span>{/if}
+          </button>
+        {/each}
+        <button class="branch-close" onclick={() => branchMenu = null}>Cancel</button>
+      </div>
+    {/if}
+
     <div class="legend">
       {#if mode === 'cfg'}
-        <span><span class="dot" style="background:#238636"></span>Function</span>
-        <span><span class="dot" style="background:#1f6feb"></span>Entry</span>
-        <span><span class="dot" style="background:#da3633"></span>Revert</span>
-        <span>Click function → expand CFG</span>
+        <span><span class="dot" style="background:#5b9bd5"></span>Function</span>
+        <span><span class="dot" style="background:#3a6b9f"></span>Entry block</span>
+        <span><span class="dot" style="background:#5a9a6a"></span>Return</span>
+        <span><span class="dot" style="background:#b05050"></span>Revert</span>
+        <span>Click → expand CFG</span>
       {:else}
-        <span><span class="dot" style="background:#238636"></span>State-changing</span>
-        <span><span class="dot" style="background:#1f6feb"></span>Read-only</span>
-        <span>Click → next steps · Double-click → expand CFG</span>
+        <span><span class="dot" style="background:#5b9bd5"></span>State-changing</span>
+        <span><span class="dot" style="border:1px solid #6b7a8d;background:transparent"></span>Read-only</span>
+        <span><span class="dot" style="background:#c49a4a"></span>Conditions affected</span>
+        <span>Click → expand · Shift+click → add branch</span>
       {/if}
     </div>
   {/if}
 </div>
 
 <style>
-  .view { position: fixed; inset: 0; display: flex; flex-direction: column; background: #0d1117; }
+  .view { position: fixed; inset: 0; display: flex; flex-direction: column; background: #181a20; }
 
   .topbar {
     display: flex; align-items: center; gap: 10px;
-    padding: 8px 16px; background: #161b22; border-bottom: 1px solid #30363d;
+    padding: 8px 16px; background: #1e2028; border-bottom: 1px solid #2a2d38;
     z-index: 10; flex-shrink: 0;
   }
-  .topbar a { font-size: 13px; color: #8b949e; }
-  .kind { font-size: 12px; color: #8b949e; }
-  .cname { font-size: 16px; font-weight: 700; color: #f0f6fc; }
-  .inherits { font-size: 11px; color: #484f58; font-style: italic; }
-  .toolbar { margin-left: auto; display: flex; gap: 4px; }
-  .tbtn { background: #21262d; border: 1px solid #30363d; color: #c9d1d9; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; }
-  .tbtn:hover { border-color: #58a6ff; }
-  .tbtn.active { background: #1f6feb; border-color: #58a6ff; color: #f0f6fc; }
+  .topbar a { font-size: 13px; color: #6b7a8d; text-decoration: none; }
+  .topbar a:hover { color: #8bb8e8; }
+  .kind { font-size: 12px; color: #6b7a8d; }
+  .cname { font-size: 16px; font-weight: 700; color: #b8c4d4; }
+  .inherits { font-size: 11px; color: #4a5568; font-style: italic; }
+  .toolbar { margin-left: auto; display: flex; gap: 4px; align-items: center; }
+  .tbtn { background: #1e2028; border: 1px solid #2a2d38; color: #8bb8e8; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+  .tbtn:hover { border-color: #5b9bd5; }
+  .tbtn.active { background: #3a6b9f; border-color: #5b9bd5; color: #dce8f4; }
+  .tsep { width: 1px; height: 18px; background: #2a2d38; }
 
-  .error { padding: 24px; color: #f85149; }
+  .error { padding: 24px; color: #b05050; }
   .canvas { flex: 1; }
 
   .detail { padding: 8px; }
-  .d-row { display: flex; justify-content: space-between; padding: 3px 0; font-size: 12px; }
-  .d-label { color: #8b949e; }
-  .d-hint { font-size: 11px; color: #58a6ff; padding: 6px 0; font-style: italic; }
-  .d-section { font-size: 10px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; margin: 8px 0 4px; font-weight: 600; }
+  .d-row { display: flex; justify-content: space-between; padding: 3px 0; font-size: 12px; color: #b8c4d4; }
+  .d-label { color: #6b7a8d; }
+  .d-hint { font-size: 11px; color: #5b9bd5; padding: 6px 0; font-style: italic; }
+  .d-section { font-size: 10px; color: #6b7a8d; text-transform: uppercase; letter-spacing: 0.5px; margin: 8px 0 4px; font-weight: 600; }
+  .d-chain-step { font-size: 11px; color: #8bb8e8; font-weight: 600; margin: 6px 0 2px; padding-top: 4px; border-top: 1px solid #2a2d38; }
   .d-path { display: flex; align-items: center; gap: 4px; padding: 3px 4px; border-radius: 3px; font-size: 11px; color: inherit; background: transparent; border: 1px solid transparent; cursor: pointer; width: 100%; text-align: left; font: inherit; }
-  .d-path:hover { background: #0d1117; }
-  .pid { color: #484f58; font-weight: 600; }
-  .pdepth { color: #484f58; font-size: 10px; }
+  .d-path:hover { background: #181a20; }
+  .pid { color: #4a5568; font-weight: 600; }
+  .pdepth { color: #4a5568; font-size: 10px; }
   .pb { font-size: 9px; padding: 1px 4px; border-radius: 6px; }
-  .pb.ext { background: #f851491a; color: #f85149; }
-  .pb.wr { background: #58a6ff1a; color: #58a6ff; }
-  .d-path-selected { background: #21262d; border-color: #58a6ff; }
+  .pb.ext { background: #b0505018; color: #c07070; }
+  .pb.wr { background: #5b9bd518; color: #8bb8e8; }
+  .d-path-selected { background: #1e2028; border-color: #5b9bd5; }
 
   .path-detail-inline {
     margin-top: 8px; padding-top: 8px;
-    border-top: 1px solid #21262d;
+    border-top: 1px solid #2a2d38;
   }
-  .pd-title { font-size: 9px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; margin: 6px 0 2px; }
+  .pd-title { font-size: 9px; color: #6b7a8d; text-transform: uppercase; letter-spacing: 0.5px; margin: 6px 0 2px; }
   .pd-item {
     font-family: monospace; font-size: 11px;
     padding: 2px 6px; border-radius: 3px; margin-bottom: 2px;
   }
-  .pd-item.check { background: #d299221a; color: #d29922; }
-  .pd-item.ext { background: #f851491a; color: #f85149; }
-  .pd-item.wr { background: #58a6ff1a; color: #58a6ff; }
-  .pd-item.ev { background: #3fb9501a; color: #3fb950; }
-  .d-stmt { font-family: monospace; font-size: 11px; padding: 3px 6px; background: #0d1117; border-radius: 3px; margin-bottom: 2px; color: #c9d1d9; }
+  .pd-item.check { background: #c49a4a18; color: #c49a4a; }
+  .pd-item.ext { background: #b0505018; color: #c07070; }
+  .pd-item.wr { background: #5b9bd518; color: #8bb8e8; }
+  .pd-item.ev { background: #5a9a6a18; color: #7aba8a; }
+  .d-stmt { font-family: monospace; font-size: 11px; padding: 3px 6px; background: #181a20; border-radius: 3px; margin-bottom: 2px; color: #b8c4d4; }
+
 
   .legend {
     position: fixed; bottom: 12px; left: 16px;
-    display: flex; gap: 10px; font-size: 11px; color: #8b949e;
-    background: #161b22cc; padding: 6px 12px;
-    border-radius: 6px; border: 1px solid #30363d; z-index: 10;
+    display: flex; gap: 10px; font-size: 11px; color: #6b7a8d;
+    background: #1e2028dd; padding: 6px 12px;
+    border-radius: 6px; border: 1px solid #2a2d38; z-index: 10;
+    backdrop-filter: blur(8px);
   }
   .dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; vertical-align: middle; margin-right: 3px; }
+
+  .branch-menu {
+    position: fixed; z-index: 60;
+    background: #1e2028; border: 1px solid #2a2d38;
+    border-radius: 8px; padding: 4px;
+    box-shadow: 0 8px 32px #0a0b0f88;
+    backdrop-filter: blur(12px);
+    max-height: 280px; overflow-y: auto;
+    min-width: 160px;
+  }
+  .branch-title { font-size: 10px; color: #6b7a8d; padding: 4px 8px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+  .branch-item {
+    display: flex; align-items: center; gap: 6px; width: 100%;
+    padding: 6px 10px; background: none; border: none;
+    color: #b8c4d4; font-size: 12px; font-family: monospace;
+    cursor: pointer; border-radius: 4px; text-align: left;
+  }
+  .branch-item:hover { background: #252830; color: #8bb8e8; }
+  .branch-tag { font-size: 9px; color: #6b7a8d; background: #252830; padding: 1px 5px; border-radius: 8px; }
+  .branch-close {
+    display: block; width: 100%; padding: 5px 10px; margin-top: 2px;
+    background: none; border: none; border-top: 1px solid #2a2d38;
+    color: #4a5568; font-size: 11px; cursor: pointer; text-align: center;
+  }
+  .branch-close:hover { color: #b05050; }
 </style>

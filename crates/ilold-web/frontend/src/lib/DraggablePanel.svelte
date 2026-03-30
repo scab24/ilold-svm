@@ -59,13 +59,13 @@
 <style>
   .draggable-panel {
     position: fixed;
-    background: #161b22ee;
-    border: 1px solid #30363d;
+    background: #1e2028ee;
+    border: 1px solid #2a2d38;
     border-radius: 10px;
     z-index: 50;
     display: flex;
     flex-direction: column;
-    box-shadow: 0 4px 20px #00000044;
+    box-shadow: 0 4px 24px #0a0b0f66;
     backdrop-filter: blur(12px);
     max-height: calc(100vh - 60px);
     overflow: hidden;
@@ -75,7 +75,7 @@
     display: flex;
     align-items: center;
     padding: 5px 8px;
-    border-bottom: 1px solid #21262d;
+    border-bottom: 1px solid #2a2d38;
     cursor: grab;
     user-select: none;
     gap: 6px;
@@ -86,12 +86,12 @@
   .drag-title {
     font-size: 11px;
     font-weight: 600;
-    color: #8b949e;
+    color: #6b7a8d;
     flex: 1;
   }
 
   .drag-handle {
-    color: #484f58;
+    color: #4a5568;
     font-size: 12px;
     letter-spacing: 1px;
   }
@@ -99,13 +99,13 @@
   .drag-close {
     background: none;
     border: none;
-    color: #484f58;
+    color: #4a5568;
     cursor: pointer;
     font-size: 12px;
     padding: 2px 4px;
     border-radius: 3px;
   }
-  .drag-close:hover { background: #21262d; color: #f0f6fc; }
+  .drag-close:hover { background: #2a2d38; color: #b8c4d4; }
 
   .drag-body {
     flex: 1;

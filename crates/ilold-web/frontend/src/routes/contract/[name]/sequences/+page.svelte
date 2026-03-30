@@ -131,7 +131,7 @@
         {
           selector: 'node.root',
           style: {
-            'background-color': '#1f6feb', 'label': 'data(label)', 'color': '#f0f6fc',
+            'background-color': '#3a6b9f', 'label': 'data(label)', 'color': '#b8c4d4',
             'font-size': '13px', 'font-weight': 'bold',
             'text-valign': 'center', 'text-halign': 'center',
             'width': '140px', 'height': '40px', 'shape': 'roundrectangle',
@@ -140,24 +140,24 @@
         {
           selector: 'node.seq-func',
           style: {
-            'background-color': '#238636', 'label': 'data(label)', 'color': '#f0f6fc',
+            'background-color': '#5a9a6a', 'label': 'data(label)', 'color': '#b8c4d4',
             'font-size': '10px', 'text-valign': 'center', 'text-halign': 'center',
             'width': '110px', 'height': '30px', 'shape': 'roundrectangle',
           }
         },
         {
           selector: 'node.seq-func.readonly',
-          style: { 'background-color': '#1f6feb' }
+          style: { 'background-color': '#3a6b9f' }
         },
         {
           selector: 'node.seq-func.state-change',
-          style: { 'background-color': '#238636' }
+          style: { 'background-color': '#5a9a6a' }
         },
         { selector: 'node:active', style: { 'overlay-opacity': 0 } },
         {
           selector: 'edge',
           style: {
-            'width': 1, 'line-color': '#30363d', 'target-arrow-color': '#484f58',
+            'width': 1, 'line-color': '#2a2d38', 'target-arrow-color': '#4a5568',
             'target-arrow-shape': 'triangle', 'curve-style': 'bezier', 'arrow-scale': 0.6,
           }
         },
@@ -214,8 +214,8 @@
     {#if viewMode === 'tree'}
       <div class="tree-canvas" bind:this={cyContainer}></div>
       <div class="legend">
-        <span><span class="dot" style="background:#1f6feb"></span>Contract / Read-only</span>
-        <span><span class="dot" style="background:#238636"></span>State-changing</span>
+        <span><span class="dot" style="background:#3a6b9f"></span>Contract / Read-only</span>
+        <span><span class="dot" style="background:#5a9a6a"></span>State-changing</span>
         <span>Left→Right = sequence depth · Click function → view paths</span>
       </div>
     {:else}
@@ -269,7 +269,7 @@
           <div class="seq-detail">
             <h3>{seqSteps(selectedSeq)}</h3>
             <div class="dr"><span class="dl">Combined paths</span><span>{selectedSeq.path_count}</span></div>
-            <div class="dr"><span class="dl">State change</span><span style="color:{selectedSeq.has_state_change ? '#d29922' : '#3fb950'}">{selectedSeq.has_state_change ? 'Yes' : 'No'}</span></div>
+            <div class="dr"><span class="dl">State change</span><span style="color:{selectedSeq.has_state_change ? '#c49a4a' : '#5a9a6a'}">{selectedSeq.has_state_change ? 'Yes' : 'No'}</span></div>
             <div class="steps">
               {#each selectedSeq.steps as stepIdx, i}
                 {@const func = seqTree.functions[stepIdx]}
@@ -288,52 +288,52 @@
 </div>
 
 <style>
-  .seq-view { position: fixed; inset: 0; display: flex; flex-direction: column; background: #0d1117; }
-  .topbar { display: flex; align-items: center; gap: 10px; padding: 8px 16px; background: #161b22; border-bottom: 1px solid #30363d; z-index: 10; flex-shrink: 0; }
-  .topbar a { font-size: 13px; color: #8b949e; }
-  .title { font-size: 16px; font-weight: 700; color: #f0f6fc; }
-  .stats { font-size: 12px; color: #8b949e; }
+  .seq-view { position: fixed; inset: 0; display: flex; flex-direction: column; background: #181a20; }
+  .topbar { display: flex; align-items: center; gap: 10px; padding: 8px 16px; background: #1e2028; border-bottom: 1px solid #2a2d38; z-index: 10; flex-shrink: 0; }
+  .topbar a { font-size: 13px; color: #6b7a8d; }
+  .title { font-size: 16px; font-weight: 700; color: #b8c4d4; }
+  .stats { font-size: 12px; color: #6b7a8d; }
   .toolbar { margin-left: auto; display: flex; gap: 4px; }
-  .tbtn { background: #21262d; border: 1px solid #30363d; color: #c9d1d9; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; }
-  .tbtn:hover { border-color: #58a6ff; }
-  .tbtn.active { background: #1f6feb; border-color: #58a6ff; }
-  .error { padding: 24px; color: #f85149; }
-  .loading { padding: 24px; color: #8b949e; }
+  .tbtn { background: #252830; border: 1px solid #2a2d38; color: #b8c4d4; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+  .tbtn:hover { border-color: #5b9bd5; }
+  .tbtn.active { background: #3a6b9f; border-color: #5b9bd5; }
+  .error { padding: 24px; color: #c07070; }
+  .loading { padding: 24px; color: #6b7a8d; }
 
   /* Tree view */
   .tree-canvas { flex: 1; }
-  .legend { position: fixed; bottom: 12px; left: 16px; display: flex; gap: 10px; font-size: 11px; color: #8b949e; background: #161b22cc; padding: 6px 12px; border-radius: 6px; border: 1px solid #30363d; z-index: 10; }
+  .legend { position: fixed; bottom: 12px; left: 16px; display: flex; gap: 10px; font-size: 11px; color: #6b7a8d; background: #1e2028cc; padding: 6px 12px; border-radius: 6px; border: 1px solid #2a2d38; z-index: 10; }
   .dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; vertical-align: middle; margin-right: 3px; }
 
   /* List view */
   .list-content { flex: 1; overflow-y: auto; padding: 16px 24px; max-width: 1100px; margin: 0 auto; width: 100%; box-sizing: border-box; }
-  .filters { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 10px 0; border-bottom: 1px solid #21262d; margin-bottom: 10px; }
+  .filters { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 10px 0; border-bottom: 1px solid #252830; margin-bottom: 10px; }
   .fg { display: flex; align-items: center; gap: 3px; }
-  .fl { font-size: 10px; color: #8b949e; margin-right: 2px; }
-  .fg button { background: #21262d; border: 1px solid #30363d; color: #8b949e; padding: 2px 7px; border-radius: 4px; cursor: pointer; font-size: 10px; }
-  .fg button:hover { border-color: #58a6ff; color: #c9d1d9; }
-  .fg button.active { background: #1f6feb; border-color: #58a6ff; color: #f0f6fc; }
-  .fg label { font-size: 10px; color: #8b949e; display: flex; align-items: center; gap: 3px; }
-  .filter-count { font-size: 11px; color: #58a6ff; margin-left: auto; }
+  .fl { font-size: 10px; color: #6b7a8d; margin-right: 2px; }
+  .fg button { background: #252830; border: 1px solid #2a2d38; color: #6b7a8d; padding: 2px 7px; border-radius: 4px; cursor: pointer; font-size: 10px; }
+  .fg button:hover { border-color: #5b9bd5; color: #b8c4d4; }
+  .fg button.active { background: #3a6b9f; border-color: #5b9bd5; color: #b8c4d4; }
+  .fg label { font-size: 10px; color: #6b7a8d; display: flex; align-items: center; gap: 3px; }
+  .filter-count { font-size: 11px; color: #5b9bd5; margin-left: auto; }
 
   .seq-list { display: flex; flex-direction: column; gap: 2px; }
-  .seq-row { display: flex; align-items: center; gap: 6px; padding: 5px 8px; background: #161b22; border: 1px solid #21262d; border-radius: 4px; cursor: pointer; font: inherit; font-size: 11px; color: inherit; text-align: left; width: 100%; }
-  .seq-row:hover { border-color: #30363d; }
-  .seq-row.selected { border-color: #58a6ff; }
-  .sd { color: #484f58; font-size: 10px; font-weight: 600; min-width: 22px; }
-  .ss { flex: 1; font-family: monospace; color: #c9d1d9; }
-  .sp { color: #8b949e; font-size: 10px; }
+  .seq-row { display: flex; align-items: center; gap: 6px; padding: 5px 8px; background: #1e2028; border: 1px solid #252830; border-radius: 4px; cursor: pointer; font: inherit; font-size: 11px; color: inherit; text-align: left; width: 100%; }
+  .seq-row:hover { border-color: #2a2d38; }
+  .seq-row.selected { border-color: #5b9bd5; }
+  .sd { color: #4a5568; font-size: 10px; font-weight: 600; min-width: 22px; }
+  .ss { flex: 1; font-family: monospace; color: #b8c4d4; }
+  .sp { color: #6b7a8d; font-size: 10px; }
   .sb { font-size: 9px; padding: 1px 5px; border-radius: 6px; }
-  .sb.sc { background: #d299221a; color: #d29922; }
-  .sb.ro { background: #3fb9501a; color: #3fb950; }
-  .more { text-align: center; padding: 10px; font-size: 11px; color: #484f58; }
+  .sb.sc { background: #c49a4a1a; color: #c49a4a; }
+  .sb.ro { background: #5a9a6a1a; color: #5a9a6a; }
+  .more { text-align: center; padding: 10px; font-size: 11px; color: #4a5568; }
 
-  .seq-detail { margin-top: 12px; padding: 12px; background: #161b22; border: 1px solid #30363d; border-radius: 8px; }
-  .seq-detail h3 { font-size: 13px; font-family: monospace; color: #f0f6fc; margin: 0 0 8px; }
+  .seq-detail { margin-top: 12px; padding: 12px; background: #1e2028; border: 1px solid #2a2d38; border-radius: 8px; }
+  .seq-detail h3 { font-size: 13px; font-family: monospace; color: #b8c4d4; margin: 0 0 8px; }
   .dr { display: flex; justify-content: space-between; font-size: 12px; padding: 2px 0; }
-  .dl { color: #8b949e; }
+  .dl { color: #6b7a8d; }
   .steps { margin-top: 8px; display: flex; flex-direction: column; gap: 3px; }
-  .step { display: flex; align-items: center; gap: 8px; padding: 5px 8px; background: #0d1117; border-radius: 4px; }
-  .sn { font-size: 10px; color: #484f58; font-weight: 700; }
-  .si { font-size: 10px; color: #8b949e; margin-left: auto; }
+  .step { display: flex; align-items: center; gap: 8px; padding: 5px 8px; background: #181a20; border-radius: 4px; }
+  .sn { font-size: 10px; color: #4a5568; font-weight: 700; }
+  .si { font-size: 10px; color: #6b7a8d; margin-left: auto; }
 </style>
