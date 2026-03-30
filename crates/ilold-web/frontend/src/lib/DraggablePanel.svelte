@@ -59,13 +59,13 @@
 <style>
   .draggable-panel {
     position: fixed;
-    background: #1e2028ee;
-    border: 1px solid #2a2d38;
+    background: #18181eee;
+    border: 1px solid #252530;
     border-radius: 10px;
     z-index: 50;
     display: flex;
     flex-direction: column;
-    box-shadow: 0 4px 24px #0a0b0f66;
+    box-shadow: 0 4px 24px #08080a66;
     backdrop-filter: blur(12px);
     max-height: calc(100vh - 60px);
     overflow: hidden;
@@ -75,7 +75,7 @@
     display: flex;
     align-items: center;
     padding: 5px 8px;
-    border-bottom: 1px solid #2a2d38;
+    border-bottom: 1px solid #252530;
     cursor: grab;
     user-select: none;
     gap: 6px;
@@ -105,7 +105,7 @@
     padding: 2px 4px;
     border-radius: 3px;
   }
-  .drag-close:hover { background: #2a2d38; color: #b8c4d4; }
+  .drag-close:hover { background: #252530; color: #b8c4d4; }
 
   .drag-body {
     flex: 1;

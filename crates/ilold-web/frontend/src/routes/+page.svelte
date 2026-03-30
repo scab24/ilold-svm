@@ -128,7 +128,7 @@
   .map-view {
     position: fixed; inset: 0;
     display: flex; flex-direction: column;
-    background: #181a20;
+    background: #121215;
   }
 
   .topbar {

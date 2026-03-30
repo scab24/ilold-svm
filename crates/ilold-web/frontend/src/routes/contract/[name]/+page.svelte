@@ -21,7 +21,12 @@
   // Branch menu: Shift+click shows a menu to add a branch
   let branchMenu: { x: number; y: number; parentNodeId: string; parentFuncName: string } | null = $state(null);
 
+  // Sidebar: functions panel
+  let sidebarOpen: boolean = $state(true);
+  let canvasFuncs: Set<string> = $state(new Set()); // functions currently on canvas
+
   let cyContainer: HTMLDivElement;
+  let canvasWrap: HTMLDivElement;
   let cyInstance: any = null;
   let dagreRegistered = false;
   let cfgCache: Record<string, CytoscapeGraph> = {};
@@ -47,7 +52,58 @@
     if (cyInstance) { cyInstance.destroy(); cyInstance = null; }
   });
 
+  let callgraphData: CytoscapeGraph | null = null;
+
+  function addFuncToCanvas(funcName: string) {
+    if (!cyInstance || !callgraphData || canvasFuncs.has(funcName)) return;
+    const nodeData = callgraphData.nodes.find(n => n.data.label === funcName);
+    if (!nodeData) return;
+
+    const center = cyInstance.extent();
+    const x = (center.x1 + center.x2) / 2 + (canvasFuncs.size % 3 - 1) * 180;
+    const y = (center.y1 + center.y2) / 2 + Math.floor(canvasFuncs.size / 3) * 70;
+
+    cyInstance.add({
+      group: 'nodes',
+      data: { ...nodeData.data, _type: 'function' },
+      classes: nodeData.data.is_external ? 'external' : 'internal',
+      position: { x, y },
+    });
+
+    canvasFuncs.add(funcName);
+    canvasFuncs = new Set(canvasFuncs);
+  }
+
+  function removeFuncFromCanvas(funcName: string) {
+    if (!cyInstance || !canvasFuncs.has(funcName)) return;
+    const node = cyInstance.nodes().filter((n: any) => n.data('label') === funcName && n.data('_type') === 'function');
+    if (!node.length) return;
+    const nodeId = node.id();
+    // Remove all descendants
+    const desc = cyInstance.nodes().filter((n: any) => {
+      const sp = n.data('_seqParent');
+      return sp && (sp === nodeId || sp.startsWith(nodeId + '→'));
+    });
+    const descEdges = cyInstance.edges().filter((e: any) => {
+      const sp = e.data('_seqParent');
+      return sp && (sp === nodeId || sp.startsWith(nodeId + '→'));
+    });
+    cyInstance.remove(descEdges);
+    cyInstance.remove(desc);
+    // Remove CFG children
+    cyInstance.remove(cyInstance.nodes(`[_parentFunc = "${funcName}"]`));
+    cyInstance.remove(cyInstance.edges(`[_parentFunc = "${funcName}"]`));
+    // Remove the node itself and its call edges
+    cyInstance.remove(node.connectedEdges());
+    cyInstance.remove(node);
+    canvasFuncs.delete(funcName);
+    canvasFuncs = new Set(canvasFuncs);
+    expandedFuncs.delete(funcName);
+    seqExpanded.delete(nodeId);
+  }
+
   async function renderGraph(graph: CytoscapeGraph) {
+    callgraphData = graph;
     const cytoscape = (await import('cytoscape')).default;
     if (!dagreRegistered) {
       const dagre = (await import('cytoscape-dagre')).default;
@@ -56,27 +112,15 @@
     }
     if (cyInstance) cyInstance.destroy();
 
-    const nodes = graph.nodes
-      .filter(n => n.data.label.length > 0)
-      .map(n => ({
-        group: 'nodes' as const,
-        data: { ...n.data, _type: 'function' },
-        classes: n.data.is_external ? 'external' : 'internal',
-      }));
-    const nodeIds = new Set(nodes.map(n => n.data.id));
-    const edges = graph.edges
-      .filter(e => nodeIds.has(e.data.source) && nodeIds.has(e.data.target))
-      .map(e => ({ group: 'edges' as const, data: { ...e.data, _type: 'call' } }));
-
+    // Start with empty canvas — functions are added from sidebar
     cyInstance = cytoscape({
       container: cyContainer,
-      elements: [...nodes, ...edges],
+      elements: [],
       style: getStyles() as any,
       layout: { name: 'preset' },
       minZoom: 0.1, maxZoom: 5, wheelSensitivity: 0.3,
     });
-
-    runLayout(false);
+    canvasFuncs = new Set();
 
     // Single click on function nodes
     cyInstance.on('tap', 'node.internal', async (evt: any) => {
@@ -226,7 +270,21 @@
     });
 
     cyInstance.on('mouseover', 'node.internal', () => { if (cyContainer) cyContainer.style.cursor = 'pointer'; });
+    cyInstance.on('mouseover', 'node.seq-next', () => { if (cyContainer) cyContainer.style.cursor = 'pointer'; });
     cyInstance.on('mouseout', 'node', () => { if (cyContainer) cyContainer.style.cursor = 'default'; });
+
+    // Grid follows zoom and pan
+    function updateGrid() {
+      if (!canvasWrap || !cyInstance) return;
+      const zoom = cyInstance.zoom();
+      const pan = cyInstance.pan();
+      const size = 24 * zoom;
+      canvasWrap.style.setProperty('--grid-size', `${size}px`);
+      canvasWrap.style.setProperty('--grid-x', `${pan.x % size}px`);
+      canvasWrap.style.setProperty('--grid-y', `${pan.y % size}px`);
+    }
+    cyInstance.on('zoom pan', updateGrid);
+    updateGrid();
   }
 
   async function toggleFuncExpand(funcName: string, anchorNodeId?: string) {
@@ -390,6 +448,35 @@
     let label = branchFuncName;
     if (hasConditions) label += ' ⚠';
 
+    // Remove auto-expanded SIBLINGS of the parent node (same level, not children)
+    // The parent node's _seqParent tells us which level to clean
+    const parentData = parentNode.data();
+    const parentParentKey = parentData._seqParent;
+    if (parentParentKey) {
+      const siblings = cyInstance.nodes().filter((n: any) =>
+        n.data('_seqParent') === parentParentKey && n.id() !== parentNodeId && !n.data('_isBranch')
+      );
+      const removeNodes = cyInstance.collection();
+      const removeEdges = cyInstance.collection();
+      function collectDescs(nid: string) {
+        const ch = cyInstance.nodes().filter((n: any) => n.data('_seqParent') === nid);
+        ch.forEach((c: any) => { removeNodes.merge(c); collectDescs(c.id()); });
+        removeEdges.merge(cyInstance.edges().filter((e: any) => e.data('_seqParent') === nid));
+      }
+      siblings.forEach((sib: any) => { removeNodes.merge(sib); collectDescs(sib.id()); });
+      removeEdges.merge(cyInstance.edges().filter((e: any) => {
+        if (e.data('_seqParent') !== parentParentKey) return false;
+        const tgt = cyInstance.getElementById(e.data('target'));
+        return tgt.length && tgt.id() !== parentNodeId && !tgt.data('_isBranch');
+      }));
+      cyInstance.remove(removeEdges);
+      cyInstance.remove(removeNodes);
+      for (const k of seqExpanded.keys()) {
+        if (cyInstance.getElementById(k).length === 0) seqExpanded.delete(k);
+      }
+    }
+
+    // Add the branch node
     cyInstance.add([
       {
         group: 'nodes',
@@ -412,21 +499,24 @@
       },
     ]);
 
-    // Position the new node offset from existing children
-    const existingChildren = cyInstance.nodes(`[_seqParent = "${seqKey}"]`);
+    // Position the new branch node clearly separated from existing children
+    const branchNode = cyInstance.getElementById(nodeId);
+    const allChildren = cyInstance.nodes(`[_seqParent = "${seqKey}"]`);
+    const others = allChildren.not(branchNode);
     const isVertical = seqDirection === 'TB';
-    if (existingChildren.length > 1) {
-      const bb = existingChildren.not(cyInstance.getElementById(nodeId)).boundingBox();
-      const targetPos = isVertical
-        ? { x: bb.x2 + 140, y: bb.y1 + (bb.h / 2) }
-        : { x: bb.x1 + (bb.w / 2), y: bb.y2 + 60 };
-      cyInstance.getElementById(nodeId).animate({ position: targetPos }, { duration: 250, easing: 'ease-out' });
+
+    let targetPos: { x: number; y: number };
+    if (others.length > 0) {
+      const bb = others.boundingBox();
+      targetPos = isVertical
+        ? { x: bb.x2 + 160, y: parentPos.y + 70 }
+        : { x: parentPos.x + 160, y: bb.y2 + 60 };
     } else {
-      const targetPos = isVertical
+      targetPos = isVertical
         ? { x: parentPos.x, y: parentPos.y + 70 }
         : { x: parentPos.x + 160, y: parentPos.y };
-      cyInstance.getElementById(nodeId).animate({ position: targetPos }, { duration: 250, easing: 'ease-out' });
     }
+    branchNode.animate({ position: targetPos }, { duration: 250, easing: 'ease-out' });
   }
 
   async function toggleSeqExpand(funcName: string, parentNodeId: string) {
@@ -657,11 +747,11 @@
     layout.stop();
   }
 
-  // Palette: dark board with blue tones (Excalidraw-like)
+  // Palette: dark board
   const C = {
-    bg: '#181a20',        // deep board background
-    surface: '#1e2028',   // node backgrounds
-    border: '#2a2d38',    // subtle borders
+    bg: '#121215',        // near-black background
+    surface: '#1a1a22',   // node backgrounds
+    border: '#252530',    // subtle borders
     borderHi: '#4a6fa5',  // highlighted borders (muted blue)
     text: '#b8c4d4',      // primary text
     textMuted: '#6b7a8d', // secondary text
@@ -799,19 +889,51 @@
   {#if error}
     <div class="error">{error}</div>
   {:else}
-    <div class="canvas" bind:this={cyContainer}></div>
+    <div class="workspace">
+      <!-- Sidebar with functions -->
+      <div class="sidebar" class:collapsed={!sidebarOpen}>
+        <div class="sidebar-header">
+          <span class="sidebar-title">Functions</span>
+          <button class="sidebar-toggle" onclick={() => sidebarOpen = !sidebarOpen}>{sidebarOpen ? '◂' : '▸'}</button>
+        </div>
+        {#if sidebarOpen && contract}
+          <div class="sidebar-body">
+            {#each contract.functions as func}
+              {@const onCanvas = canvasFuncs.has(func.name)}
+              <button
+                class="sidebar-func"
+                class:on-canvas={onCanvas}
+                onclick={() => onCanvas ? removeFuncFromCanvas(func.name) : addFuncToCanvas(func.name)}
+                title={onCanvas ? 'Remove from canvas' : 'Add to canvas'}
+              >
+                <span class="sf-name">{func.name}</span>
+                <span class="sf-meta">{func.path_count}p</span>
+                {#if onCanvas}<span class="sf-check">✓</span>{/if}
+              </button>
+            {/each}
+          </div>
+        {/if}
+      </div>
+
+      <!-- Canvas with grid -->
+      <div class="canvas-wrap" bind:this={canvasWrap}>
+        <div class="canvas" bind:this={cyContainer}></div>
+      </div>
+    </div>
 
     {#if selectedNode && contract}
       <DraggablePanel
-        title={selectedNode.label || ''}
-        x={window.innerWidth - 370} y={60} width={350}
+        title={selectedNode._funcName || selectedNode.label || ''}
+        x={Math.min(window.innerWidth - 320, window.innerWidth - 20)} y={60} width={Math.min(310, window.innerWidth - 40)}
         onclose={() => selectedNode = null}
       >
         <div class="detail">
           {#if selectedNode._type === 'function'}
             <div class="d-row"><span class="d-label">Type</span><span>{selectedNode.is_external ? 'External' : 'Internal'}</span></div>
-            {#if !selectedNode.is_external}
-              <div class="d-hint">Click on the node to {expandedFuncs.has(selectedNode.label) ? 'collapse' : 'expand'} its CFG</div>
+            {#if !selectedNode.is_external && mode === 'cfg'}
+              <div class="d-hint">Click → {expandedFuncs.has(selectedNode.label) ? 'collapse' : 'expand'} CFG</div>
+            {:else if !selectedNode.is_external && mode === 'sequences'}
+              <div class="d-hint">Click → expand · Shift+click → branch</div>
             {/if}
 
             {#if funcPaths[selectedNode.label]}
@@ -864,10 +986,15 @@
               {/if}
             {/if}
           {:else if selectedNode._type === 'seq-next'}
+            {@const nodeId = selectedNode.id || ''}
+            {@const pathParts = (nodeId.includes('::') ? nodeId.split('::')[1] : nodeId).split('→').map((s: string) => s.replace(/:b\d+$/, ''))}
             <div class="d-row"><span class="d-label">Function</span><span>{selectedNode._funcName || selectedNode.label}</span></div>
             <div class="d-row"><span class="d-label">Paths</span><span>{selectedNode.pathCount}</span></div>
             <div class="d-row"><span class="d-label">Type</span><span>{selectedNode.readOnly ? 'Read-only (view)' : 'State-changing'}</span></div>
-            <div class="d-hint">Click → expand next steps · Double-click → expand CFG</div>
+            {#if pathParts.length > 1}
+              <div class="d-path-chain">{pathParts.join(' → ')}</div>
+            {/if}
+            <div class="d-hint">Click → expand · Shift+click → branch</div>
 
             {#if selectedNode._chainTransitions?.length > 0}
               <div class="d-section">Chain conditions ({selectedNode._chainTransitions.length} transitions)</div>
@@ -945,11 +1072,11 @@
 </div>
 
 <style>
-  .view { position: fixed; inset: 0; display: flex; flex-direction: column; background: #181a20; }
+  .view { position: fixed; inset: 0; display: flex; flex-direction: column; background: #121215; }
 
   .topbar {
     display: flex; align-items: center; gap: 10px;
-    padding: 8px 16px; background: #1e2028; border-bottom: 1px solid #2a2d38;
+    padding: 8px 16px; background: #18181e; border-bottom: 1px solid #252530;
     z-index: 10; flex-shrink: 0;
   }
   .topbar a { font-size: 13px; color: #6b7a8d; text-decoration: none; }
@@ -958,22 +1085,70 @@
   .cname { font-size: 16px; font-weight: 700; color: #b8c4d4; }
   .inherits { font-size: 11px; color: #4a5568; font-style: italic; }
   .toolbar { margin-left: auto; display: flex; gap: 4px; align-items: center; }
-  .tbtn { background: #1e2028; border: 1px solid #2a2d38; color: #8bb8e8; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+  .tbtn { background: #18181e; border: 1px solid #252530; color: #8bb8e8; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; }
   .tbtn:hover { border-color: #5b9bd5; }
   .tbtn.active { background: #3a6b9f; border-color: #5b9bd5; color: #dce8f4; }
-  .tsep { width: 1px; height: 18px; background: #2a2d38; }
+  .tsep { width: 1px; height: 18px; background: #252530; }
 
   .error { padding: 24px; color: #b05050; }
-  .canvas { flex: 1; }
 
-  .detail { padding: 8px; }
+  .workspace { flex: 1; display: flex; overflow: hidden; }
+
+  /* Sidebar */
+  .sidebar {
+    width: 180px; flex-shrink: 0;
+    background: #18181e; border-right: 1px solid #252530;
+    display: flex; flex-direction: column;
+    transition: width 0.2s;
+  }
+  .sidebar.collapsed { width: 32px; }
+  .sidebar-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 6px 8px; border-bottom: 1px solid #252530;
+  }
+  .sidebar-title { font-size: 10px; color: #6b7a8d; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; }
+  .collapsed .sidebar-title { display: none; }
+  .sidebar-toggle {
+    background: none; border: none; color: #6b7a8d; cursor: pointer;
+    font-size: 11px; padding: 2px 4px;
+  }
+  .sidebar-toggle:hover { color: #8bb8e8; }
+  .sidebar-body { flex: 1; overflow-y: auto; padding: 4px; }
+  .sidebar-func {
+    display: flex; align-items: center; gap: 4px; width: 100%;
+    padding: 5px 6px; background: none; border: none;
+    color: #6b7a8d; font-size: 11px; font-family: monospace;
+    cursor: pointer; border-radius: 4px; text-align: left;
+  }
+  .sidebar-func:hover { background: #1e1e28; color: #b8c4d4; }
+  .sidebar-func.on-canvas { color: #8bb8e8; }
+  .sf-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sf-meta { font-size: 9px; color: #4a5568; }
+  .sf-check { color: #5b9bd5; font-size: 10px; }
+
+  /* Canvas with dot grid that follows zoom/pan */
+  .canvas-wrap {
+    flex: 1; position: relative;
+    --grid-size: 24px; --grid-x: 0px; --grid-y: 0px;
+  }
+  .canvas-wrap::before {
+    content: '';
+    position: absolute; inset: 0; z-index: 0; pointer-events: none;
+    background-image: radial-gradient(circle, #2a2a35 0.8px, transparent 0.8px);
+    background-size: var(--grid-size) var(--grid-size);
+    background-position: var(--grid-x) var(--grid-y);
+  }
+  .canvas { position: absolute; inset: 0; z-index: 1; }
+
+  .detail { padding: 8px; max-height: calc(100vh - 140px); overflow-y: auto; scrollbar-width: thin; scrollbar-color: #252530 transparent; }
   .d-row { display: flex; justify-content: space-between; padding: 3px 0; font-size: 12px; color: #b8c4d4; }
   .d-label { color: #6b7a8d; }
   .d-hint { font-size: 11px; color: #5b9bd5; padding: 6px 0; font-style: italic; }
   .d-section { font-size: 10px; color: #6b7a8d; text-transform: uppercase; letter-spacing: 0.5px; margin: 8px 0 4px; font-weight: 600; }
   .d-chain-step { font-size: 11px; color: #8bb8e8; font-weight: 600; margin: 6px 0 2px; padding-top: 4px; border-top: 1px solid #2a2d38; }
+  .d-path-chain { font-size: 10px; color: #4a5568; padding: 4px 0; font-family: monospace; word-break: break-all; }
   .d-path { display: flex; align-items: center; gap: 4px; padding: 3px 4px; border-radius: 3px; font-size: 11px; color: inherit; background: transparent; border: 1px solid transparent; cursor: pointer; width: 100%; text-align: left; font: inherit; }
-  .d-path:hover { background: #181a20; }
+  .d-path:hover { background: #121215; }
   .pid { color: #4a5568; font-weight: 600; }
   .pdepth { color: #4a5568; font-size: 10px; }
   .pb { font-size: 9px; padding: 1px 4px; border-radius: 6px; }
@@ -994,23 +1169,23 @@
   .pd-item.ext { background: #b0505018; color: #c07070; }
   .pd-item.wr { background: #5b9bd518; color: #8bb8e8; }
   .pd-item.ev { background: #5a9a6a18; color: #7aba8a; }
-  .d-stmt { font-family: monospace; font-size: 11px; padding: 3px 6px; background: #181a20; border-radius: 3px; margin-bottom: 2px; color: #b8c4d4; }
+  .d-stmt { font-family: monospace; font-size: 11px; padding: 3px 6px; background: #121215; border-radius: 3px; margin-bottom: 2px; color: #b8c4d4; }
 
 
   .legend {
     position: fixed; bottom: 12px; left: 16px;
     display: flex; gap: 10px; font-size: 11px; color: #6b7a8d;
-    background: #1e2028dd; padding: 6px 12px;
-    border-radius: 6px; border: 1px solid #2a2d38; z-index: 10;
+    background: #18181edd; padding: 6px 12px;
+    border-radius: 6px; border: 1px solid #252530; z-index: 10;
     backdrop-filter: blur(8px);
   }
   .dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; vertical-align: middle; margin-right: 3px; }
 
   .branch-menu {
     position: fixed; z-index: 60;
-    background: #1e2028; border: 1px solid #2a2d38;
+    background: #18181e; border: 1px solid #252530;
     border-radius: 8px; padding: 4px;
-    box-shadow: 0 8px 32px #0a0b0f88;
+    box-shadow: 0 8px 32px #08080a88;
     backdrop-filter: blur(12px);
     max-height: 280px; overflow-y: auto;
     min-width: 160px;
@@ -1022,7 +1197,7 @@
     color: #b8c4d4; font-size: 12px; font-family: monospace;
     cursor: pointer; border-radius: 4px; text-align: left;
   }
-  .branch-item:hover { background: #252830; color: #8bb8e8; }
+  .branch-item:hover { background: #1e1e28; color: #8bb8e8; }
   .branch-tag { font-size: 9px; color: #6b7a8d; background: #252830; padding: 1px 5px; border-radius: 8px; }
   .branch-close {
     display: block; width: 100%; padding: 5px 10px; margin-top: 2px;

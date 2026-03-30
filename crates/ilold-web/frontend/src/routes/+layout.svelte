@@ -42,7 +42,7 @@
   :global(body) {
     margin: 0;
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace;
-    background: #181a20;
+    background: #121215;
     color: #b8c4d4;
     overflow: hidden;
   }
@@ -76,7 +76,7 @@
   }
   .search-btn:hover { border-color: #5b9bd5; color: #b8c4d4; }
   .search-btn kbd {
-    background: #181a20; padding: 1px 5px;
+    background: #121215; padding: 1px 5px;
     border-radius: 3px; font-size: 10px; border: 1px solid #2a2d38;
   }
 
