@@ -8,3 +8,6 @@ pub mod cfg;
 pub mod callgraph;
 pub mod pathtree;
 pub mod sequence;
+pub mod classify;
+pub mod narrative;
+pub mod journal;
