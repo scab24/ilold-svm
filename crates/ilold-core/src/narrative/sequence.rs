@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use crate::classify::entry_points::AccessLevel;
 use crate::sequence::analysis::{FunctionBehavior, TransitionInfo};
 
@@ -34,7 +32,6 @@ pub fn build_sequence_narrative(
         };
 
         let mut deps = Vec::new();
-        let mut seen_vars: HashSet<String> = HashSet::new();
 
         for prev_idx in 0..i {
             let prev_name = function_names[prev_idx];
@@ -43,32 +40,11 @@ pub fn build_sequence_narrative(
                 .find(|t| t.from == prev_name && t.to == *func_name);
 
             if let Some(t) = transition {
-                // Prefer conditions_affected (more detailed) over shared_state
                 for cond in &t.conditions_affected {
                     deps.push(Dependency {
                         from_step: prev_idx,
                         variable: extract_variable_from_condition(cond),
                         relationship: cond.clone(),
-                    });
-                    // Track which variables already have a dependency
-                    for var in &t.shared_state {
-                        if cond.contains(var.as_str()) {
-                            seen_vars.insert(var.clone());
-                        }
-                    }
-                }
-
-                // Only add shared_state deps for variables NOT already covered
-                for var in &t.shared_state {
-                    if seen_vars.contains(var) { continue; }
-                    seen_vars.insert(var.clone());
-                    deps.push(Dependency {
-                        from_step: prev_idx,
-                        variable: var.clone(),
-                        relationship: format!(
-                            "{} writes {} → {} reads/writes it",
-                            prev_name, var, func_name,
-                        ),
                     });
                 }
             }
