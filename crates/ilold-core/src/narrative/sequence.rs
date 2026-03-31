@@ -85,18 +85,6 @@ pub fn build_sequence_narrative(
         });
     }
 
-    for (i, step) in steps.iter().enumerate() {
-        if !step.external_calls.is_empty() && !step.effects.is_empty() {
-            observations.push(Observation {
-                kind: ObservationKind::CeiViolation,
-                description: format!(
-                    "Step {} ({}): has external calls and state writes in same function",
-                    i + 1, step.function,
-                ),
-            });
-        }
-    }
-
     for i in 0..steps.len() {
         if steps[i].external_calls.is_empty() { continue; }
         for j in (i + 1)..steps.len() {
