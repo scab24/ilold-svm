@@ -44,7 +44,7 @@ pub fn export_markdown(journal: &AuditJournal, total_functions: usize) -> String
         writeln!(md, "No functions reviewed yet.").unwrap();
     } else {
         let mut funcs: Vec<_> = journal.function_status.iter().collect();
-        funcs.sort_by_key(|(name, _)| name.clone());
+        funcs.sort_by_key(|(name, _)| (*name).clone());
         for (name, status) in funcs {
             writeln!(md, "- {} {}", status.badge(), name).unwrap();
         }

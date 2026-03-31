@@ -1,0 +1,266 @@
+use std::collections::HashMap;
+use std::path::PathBuf;
+
+use anyhow::{Context, Result};
+
+use ilold_core::cfg::builder::CfgBuilder;
+use ilold_core::cfg::types::CfgGraph;
+use ilold_core::classify::entry_points::{classify_all, AccessLevel};
+use ilold_core::model::contract::{ContractDef, ContractKind};
+use ilold_core::model::project::Project;
+use ilold_core::narrative::function::build_function_narrative;
+use ilold_core::narrative::sequence::build_sequence_narrative;
+use ilold_core::narrative::types::*;
+use ilold_core::parse::solar_frontend::SolarParser;
+use ilold_core::parse::ProjectParser;
+use ilold_core::pathtree::config::PruningConfig;
+use ilold_core::pathtree::types::{PathTree, TerminalKind};
+use ilold_core::pathtree::walker::build_path_tree;
+use ilold_core::sequence::analysis::analyze_sequences;
+
+use crate::colors::*;
+
+pub fn run(
+    path: &PathBuf,
+    contract_filter: Option<&str>,
+    function_filter: Option<&str>,
+    sequence_filter: Option<&str>,
+    list: bool,
+) -> Result<()> {
+    let paths = crate::collect_sol_files(path)?;
+    if paths.is_empty() { anyhow::bail!("No .sol files found at {}", path.display()); }
+
+    let parser = SolarParser;
+    let mut project = parser.parse(&paths).context("Failed to parse")?;
+    project.rebuild_index();
+
+    let contract = find_contract(&project, contract_filter)?;
+    let classifications = classify_all(contract);
+
+    if list {
+        print_list(contract, &classifications);
+        return Ok(());
+    }
+
+    let config = PruningConfig::default();
+    let mut cfgs: HashMap<(String, String), CfgGraph> = HashMap::new();
+    let mut pt_map: HashMap<(String, String), PathTree> = HashMap::new();
+    for func in &contract.functions {
+        if let Ok(cfg) = CfgBuilder::build(func, contract) {
+            let pt = build_path_tree(&cfg, &contract.name, &func.name, &contract.state_vars, &config);
+            let key = (contract.name.clone(), func.name.clone());
+            cfgs.insert(key.clone(), cfg);
+            pt_map.insert(key, pt);
+        }
+    }
+    let analysis = analyze_sequences(&pt_map, &contract.name);
+
+    if let Some(seq_str) = sequence_filter {
+        let names: Vec<&str> = seq_str.split(',').map(|s| s.trim()).collect();
+        let narrative = build_sequence_narrative(
+            &contract.name, &names, &analysis.functions, &analysis.transitions, &classifications,
+        );
+        print_sequence(&narrative);
+        return Ok(());
+    }
+
+    if let Some(func_name) = function_filter {
+        let func = contract.functions.iter().find(|f| f.name == func_name)
+            .ok_or_else(|| anyhow::anyhow!("Function '{}' not found. Use --list to see available functions.", func_name))?;
+        let key = (contract.name.clone(), func_name.to_string());
+        let cfg = cfgs.get(&key).ok_or_else(|| anyhow::anyhow!("No CFG for {}", func_name))?;
+        let pt = pt_map.get(&key).ok_or_else(|| anyhow::anyhow!("No paths for {}", func_name))?;
+        let narrative = build_function_narrative(contract, func, pt, cfg, &analysis.functions);
+        print_function(&narrative);
+        return Ok(());
+    }
+
+    let narratives: Vec<_> = contract.functions.iter().filter_map(|func| {
+        let key = (contract.name.clone(), func.name.clone());
+        let cfg = cfgs.get(&key)?;
+        let pt = pt_map.get(&key)?;
+        Some(build_function_narrative(contract, func, pt, cfg, &analysis.functions))
+    }).collect();
+    print_overview(contract, &narratives);
+    Ok(())
+}
+
+fn find_contract<'a>(project: &'a Project, filter: Option<&str>) -> Result<&'a ContractDef> {
+    if let Some(name) = filter {
+        project.contracts.iter().find(|c| c.name == name)
+            .ok_or_else(|| anyhow::anyhow!("Contract '{}' not found", name))
+    } else {
+        let real: Vec<_> = project.contracts.iter().filter(|c| c.kind != ContractKind::Interface).collect();
+        match real.len() {
+            0 => anyhow::bail!("No contracts found"),
+            1 => Ok(real[0]),
+            _ => anyhow::bail!("Multiple contracts, use --contract: {}",
+                real.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", ")),
+        }
+    }
+}
+
+fn print_list(contract: &ContractDef, classifications: &[(String, AccessLevel)]) {
+    println!("\n  {} — {} functions\n",
+        c_bright(&contract.name), contract.functions.len());
+
+    for (name, access) in classifications {
+        if name.is_empty() { continue; }
+        let vis = contract.functions.iter().find(|f| f.name == *name)
+            .map(|f| format!("{:?}", f.visibility).to_lowercase()).unwrap_or_default();
+        println!("  {} {:<20} {}", access_colored(access), c_bright(name), c_muted(&vis));
+    }
+
+    println!("\n  {}", c_muted("Usage:"));
+    println!("    ilold context <path> --function <name>");
+    println!("    ilold context <path> --sequence \"fn1,fn2\"");
+
+    let names: Vec<&str> = classifications.iter()
+        .filter(|(n, _)| !n.is_empty()).map(|(n, _)| n.as_str()).take(2).collect();
+    if names.len() >= 2 {
+        println!("\n  {}", c_muted("Example:"));
+        println!("    ilold context <path> --function {}", names[0]);
+        println!("    ilold context <path> --sequence \"{},{}\"", names[0], names[1]);
+    }
+    println!();
+}
+
+fn print_function(n: &FunctionNarrative) {
+    println!("\n  {} {}\n", c_bright(&n.name), c_muted(&format!("({})", n.access)));
+
+    if !n.modifiers.is_empty() {
+        println!("  {} {}", c_muted("Modifiers:"), n.modifiers.join(", "));
+    }
+    println!("  {} {} ({} return, {} revert)",
+        c_muted("Paths:"), n.total_paths, c_ok(&n.happy_paths.to_string()), c_danger(&n.revert_paths.to_string()));
+    if !n.state_writes.is_empty() {
+        println!("  {} {}", c_muted("Writes:"), c_warn(&n.state_writes.join(", ")));
+    }
+    if !n.external_calls.is_empty() {
+        println!("  {} {}", c_muted("Calls:"), c_danger(&n.external_calls.join(", ")));
+    }
+
+    for path in &n.paths {
+        println!();
+        let terminal = match path.terminal {
+            TerminalKind::Return => c_ok("Return"),
+            TerminalKind::Revert => c_danger("Revert"),
+            TerminalKind::DepthCutoff => c_muted("DepthCutoff"),
+            TerminalKind::LoopCutoff => c_muted("LoopCutoff"),
+        };
+        println!("  {} #{} → {}", c_muted("Path"), path.id, terminal);
+
+        for (i, step) in path.steps.iter().enumerate() {
+            let is_last = i == path.steps.len() - 1;
+            let connector = if is_last { "  └── " } else { "  ├── " };
+
+            let branch_str = match step.branch {
+                Some(BranchDirection::True) => format!(" {}", c_ok("✓")),
+                Some(BranchDirection::False) => format!(" {}", c_danger("✗")),
+                None => String::new(),
+            };
+
+            let desc = match step.step_type {
+                StepType::Entry => c_bright(&step.description).to_string(),
+                StepType::Condition => c_warn(&step.description).to_string(),
+                StepType::ExternalCall => c_danger(&step.description).to_string(),
+                StepType::InternalCall => c_muted(&step.description).to_string(),
+                StepType::StateWrite => c_accent(&step.description).to_string(),
+                StepType::StateRead => c_muted(&step.description).to_string(),
+                StepType::EthTransfer => c_danger(&step.description).to_string(),
+                StepType::Event => c_muted(&step.description).to_string(),
+                StepType::Return => c_ok(&step.description).to_string(),
+                StepType::Revert => c_danger(&step.description).to_string(),
+                StepType::Assembly => c_muted(&step.description).to_string(),
+            };
+
+            println!("{}{} {}{}",
+                c_muted(connector), step.step_type.icon(), desc, branch_str);
+        }
+    }
+
+    if !n.observations.is_empty() {
+        println!("\n  {}", c_muted("Observations:"));
+        for obs in &n.observations {
+            println!("  {} {}: {}",
+                c_warn("⚠"), c_muted(&obs.kind.to_string()), obs.description);
+        }
+    }
+    println!();
+}
+
+fn print_sequence(n: &SequenceNarrative) {
+    let names: Vec<&str> = n.steps.iter().map(|s| s.function.as_str()).collect();
+    println!("\n  {} {}\n",
+        c_muted("Sequence:"), c_bright(&names.join(" → ")));
+
+    for (i, step) in n.steps.iter().enumerate() {
+        println!("  {} {} {}",
+            c_bright(&format!("Step {}:", i + 1)),
+            c_bright(&step.function),
+            c_muted(&format!("({})", step.access)));
+
+        if !step.requires.is_empty() {
+            println!("  ├── {} {}", c_muted("Requires:"), c_warn(&step.requires.join(", ")));
+        }
+        if !step.effects.is_empty() {
+            println!("  ├── {} {}", c_muted("Effects:"), c_accent(&step.effects.join(", ")));
+        }
+        if !step.external_calls.is_empty() {
+            println!("  ├── {} {}", c_muted("Calls:"), c_danger(&step.external_calls.join(", ")));
+        }
+        if !step.events.is_empty() {
+            println!("  ├── {} {}", c_muted("Events:"), c_muted(&step.events.join(", ")));
+        }
+        for dep in &step.dependencies {
+            println!("  └── {} {}", c_muted("↳"), c_warn(&dep.relationship));
+        }
+        println!();
+    }
+
+    if !n.observations.is_empty() {
+        println!("  {}", c_muted("Observations:"));
+        for obs in &n.observations {
+            println!("  {} {}: {}",
+                c_warn("⚠"), c_muted(&obs.kind.to_string()), obs.description);
+        }
+        println!();
+    }
+}
+
+fn print_overview(contract: &ContractDef, narratives: &[FunctionNarrative]) {
+    let total_paths: usize = narratives.iter().map(|n| n.total_paths).sum();
+    println!("\n  {} — {} functions, {} paths\n",
+        c_bright(&contract.name), narratives.len(), total_paths);
+
+    for n in narratives {
+        if n.name.is_empty() { continue; }
+        let access = access_colored(&n.access);
+        let paths = format!("{} paths", n.total_paths);
+        let mut extras = Vec::new();
+        if !n.state_writes.is_empty() {
+            extras.push(format!("writes: {}", n.state_writes.join(", ")));
+        }
+        if !n.external_calls.is_empty() {
+            extras.push(format!("calls: {}", n.external_calls.join(", ")));
+        }
+        let extra_str = if extras.is_empty() { String::new() }
+            else { format!("  {}", c_muted(&extras.join(" | "))) };
+
+        println!("  {} {:<20} {}{}",
+            access, c_bright(&n.name), c_muted(&paths), extra_str);
+    }
+
+    let obs: Vec<&Observation> = narratives.iter().flat_map(|n| n.observations.iter()).collect();
+    if !obs.is_empty() {
+        println!("\n  {}", c_muted("Observations:"));
+        let mut seen = std::collections::HashSet::new();
+        for o in &obs {
+            if seen.insert(&o.description) {
+                println!("  {} {}: {}",
+                    c_warn("⚠"), c_muted(&o.kind.to_string()), o.description);
+            }
+        }
+    }
+    println!();
+}

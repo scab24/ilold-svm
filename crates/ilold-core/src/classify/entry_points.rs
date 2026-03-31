@@ -52,6 +52,7 @@ const ACCESS_MODIFIERS: &[&str] = &[
 
 // Modifiers that restrict WHEN you can call (state guards, not access control)
 // These do NOT make a function "Restricted" — anyone can call when the condition is met
+#[allow(dead_code)]
 const STATE_GUARD_MODIFIERS: &[&str] = &[
     "whennotpaused", "whenpaused",
     "nonreentrant", "noreentrant",
