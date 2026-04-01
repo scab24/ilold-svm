@@ -2,6 +2,7 @@ use petgraph::stable_graph::StableDiGraph;
 use serde::{Deserialize, Serialize};
 
 use crate::model::common::SourceSpan;
+use crate::model::expression::AssignOperator;
 
 pub type CfgGraph = StableDiGraph<BasicBlock, BranchEdge>;
 
@@ -42,6 +43,7 @@ pub enum CfgStatement {
     Assignment {
         target: String,
         value: String,
+        operator: AssignOperator,
         span: Option<SourceSpan>,
     },
     ExternalCall {

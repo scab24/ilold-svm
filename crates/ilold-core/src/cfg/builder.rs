@@ -135,6 +135,7 @@ impl CfgBuilder {
                     self.add_stmt_to_current(CfgStatement::Assignment {
                         target: name.clone(),
                         value: format!("{:?}", val.kind),
+                        operator: crate::model::expression::AssignOperator::Assign,
                         span: None,
                     });
                 }
@@ -486,10 +487,11 @@ fn classify_expression(expr: &Expression) -> Vec<CfgStatement> {
         ExpressionKind::FunctionCall { .. } => {
             // Already handled by collect_calls
         }
-        ExpressionKind::Assignment { target, .. } => {
+        ExpressionKind::Assignment { target, operator, .. } => {
             stmts.push(CfgStatement::Assignment {
                 target: expr_to_string(target),
                 value: expr_to_string(expr),
+                operator: *operator,
                 span: None,
             });
         }
@@ -497,6 +499,7 @@ fn classify_expression(expr: &Expression) -> Vec<CfgStatement> {
             stmts.push(CfgStatement::Assignment {
                 target: String::new(),
                 value: expr_to_string(expr),
+                operator: crate::model::expression::AssignOperator::Assign,
                 span: None,
             });
         }
