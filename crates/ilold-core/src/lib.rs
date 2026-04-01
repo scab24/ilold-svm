@@ -11,3 +11,4 @@ pub mod sequence;
 pub mod classify;
 pub mod narrative;
 pub mod journal;
+pub mod exploration;
