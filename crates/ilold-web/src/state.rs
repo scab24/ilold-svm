@@ -5,6 +5,7 @@ use std::sync::RwLock;
 use tokio::sync::broadcast;
 
 use ilold_core::callgraph::builder::build_call_graph;
+use ilold_core::exploration::commands::CanvasPatch;
 use ilold_core::callgraph::types::CallGraph;
 use ilold_core::cfg::builder::CfgBuilder;
 use ilold_core::cfg::types::CfgGraph;
@@ -32,7 +33,7 @@ pub struct AppState {
     pub classifications: HashMap<String, Vec<(String, AccessLevel)>>,
     pub annotations: RwLock<Vec<Annotation>>,
     pub session: RwLock<Option<ExplorationSession>>,
-    pub session_tx: broadcast::Sender<String>,
+    pub session_tx: broadcast::Sender<CanvasPatch>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
