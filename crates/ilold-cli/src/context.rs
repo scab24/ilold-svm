@@ -195,37 +195,58 @@ fn print_sequence(n: &SequenceNarrative) {
         c_muted("Sequence:"), c_bright(&names.join(" → ")));
 
     for (i, step) in n.steps.iter().enumerate() {
+        let is_last_step = i == n.steps.len() - 1;
+        let step_conn = if is_last_step { "└─" } else { "├─" };
+        let pipe = if is_last_step { "  " } else { "│ " };
+
         println!("  {} {} {}",
-            c_bright(&format!("Step {}:", i + 1)),
-            c_bright(&step.function),
+            c_muted(step_conn),
+            c_bright(&format!("Step {}: {}", i + 1, step.function)),
             c_muted(&format!("({})", step.access)));
 
-        if !step.requires.is_empty() {
-            println!("  ├── {} {}", c_muted("Requires:"), c_warn(&step.requires.join(", ")));
+        // Collect all lines for this step to know which is last
+        let mut lines: Vec<(String, String)> = Vec::new(); // (label, value)
+
+        for req in &step.requires {
+            lines.push(("require".into(), c_warn(req).to_string()));
         }
-        if !step.effects.is_empty() {
-            println!("  ├── {} {}", c_muted("Effects:"), c_accent(&step.effects.join(", ")));
+        for eff in &step.effects {
+            lines.push(("writes".into(), c_accent(eff).to_string()));
         }
-        if !step.external_calls.is_empty() {
-            println!("  ├── {} {}", c_muted("Calls:"), c_danger(&step.external_calls.join(", ")));
+        for call in &step.external_calls {
+            lines.push(("calls".into(), c_danger(call).to_string()));
         }
-        if !step.events.is_empty() {
-            println!("  ├── {} {}", c_muted("Events:"), c_muted(&step.events.join(", ")));
+        for ev in &step.events {
+            lines.push(("emits".into(), c_muted(ev).to_string()));
         }
         for dep in &step.dependencies {
-            println!("  └── {} {}", c_muted("↳"), c_warn(&dep.relationship));
+            lines.push(("depends".into(), c_warn(&dep.relationship).to_string()));
         }
-        println!();
+
+        if lines.is_empty() {
+            println!("  {}  {} {}", c_muted(pipe), c_muted("·"), c_muted("read-only"));
+        } else {
+            for (j, (label, value)) in lines.iter().enumerate() {
+                let is_last = j == lines.len() - 1;
+                let conn = if is_last { "└─" } else { "├─" };
+                println!("  {}  {} {} {}",
+                    c_muted(pipe), c_muted(conn), c_muted(&format!("{:<7}", label)), value);
+            }
+        }
+
+        if !is_last_step {
+            println!("  {}", c_muted("│"));
+        }
     }
 
     if !n.observations.is_empty() {
-        println!("  {}", c_muted("Observations:"));
+        println!("\n  {}", c_muted("Observations:"));
         for obs in &n.observations {
             println!("  {} {}: {}",
                 c_warn("⚠"), c_muted(&obs.kind.to_string()), obs.description);
         }
-        println!();
     }
+    println!();
 }
 
 fn print_overview(contract: &ContractDef, narratives: &[FunctionNarrative]) {
