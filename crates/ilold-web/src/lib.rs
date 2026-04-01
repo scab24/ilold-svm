@@ -11,16 +11,8 @@ use tower_http::cors::CorsLayer;
 
 use state::AppState;
 
-pub async fn serve(paths: Vec<PathBuf>, port: u16, max_seq_depth: usize) -> anyhow::Result<()> {
-    println!("Analyzing {} file(s)...", paths.len());
-    let state = Arc::new(AppState::from_paths(&paths, max_seq_depth)?);
-    println!(
-        "Ready: {} contracts, {} functions analyzed\n",
-        state.project.contracts.len(),
-        state.cfgs.len(),
-    );
-
-    let app = Router::new()
+fn build_router(state: Arc<AppState>) -> Router {
+    Router::new()
         .route("/api/project", get(api::project::get_project))
         .route("/api/project/map", get(api::project::get_project_map))
         .route("/api/contract/{name}", get(api::contract::get_contract))
@@ -36,11 +28,40 @@ pub async fn serve(paths: Vec<PathBuf>, port: u16, max_seq_depth: usize) -> anyh
         .route("/api/annotations/{id}", delete(api::annotations::delete_annotation))
         .route("/ws", get(ws::handler::ws_handler))
         .layer(CorsLayer::permissive())
-        .with_state(state);
+        .with_state(state)
+}
 
+pub async fn serve(paths: Vec<PathBuf>, port: u16, max_seq_depth: usize) -> anyhow::Result<()> {
+    println!("Analyzing {} file(s)...", paths.len());
+    let state = Arc::new(AppState::from_paths(&paths, max_seq_depth)?);
+    println!(
+        "Ready: {} contracts, {} functions analyzed\n",
+        state.project.contracts.len(),
+        state.cfgs.len(),
+    );
+
+    let app = build_router(state);
     let addr = format!("0.0.0.0:{port}");
     println!("Server running at http://localhost:{port}");
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+pub async fn start_server(
+    paths: Vec<PathBuf>,
+    port: u16,
+    max_seq_depth: usize,
+) -> anyhow::Result<(Arc<AppState>, u16)> {
+    let state = Arc::new(AppState::from_paths(&paths, max_seq_depth)?);
+    let app = build_router(state.clone());
+
+    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await?;
+    let actual_port = listener.local_addr()?.port();
+
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.ok();
+    });
+
+    Ok((state, actual_port))
 }

@@ -2,29 +2,37 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::RwLock;
 
+use tokio::sync::broadcast;
+
 use ilold_core::callgraph::builder::build_call_graph;
 use ilold_core::callgraph::types::CallGraph;
 use ilold_core::cfg::builder::CfgBuilder;
 use ilold_core::cfg::types::CfgGraph;
+use ilold_core::classify::entry_points::{classify_all, AccessLevel};
+use ilold_core::exploration::session::ExplorationSession;
 use ilold_core::model::project::Project;
 use ilold_core::parse::solar_frontend::SolarParser;
 use ilold_core::parse::ProjectParser;
 use ilold_core::pathtree::config::PruningConfig;
 use ilold_core::pathtree::types::PathTree;
 use ilold_core::pathtree::walker::build_path_tree;
+use ilold_core::sequence::analysis::{analyze_sequences, SequenceAnalysis};
 use ilold_core::sequence::builder::build_sequence_tree;
 use ilold_core::sequence::types::SequenceTree;
 
 use serde::{Deserialize, Serialize};
 
-/// All pre-computed analysis data, shared across REST and WebSocket handlers.
 pub struct AppState {
     pub project: Project,
     pub cfgs: HashMap<(String, String), CfgGraph>,
     pub path_trees: HashMap<(String, String), PathTree>,
     pub call_graphs: HashMap<String, CallGraph>,
     pub sequence_trees: HashMap<String, SequenceTree>,
+    pub sequence_analyses: HashMap<String, SequenceAnalysis>,
+    pub classifications: HashMap<String, Vec<(String, AccessLevel)>>,
     pub annotations: RwLock<Vec<Annotation>>,
+    pub session: RwLock<Option<ExplorationSession>>,
+    pub session_tx: broadcast::Sender<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,6 +76,8 @@ impl AppState {
         let mut path_trees = HashMap::new();
         let mut call_graphs = HashMap::new();
         let mut sequence_trees = HashMap::new();
+        let mut sequence_analyses = HashMap::new();
+        let mut classifications = HashMap::new();
 
         for contract in &project.contracts {
             let cg = build_call_graph(&project, contract);
@@ -94,7 +104,18 @@ impl AppState {
 
             let st = build_sequence_tree(contract, &contract_path_trees, max_seq_depth);
             sequence_trees.insert(contract.name.clone(), st);
+
+            let pt_map: HashMap<(String, String), PathTree> = contract_path_trees
+                .iter()
+                .map(|pt| ((pt.contract.clone(), pt.function.clone()), pt.clone()))
+                .collect();
+            let analysis = analyze_sequences(&pt_map, &contract.name);
+            sequence_analyses.insert(contract.name.clone(), analysis);
+
+            classifications.insert(contract.name.clone(), classify_all(contract));
         }
+
+        let (session_tx, _) = broadcast::channel(64);
 
         Ok(Self {
             project,
@@ -102,7 +123,11 @@ impl AppState {
             path_trees,
             call_graphs,
             sequence_trees,
+            sequence_analyses,
+            classifications,
             annotations: RwLock::new(Vec::new()),
+            session: RwLock::new(None),
+            session_tx,
         })
     }
 }
