@@ -167,9 +167,11 @@ fn handle_input(
             });
             match send_command(handle, client, base_url, &body) {
                 Ok(result) => {
-                    print_result(&result, steps);
                     if let CommandResult::StepAdded { function, .. } = &result {
                         steps.push(function.clone());
+                    }
+                    print_result(&result, steps);
+                    if matches!(&result, CommandResult::StepAdded { .. }) {
                         return InputResult::UpdatePrompt;
                     }
                 }
@@ -184,9 +186,11 @@ fn handle_input(
             });
             match send_command(handle, client, base_url, &body) {
                 Ok(result) => {
-                    print_result(&result, steps);
                     if matches!(&result, CommandResult::StepRemoved { .. }) {
                         steps.pop();
+                    }
+                    print_result(&result, steps);
+                    if matches!(&result, CommandResult::StepRemoved { .. }) {
                         return InputResult::UpdatePrompt;
                     }
                 }
@@ -285,6 +289,14 @@ fn handle_input(
             });
             match send_command(handle, client, base_url, &body) {
                 Ok(result) => print_result(&result, steps),
+                Err(e) => eprintln!("  {}", c_danger(&e)),
+            }
+            InputResult::Continue
+        }
+
+        "v" | "vars" => {
+            match send_get(handle, client, &format!("{base_url}/api/contract/{contract}")) {
+                Ok(val) => print_vars(&val),
                 Err(e) => eprintln!("  {}", c_danger(&e)),
             }
             InputResult::Continue
@@ -511,9 +523,12 @@ fn print_result(result: &CommandResult, steps: &[String]) {
             }
             println!("  {}[ SEQUENCE ]{}", "═".truecolor(60, 70, 90), "═".truecolor(60, 70, 90));
             for (i, name) in steps.iter().enumerate() {
-                println!("    {}. {}", i, c_muted(name));
+                if i == *step_index {
+                    println!("  {} {}. {}  ← current", ">".truecolor(100, 160, 110), i, c_bright(name));
+                } else {
+                    println!("    {}. {}", i, c_muted(name));
+                }
             }
-            println!("  {} {}. {}  ← current", ">".truecolor(100, 160, 110), step_index, c_bright(function));
             println!();
         }
         CommandResult::StepRemoved { remaining } => {
@@ -606,6 +621,31 @@ fn format_access_detail(access: &AccessLevel) -> String {
     }
 }
 
+fn print_vars(val: &serde_json::Value) {
+    let vars = match val.get("state_vars").and_then(|v| v.as_array()) {
+        Some(v) => v,
+        None => { println!("  No state variables found."); return; }
+    };
+    println!();
+    for v in vars {
+        let name = v.get("name").and_then(|n| n.as_str()).unwrap_or("?");
+        let type_name = v.get("type_name").and_then(|n| n.as_str()).unwrap_or("?");
+        let is_const = v.get("is_constant").and_then(|n| n.as_bool()).unwrap_or(false);
+        let is_immut = v.get("is_immutable").and_then(|n| n.as_bool()).unwrap_or(false);
+
+        let tag = if is_const {
+            c_muted("const").to_string()
+        } else if is_immut {
+            c_muted("immutable").to_string()
+        } else {
+            c_warn("mutable").to_string()
+        };
+
+        println!("  {} {} {}", tag, c_accent(name), c_muted(type_name));
+    }
+    println!();
+}
+
 fn print_narrative(val: &serde_json::Value) {
     println!();
     if let Some(name) = val.get("name").and_then(|v| v.as_str()) {
@@ -619,24 +659,35 @@ fn print_narrative(val: &serde_json::Value) {
     if let Some(total) = val.get("total_paths").and_then(|v| v.as_u64()) {
         let happy = val.get("happy_paths").and_then(|v| v.as_u64()).unwrap_or(0);
         let revert = val.get("revert_paths").and_then(|v| v.as_u64()).unwrap_or(0);
-        println!("  {} path(s): {} happy, {} revert", total, c_ok(&happy.to_string()), c_danger(&revert.to_string()));
+        println!("  ├── {} path(s): {} happy, {} revert", total, c_ok(&happy.to_string()), c_danger(&revert.to_string()));
+    }
+    if let Some(reads) = val.get("state_reads").and_then(|v| v.as_array()) {
+        if !reads.is_empty() {
+            let vars: Vec<&str> = reads.iter().filter_map(|r| r.as_str()).collect();
+            println!("  ├── {} {}", c_muted("reads:"), c_muted(&vars.join(", ")));
+        }
     }
     if let Some(writes) = val.get("state_writes").and_then(|v| v.as_array()) {
         if !writes.is_empty() {
             let vars: Vec<&str> = writes.iter().filter_map(|w| w.as_str()).collect();
-            println!("  {} {}", c_danger("✏"), c_warn(&vars.join(", ")));
+            println!("  ├── {} {}", c_danger("writes:"), c_warn(&vars.join(", ")));
         }
     }
     if let Some(calls) = val.get("external_calls").and_then(|v| v.as_array()) {
         if !calls.is_empty() {
             let names: Vec<&str> = calls.iter().filter_map(|c| c.as_str()).collect();
-            println!("  {} {}", c_warn("↗"), c_muted(&names.join(", ")));
+            println!("  ├── {} {}", c_warn("calls:"), c_muted(&names.join(", ")));
         }
     }
-    if let Some(obs) = val.get("observations").and_then(|v| v.as_array()) {
-        for o in obs {
+    let obs = val.get("observations").and_then(|v| v.as_array());
+    let has_obs = obs.map(|o| !o.is_empty()).unwrap_or(false);
+    if has_obs {
+        let obs = obs.unwrap();
+        println!("  └── {}:", c_danger("observations"));
+        for (i, o) in obs.iter().enumerate() {
+            let branch = if i == obs.len() - 1 { "└── " } else { "├── " };
             if let Some(desc) = o.get("description").and_then(|v| v.as_str()) {
-                println!("  {} {}", c_danger("!"), c_danger(desc));
+                println!("      {}{}", c_muted(branch), c_danger(desc));
             }
         }
     }
@@ -687,6 +738,7 @@ fn print_help() {
     println!("  {} {}   clear             Reset sequence", c_accent("cl"), c_muted("|"));
     println!("  {}  {}   state             Show accumulated state", c_accent("s"), c_muted("|"));
     println!("  {}  {}   functions         List available functions", c_accent("f"), c_muted("|"));
+    println!("  {}  {}   vars              List state variables", c_accent("v"), c_muted("|"));
     println!("  {}  {}   who <var>         Who reads/writes a variable", c_accent("w"), c_muted("|"));
     println!("  {}  {}   info <func>       Function detail (no sequence change)", c_accent("i"), c_muted("|"));
     println!("  {} {}   sequence          Sequence narrative with dependencies", c_accent("seq"), c_muted("|"));
