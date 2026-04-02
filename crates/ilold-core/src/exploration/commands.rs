@@ -34,6 +34,7 @@ pub enum SessionCommand {
     Note { text: String },
     Status { func: String, status: ReviewStatus },
     Session,
+    Who { variable: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -63,6 +64,11 @@ pub enum CommandResult {
         contract: String,
         steps: Vec<String>,
         findings_count: usize,
+    },
+    VariableInfo {
+        variable: String,
+        writers: Vec<(String, AccessLevel)>,
+        readers: Vec<(String, AccessLevel)>,
     },
     Error {
         message: String,
@@ -120,6 +126,7 @@ pub fn execute_command(
             steps: session.current_sequence().into_iter().map(|s| s.to_string()).collect(),
             findings_count: session.journal.findings.len(),
         },
+        SessionCommand::Who { variable } => execute_who(data, &variable),
     }
 }
 
@@ -225,6 +232,36 @@ fn execute_status(
         timestamp: timestamp.into(),
     });
     CommandResult::StatusUpdated
+}
+
+fn execute_who(data: &AnalysisData, variable: &str) -> CommandResult {
+    let var_lower = variable.to_lowercase();
+
+    let access_for = |func_name: &str| -> AccessLevel {
+        data.classifications.iter()
+            .find(|(name, _)| name == func_name)
+            .map(|(_, access)| access.clone())
+            .unwrap_or(AccessLevel::Internal)
+    };
+
+    let writers: Vec<(String, AccessLevel)> = data.behaviors.iter()
+        .filter(|b| b.state_writes.iter().any(|w| w.to_lowercase() == var_lower))
+        .map(|b| (b.name.clone(), access_for(&b.name)))
+        .collect();
+
+    let readers: Vec<(String, AccessLevel)> = data.behaviors.iter()
+        .filter(|b| b.state_reads.iter().any(|r| r.to_lowercase() == var_lower))
+        .filter(|b| !b.state_writes.iter().any(|w| w.to_lowercase() == var_lower))
+        .map(|b| (b.name.clone(), access_for(&b.name)))
+        .collect();
+
+    if writers.is_empty() && readers.is_empty() {
+        return CommandResult::Error {
+            message: format!("Variable '{}' not found in any function", variable),
+        };
+    }
+
+    CommandResult::VariableInfo { variable: variable.to_string(), writers, readers }
 }
 
 pub fn get_step_narrative(

@@ -122,3 +122,25 @@ async fn no_broadcast_on_non_mutating_command() {
     let result = tokio::time::timeout(Duration::from_millis(500), ws.next()).await;
     assert!(result.is_err(), "Should have timed out — no broadcast expected");
 }
+
+#[tokio::test]
+async fn who_command_returns_variable_info() {
+    let paths = vec![fixture("staking.sol")];
+    let (_, port) = ilold_web::start_server(paths, 0, 2).await.unwrap();
+
+    let client = reqwest::Client::new();
+    let res = client
+        .post(format!("http://127.0.0.1:{port}/api/cmd"))
+        .json(&serde_json::json!({
+            "contract": "Staking",
+            "command": { "Who": { "variable": "balances" } }
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert!(res.status().is_success());
+    let body: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(body["VariableInfo"]["variable"], "balances");
+    assert!(body["VariableInfo"]["writers"].is_array());
+}
