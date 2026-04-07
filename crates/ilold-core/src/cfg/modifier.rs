@@ -33,9 +33,16 @@ fn has_placeholder(stmts: &[Statement]) -> bool {
     stmts.iter().any(|s| match &s.kind {
         StatementKind::Placeholder => true,
         StatementKind::Block { statements } => has_placeholder(statements),
+        StatementKind::UncheckedBlock { statements } => has_placeholder(statements),
         StatementKind::If { then_body, else_body, .. } => {
             has_placeholder(then_body)
                 || else_body.as_ref().is_some_and(|e| has_placeholder(e))
+        }
+        StatementKind::For { body, .. } => has_placeholder(body),
+        StatementKind::While { body, .. } => has_placeholder(body),
+        StatementKind::DoWhile { body, .. } => has_placeholder(body),
+        StatementKind::TryCatch { clauses, .. } => {
+            clauses.iter().any(|c| has_placeholder(&c.body))
         }
         _ => false,
     })
@@ -58,6 +65,14 @@ fn replace_placeholder(modifier_body: &[Statement], function_body: &[Statement])
                     span: stmt.span,
                 });
             }
+            StatementKind::UncheckedBlock { statements } => {
+                result.push(Statement {
+                    kind: StatementKind::UncheckedBlock {
+                        statements: replace_placeholder(statements, function_body),
+                    },
+                    span: stmt.span,
+                });
+            }
             StatementKind::If { condition, then_body, else_body } => {
                 result.push(Statement {
                     kind: StatementKind::If {
@@ -66,6 +81,49 @@ fn replace_placeholder(modifier_body: &[Statement], function_body: &[Statement])
                         else_body: else_body
                             .as_ref()
                             .map(|e| replace_placeholder(e, function_body)),
+                    },
+                    span: stmt.span,
+                });
+            }
+            StatementKind::For { init, condition, increment, body } => {
+                result.push(Statement {
+                    kind: StatementKind::For {
+                        init: init.clone(),
+                        condition: condition.clone(),
+                        increment: increment.clone(),
+                        body: replace_placeholder(body, function_body),
+                    },
+                    span: stmt.span,
+                });
+            }
+            StatementKind::While { condition, body } => {
+                result.push(Statement {
+                    kind: StatementKind::While {
+                        condition: condition.clone(),
+                        body: replace_placeholder(body, function_body),
+                    },
+                    span: stmt.span,
+                });
+            }
+            StatementKind::DoWhile { body, condition } => {
+                result.push(Statement {
+                    kind: StatementKind::DoWhile {
+                        body: replace_placeholder(body, function_body),
+                        condition: condition.clone(),
+                    },
+                    span: stmt.span,
+                });
+            }
+            StatementKind::TryCatch { expression, clauses } => {
+                let new_clauses = clauses.iter().map(|c| crate::model::statement::CatchClause {
+                    name: c.name.clone(),
+                    params: c.params.clone(),
+                    body: replace_placeholder(&c.body, function_body),
+                }).collect();
+                result.push(Statement {
+                    kind: StatementKind::TryCatch {
+                        expression: expression.clone(),
+                        clauses: new_clauses,
                     },
                     span: stmt.span,
                 });

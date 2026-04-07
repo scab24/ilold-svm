@@ -1,11 +1,13 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
 use crate::cfg::types::{CfgGraph, CfgStatement};
 use crate::journal::types::AuditJournal;
 use crate::model::common::StateVar;
+use crate::model::contract::ContractDef;
 use crate::model::expression::AssignOperator;
+use crate::model::project::Project;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExplorationSession {
@@ -26,6 +28,8 @@ pub struct StateMutation {
     pub operator: AssignOperator,
     pub value_expr: String,
     pub step_index: usize,
+    #[serde(default)]
+    pub via: Option<String>,
 }
 
 impl ExplorationSession {
@@ -46,6 +50,42 @@ impl ExplorationSession {
     ) -> &ExplorationStep {
         let step_index = self.steps.len();
         let mutations = extract_mutations(cfg, state_vars, step_index);
+
+        self.steps.push(ExplorationStep {
+            function: function.into(),
+            mutations,
+        });
+
+        self.journal.record(crate::journal::types::JournalEntry::SequenceExplored {
+            steps: self.steps.iter().map(|s| s.function.clone()).collect(),
+            timestamp: timestamp.into(),
+        });
+
+        self.steps.last().unwrap()
+    }
+
+    pub fn add_step_with_internals(
+        &mut self,
+        function: &str,
+        cfg: &CfgGraph,
+        state_vars: &[StateVar],
+        project: &Project,
+        owning_contract: &ContractDef,
+        all_cfgs: &HashMap<(String, String), CfgGraph>,
+        timestamp: &str,
+    ) -> &ExplorationStep {
+        let step_index = self.steps.len();
+        let mut mutations = extract_mutations(cfg, state_vars, step_index);
+
+        collect_transitive_mutations(
+            cfg,
+            state_vars,
+            project,
+            owning_contract,
+            all_cfgs,
+            step_index,
+            &mut mutations,
+        );
 
         self.steps.push(ExplorationStep {
             function: function.into(),
@@ -97,7 +137,11 @@ impl ExplorationSession {
                 let func = self.steps.get(m.step_index)
                     .map(|s| s.function.as_str())
                     .unwrap_or("?");
-                format!("{}{} (step {}, {})", op_str, m.value_expr, m.step_index, func)
+                let suffix = match &m.via {
+                    Some(chain) => format!(" via {}", chain),
+                    None => String::new(),
+                };
+                format!("{}{} (step {}, {}{})", op_str, m.value_expr, m.step_index, func, suffix)
             }).collect();
 
             VariableSummary { variable: var, changes }
@@ -130,25 +174,27 @@ fn extract_mutations(
                     let base = target.split('[').next().unwrap_or(target);
                     let base = base.split('.').next().unwrap_or(base);
                     if state_vars.iter().any(|sv| sv.name == base) {
-                        let key = (target.clone(), *operator);
+                        let key = (target.clone(), *operator, value.clone());
                         if seen.insert(key) {
                             mutations.push(StateMutation {
                                 variable: target.clone(),
                                 operator: *operator,
                                 value_expr: value.clone(),
                                 step_index,
+                                via: None,
                             });
                         }
                     }
                 }
                 CfgStatement::StateWrite { variable, .. } => {
-                    let key = (variable.clone(), AssignOperator::Assign);
+                    let key = (variable.clone(), AssignOperator::Assign, String::new());
                     if seen.insert(key) {
                         mutations.push(StateMutation {
                             variable: variable.clone(),
                             operator: AssignOperator::Assign,
                             value_expr: String::new(),
                             step_index,
+                            via: None,
                         });
                     }
                 }
@@ -158,6 +204,128 @@ fn extract_mutations(
     }
 
     mutations
+}
+
+fn collect_transitive_mutations(
+    root_cfg: &CfgGraph,
+    state_vars: &[StateVar],
+    project: &Project,
+    owning_contract: &ContractDef,
+    all_cfgs: &HashMap<(String, String), CfgGraph>,
+    step_index: usize,
+    out: &mut Vec<StateMutation>,
+) {
+    use crate::util::is_type_cast;
+
+    let mut visited: HashSet<(String, String)> = HashSet::new();
+
+    // Seed the stack with internal calls from the root CFG.
+    let mut stack: Vec<(String, String, Vec<String>)> = Vec::new();
+    for node_idx in root_cfg.node_indices() {
+        for stmt in &root_cfg[node_idx].statements {
+            if let CfgStatement::InternalCall { function, .. } = stmt {
+                if is_type_cast(function) { continue; }
+                stack.push((owning_contract.name.clone(), function.clone(), vec![function.clone()]));
+            }
+        }
+    }
+
+    let mut seen_direct: HashSet<(String, AssignOperator, String)> = out.iter()
+        .map(|m| (m.variable.clone(), m.operator, m.value_expr.clone()))
+        .collect();
+
+    while let Some((ctx_name, callee, chain)) = stack.pop() {
+        let ctx = match project.contracts.iter().find(|c| c.name == ctx_name) {
+            Some(c) => c,
+            None => continue,
+        };
+
+        // Resolve callee: current contract first, then walk inheritance chain.
+        let (callee_contract_name, callee_cfg) = match resolve_callee_cfg(&callee, ctx, project, all_cfgs) {
+            Some(x) => x,
+            None => continue,
+        };
+
+        let visit_key = (callee_contract_name.clone(), callee.clone());
+        if !visited.insert(visit_key) { continue; }
+
+        let chain_str = chain.join(" -> ");
+
+        for node_idx in callee_cfg.node_indices() {
+            for stmt in &callee_cfg[node_idx].statements {
+                match stmt {
+                    CfgStatement::Assignment { target, operator, value, .. } => {
+                        let base = target.split('[').next().unwrap_or(target);
+                        let base = base.split('.').next().unwrap_or(base);
+                        if state_vars.iter().any(|sv| sv.name == base) {
+                            let key = (target.clone(), *operator, value.clone());
+                            if seen_direct.insert(key) {
+                                out.push(StateMutation {
+                                    variable: target.clone(),
+                                    operator: *operator,
+                                    value_expr: value.clone(),
+                                    step_index,
+                                    via: Some(chain_str.clone()),
+                                });
+                            }
+                        }
+                    }
+                    CfgStatement::StateWrite { variable, .. } => {
+                        let key = (variable.clone(), AssignOperator::Assign, String::new());
+                        if seen_direct.insert(key) {
+                            out.push(StateMutation {
+                                variable: variable.clone(),
+                                operator: AssignOperator::Assign,
+                                value_expr: String::new(),
+                                step_index,
+                                via: Some(chain_str.clone()),
+                            });
+                        }
+                    }
+                    CfgStatement::InternalCall { function, .. } => {
+                        if is_type_cast(function) { continue; }
+                        let mut new_chain = chain.clone();
+                        new_chain.push(function.clone());
+                        stack.push((callee_contract_name.clone(), function.clone(), new_chain));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+fn resolve_callee_cfg<'a>(
+    callee: &str,
+    starting_contract: &ContractDef,
+    project: &Project,
+    all_cfgs: &'a HashMap<(String, String), CfgGraph>,
+) -> Option<(String, &'a CfgGraph)> {
+    let key = (starting_contract.name.clone(), callee.to_string());
+    if let Some(cfg) = all_cfgs.get(&key) {
+        return Some((starting_contract.name.clone(), cfg));
+    }
+
+    let mut visited: HashSet<String> = HashSet::new();
+    let mut queue: Vec<String> = starting_contract.inherits.clone();
+
+    while let Some(parent_name) = queue.pop() {
+        if !visited.insert(parent_name.clone()) { continue; }
+
+        let key = (parent_name.clone(), callee.to_string());
+        if let Some(cfg) = all_cfgs.get(&key) {
+            return Some((parent_name, cfg));
+        }
+
+        if let Some(parent_idx) = project.contract_index.get(&parent_name) {
+            let parent = &project.contracts[*parent_idx];
+            for grand in &parent.inherits {
+                queue.push(grand.clone());
+            }
+        }
+    }
+
+    None
 }
 
 #[cfg(test)]
@@ -219,12 +387,14 @@ mod tests {
                     operator: AssignOperator::AddAssign,
                     value_expr: "amount".into(),
                     step_index: 0,
+                    via: None,
                 },
                 StateMutation {
                     variable: "totalStaked".into(),
                     operator: AssignOperator::AddAssign,
                     value_expr: "amount".into(),
                     step_index: 0,
+                    via: None,
                 },
             ],
         });
@@ -236,6 +406,7 @@ mod tests {
                     operator: AssignOperator::SubAssign,
                     value_expr: "amount".into(),
                     step_index: 1,
+                    via: None,
                 },
             ],
         });

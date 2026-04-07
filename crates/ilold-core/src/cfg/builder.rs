@@ -3,6 +3,7 @@ use petgraph::stable_graph::NodeIndex;
 use crate::model::contract::ContractDef;
 use crate::model::expression::{BinaryOperator, Expression, ExpressionKind, UnaryOperator};
 use crate::model::function::FunctionDef;
+use crate::model::project::Project;
 use crate::model::statement::{Statement, StatementKind};
 
 use super::error::CfgError;
@@ -16,7 +17,19 @@ pub struct CfgBuilder {
 }
 
 impl CfgBuilder {
+    /// Build a CFG without cross-contract context. Modifier resolution is
+    /// limited to the current contract — inherited modifiers will be skipped.
     pub fn build(function: &FunctionDef, contract: &ContractDef) -> Result<CfgGraph, CfgError> {
+        Self::build_with_project(function, contract, None)
+    }
+
+    /// Build a CFG with an optional `Project` reference, enabling modifier
+    /// resolution through the inheritance chain.
+    pub fn build_with_project(
+        function: &FunctionDef,
+        contract: &ContractDef,
+        project: Option<&Project>,
+    ) -> Result<CfgGraph, CfgError> {
         let mut builder = CfgBuilder {
             graph: CfgGraph::new(),
             next_block_id: 0,
@@ -39,7 +52,11 @@ impl CfgBuilder {
                 .modifiers
                 .iter()
                 .filter_map(|mref| {
-                    contract.modifiers.iter().find(|m| m.name == mref.name)
+                    if let Some(proj) = project {
+                        proj.resolve_modifier(contract, &mref.name)
+                    } else {
+                        contract.modifiers.iter().find(|m| m.name == mref.name)
+                    }
                 })
                 .collect();
             if modifier_defs.len() == function.modifiers.len() {
@@ -134,7 +151,7 @@ impl CfgBuilder {
                 if let Some(val) = initial_value {
                     self.add_stmt_to_current(CfgStatement::Assignment {
                         target: name.clone(),
-                        value: format!("{:?}", val.kind),
+                        value: expr_to_string(val),
                         operator: crate::model::expression::AssignOperator::Assign,
                         span: None,
                     });
@@ -487,10 +504,10 @@ fn classify_expression(expr: &Expression) -> Vec<CfgStatement> {
         ExpressionKind::FunctionCall { .. } => {
             // Already handled by collect_calls
         }
-        ExpressionKind::Assignment { target, operator, .. } => {
+        ExpressionKind::Assignment { target, operator, value } => {
             stmts.push(CfgStatement::Assignment {
                 target: expr_to_string(target),
-                value: expr_to_string(expr),
+                value: expr_to_string(value),
                 operator: *operator,
                 span: None,
             });
@@ -514,11 +531,15 @@ fn collect_calls(expr: &Expression, stmts: &mut Vec<CfgStatement>) {
         ExpressionKind::FunctionCall { callee, arguments } => {
             // Classify this call
             match &callee.kind {
+                // `uint32(x)` etc. — type conversion, not a call.
+                ExpressionKind::TypeMeta { .. } => {}
                 ExpressionKind::Identifier { name } => {
-                    stmts.push(CfgStatement::InternalCall {
-                        function: name.clone(),
-                        span: None,
-                    });
+                    if !crate::util::is_type_cast(name) {
+                        stmts.push(CfgStatement::InternalCall {
+                            function: name.clone(),
+                            span: None,
+                        });
+                    }
                 }
                 ExpressionKind::MemberAccess { object, member } => {
                     if let ExpressionKind::Identifier { name } = &object.kind {
@@ -592,6 +613,12 @@ fn expr_to_string(expr: &Expression) -> String {
             format!("{}.{}", expr_to_string(object), member)
         }
         ExpressionKind::FunctionCall { callee, arguments } => {
+            // Render type conversion `uint32(x)` as `uint32(x)` instead of
+            // `type(uint32)(x)` when the callee is a TypeMeta expression.
+            if let ExpressionKind::TypeMeta { type_name } = &callee.kind {
+                let args: Vec<String> = arguments.iter().map(expr_to_string).collect();
+                return format!("{type_name}({})", args.join(", "));
+            }
             let args: Vec<String> = arguments.iter().map(expr_to_string).collect();
             format!("{}({})", expr_to_string(callee), args.join(", "))
         }

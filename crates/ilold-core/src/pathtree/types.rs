@@ -52,6 +52,13 @@ pub enum TerminalKind {
 pub struct PathAnnotations {
     pub state_writes: Vec<String>,
     pub state_reads: Vec<String>,
+    /// Fully qualified write paths with normalized indices, e.g.
+    /// `proposals[].executed`, `balances[]`. Preserved for accurate
+    /// who-style queries that distinguish nested fields.
+    #[serde(default)]
+    pub state_write_paths: Vec<String>,
+    #[serde(default)]
+    pub state_read_paths: Vec<String>,
     pub external_calls: Vec<ExternalCallInfo>,
     pub internal_calls: Vec<String>,
     pub events_emitted: Vec<String>,

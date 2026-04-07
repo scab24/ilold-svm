@@ -12,3 +12,4 @@ pub mod classify;
 pub mod narrative;
 pub mod journal;
 pub mod exploration;
+pub mod util;

@@ -11,7 +11,6 @@ use ilold_core::exploration::commands::{
     get_session_state, get_step_narrative,
 };
 use ilold_core::exploration::session::{ExplorationSession, VariableSummary};
-use ilold_core::model::contract::ContractKind;
 use ilold_core::narrative::types::{FunctionNarrative, SequenceNarrative};
 
 use crate::state::AppState;
@@ -37,12 +36,15 @@ fn build_analysis_data<'a>(
         .ok_or((StatusCode::NOT_FOUND, "No classifications for contract".into()))?;
 
     Ok(AnalysisData {
+        project: &state.project,
         contract,
         cfgs: &state.cfgs,
         path_trees: &state.path_trees,
         behaviors: &seq_analysis.functions,
         transitions: &seq_analysis.transitions,
         classifications: classifs,
+        all_sequence_analyses: &state.sequence_analyses,
+        all_classifications: &state.classifications,
     })
 }
 
@@ -57,18 +59,9 @@ fn resolve_contract(state: &AppState, explicit: Option<&str>) -> Result<String, 
     }
     drop(session_guard);
 
-    let non_interface: Vec<_> = state.project.contracts.iter()
-        .filter(|c| c.kind != ContractKind::Interface)
-        .collect();
-
-    match non_interface.len() {
-        0 => Err((StatusCode::BAD_REQUEST, "No contracts found".into())),
-        1 => Ok(non_interface[0].name.clone()),
-        _ => Err((StatusCode::BAD_REQUEST, format!(
-            "Multiple contracts, specify 'contract' field: {}",
-            non_interface.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", ")
-        ))),
-    }
+    state.project.find_contract(None)
+        .map(|c| c.name.clone())
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))
 }
 
 fn timestamp_now() -> String {

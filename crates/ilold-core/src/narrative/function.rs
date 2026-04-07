@@ -1,11 +1,13 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::cfg::types::{BlockKind, BranchEdge, CfgGraph, CfgStatement};
 use crate::classify::entry_points::{classify_function, AccessLevel};
 use crate::model::contract::ContractDef;
 use crate::model::function::FunctionDef;
+use crate::model::project::Project;
+use crate::narrative::types::TransitiveEffect;
 use crate::pathtree::types::{PathTree, TerminalKind};
-use crate::sequence::analysis::FunctionBehavior;
+use crate::sequence::analysis::{FunctionBehavior, SequenceAnalysis};
 
 use super::types::*;
 
@@ -15,6 +17,8 @@ pub fn build_function_narrative(
     path_tree: &PathTree,
     cfg: &CfgGraph,
     all_behaviors: &[FunctionBehavior],
+    project: &Project,
+    all_sequence_analyses: &HashMap<String, SequenceAnalysis>,
 ) -> FunctionNarrative {
     let access = classify_function(function, contract);
 
@@ -87,13 +91,50 @@ pub fn build_function_narrative(
     let mut writes = HashSet::new();
     let mut reads = HashSet::new();
     let mut calls = HashSet::new();
+    let mut internal = HashSet::new();
+    let mut events_set = HashSet::new();
     for p in &path_tree.paths {
         for w in &p.annotations.state_writes { writes.insert(w.clone()); }
         for r in &p.annotations.state_reads { reads.insert(r.clone()); }
         for c in &p.annotations.external_calls {
             calls.insert(format!("{}.{}", c.target, c.function));
         }
+        for ic in &p.annotations.internal_calls {
+            internal.insert(ic.clone());
+        }
+        for ev in &p.annotations.events_emitted {
+            events_set.insert(ev.clone());
+        }
     }
+
+    let mut writes: Vec<String> = writes.into_iter().collect();
+    writes.sort();
+    let mut reads: Vec<String> = reads.into_iter().collect();
+    reads.sort();
+    let mut calls: Vec<String> = calls.into_iter().collect();
+    calls.sort();
+    let mut internal: Vec<String> = internal.into_iter().collect();
+    internal.sort();
+    let mut events: Vec<String> = events_set.into_iter().collect();
+    events.sort();
+
+    // Look up this function's behavior to get internal_calls
+    let root_behavior = all_behaviors.iter().find(|b| b.name == function.name);
+
+    let (transitive_writes, transitive_reads, transitive_external, transitive_events) =
+        if let Some(root) = root_behavior {
+            collect_transitive_effects(
+                root,
+                contract,
+                project,
+                all_sequence_analyses,
+                &writes,
+                &reads,
+                &calls,
+            )
+        } else {
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new())
+        };
 
     FunctionNarrative {
         contract: contract.name.clone(),
@@ -104,11 +145,47 @@ pub fn build_function_narrative(
         revert_paths: path_tree.stats.revert_paths,
         paths,
         observations,
-        state_writes: writes.into_iter().collect(),
-        state_reads: reads.into_iter().collect(),
-        external_calls: calls.into_iter().collect(),
+        state_writes: writes,
+        state_reads: reads,
+        external_calls: calls,
+        internal_calls: internal,
         modifiers: function.modifiers.iter().map(|m| m.name.clone()).collect(),
+        events,
+        transitive_state_writes: transitive_writes,
+        transitive_state_reads: transitive_reads,
+        transitive_external_calls: transitive_external,
+        transitive_events,
     }
+}
+
+fn collect_transitive_effects(
+    root: &FunctionBehavior,
+    _root_contract: &ContractDef,
+    _project: &Project,
+    _all: &HashMap<String, SequenceAnalysis>,
+    _direct_writes: &[String],
+    _direct_reads: &[String],
+    _direct_external: &[String],
+) -> (Vec<TransitiveEffect>, Vec<TransitiveEffect>, Vec<TransitiveEffect>, Vec<TransitiveEffect>) {
+    // Read pre-computed transitive sets from FunctionBehavior.
+    // Chain info is lost in this simpler form — will be restored in Phase 3.
+    fn map_to_effects(items: &[String]) -> Vec<TransitiveEffect> {
+        items
+            .iter()
+            .map(|item| TransitiveEffect {
+                via: vec!["(transitive)".to_string()],
+                item: item.clone(),
+                origin_contract: String::new(),
+            })
+            .collect()
+    }
+
+    (
+        map_to_effects(&root.transitive_state_writes),
+        map_to_effects(&root.transitive_state_reads),
+        map_to_effects(&root.transitive_external_calls),
+        map_to_effects(&root.transitive_events),
+    )
 }
 
 fn statement_to_step(stmt: &CfgStatement, branch: Option<BranchDirection>) -> Option<NarrativeStep> {

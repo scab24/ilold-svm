@@ -18,15 +18,25 @@ pub async fn run(paths: Vec<PathBuf>, port: u16, max_seq_depth: usize) -> Result
     println!("Analyzing {} file(s)...", paths.len());
     let (state, actual_port) = ilold_web::start_server(paths, port, max_seq_depth).await?;
 
-    let contract_name = state.project.contracts.iter()
-        .find(|c| c.kind != ilold_core::model::contract::ContractKind::Interface)
+    let contract_name = state.project.find_contract(None)
         .map(|c| c.name.clone())
-        .unwrap_or_else(|| "unknown".into());
+        .unwrap_or_else(|_| "unknown".into());
 
     let function_names: Vec<String> = state.project.contracts.iter()
         .find(|c| c.name == contract_name)
-        .map(|c| c.functions.iter().map(|f| f.name.clone()).collect())
+        .map(|c| {
+            state.project
+                .accessible_functions(c)
+                .iter()
+                .map(|af| af.function.name.clone())
+                .collect()
+        })
         .unwrap_or_default();
+
+    let contract_names: Vec<String> = state.project.contracts.iter()
+        .map(|c| c.name.clone())
+        .filter(|n| !n.is_empty())
+        .collect();
 
     let func_count = function_names.len();
 
@@ -38,15 +48,23 @@ pub async fn run(paths: Vec<PathBuf>, port: u16, max_seq_depth: usize) -> Result
     println!("{}\n", banner);
 
     let handle = tokio::runtime::Handle::current();
+    let state_for_thread = state.clone();
     let repl_thread = std::thread::spawn(move || {
-        repl_loop(handle, actual_port, &contract_name, &function_names);
+        repl_loop(handle, actual_port, contract_name, function_names, contract_names, state_for_thread);
     });
 
     repl_thread.join().map_err(|_| anyhow::anyhow!("REPL thread panicked"))?;
     Ok(())
 }
 
-fn repl_loop(handle: tokio::runtime::Handle, port: u16, contract: &str, functions: &[String]) {
+fn repl_loop(
+    handle: tokio::runtime::Handle,
+    port: u16,
+    mut contract: String,
+    mut functions: Vec<String>,
+    contract_names: Vec<String>,
+    state: std::sync::Arc<ilold_web::state::AppState>,
+) {
     let history_path = dirs::home_dir()
         .map(|h| h.join(".ilold").join("history"))
         .unwrap_or_else(|| PathBuf::from(".ilold_history"));
@@ -59,13 +77,14 @@ fn repl_loop(handle: tokio::runtime::Handle, port: u16, contract: &str, function
         FileBackedHistory::with_file(500, history_path).expect("Failed to create history"),
     );
 
-    let completer = Box::new(IloldCompleter {
-        functions: functions.to_vec(),
-    });
+    let completer = std::sync::Arc::new(std::sync::Mutex::new(IloldCompleter {
+        functions: functions.clone(),
+        contracts: contract_names.clone(),
+    }));
 
     let mut editor = Reedline::create()
         .with_history(history)
-        .with_completer(completer)
+        .with_completer(Box::new(CompleterWrapper(completer.clone())))
         .with_hinter(Box::new(DefaultHinter::default().with_style(
             nu_ansi_term::Style::new().fg(nu_ansi_term::Color::DarkGray),
         )));
@@ -76,7 +95,7 @@ fn repl_loop(handle: tokio::runtime::Handle, port: u16, contract: &str, function
     let mut scenario_name: Option<String> = None;
 
     let mut prompt = IloldPrompt {
-        contract: contract.to_string(),
+        contract: contract.clone(),
         steps: Vec::new(),
     };
 
@@ -87,13 +106,29 @@ fn repl_loop(handle: tokio::runtime::Handle, port: u16, contract: &str, function
                 if line.is_empty() { continue; }
 
                 match handle_input(
-                    line, &handle, &client, &base_url, contract,
-                    &mut steps, &mut scenario_name,
+                    line, &handle, &client, &base_url, &contract,
+                    &mut steps, &mut scenario_name, &state,
                 ) {
                     InputResult::Continue => {}
                     InputResult::Quit => break,
                     InputResult::UpdatePrompt => {
                         prompt.steps = steps.clone();
+                    }
+                    InputResult::SwitchContract(new_name) => {
+                        contract = new_name.clone();
+                        steps.clear();
+                        if let Some(c) = state.project.contracts.iter().find(|c| c.name == new_name) {
+                            functions = state.project
+                                .accessible_functions(c)
+                                .iter()
+                                .map(|af| af.function.name.clone())
+                                .collect();
+                            if let Ok(mut comp) = completer.lock() {
+                                comp.functions = functions.clone();
+                            }
+                        }
+                        prompt.contract = contract.clone();
+                        prompt.steps = Vec::new();
                     }
                 }
             }
@@ -110,6 +145,15 @@ enum InputResult {
     Continue,
     Quit,
     UpdatePrompt,
+    SwitchContract(String),
+}
+
+struct CompleterWrapper(std::sync::Arc<std::sync::Mutex<IloldCompleter>>);
+
+impl Completer for CompleterWrapper {
+    fn complete(&mut self, line: &str, pos: usize) -> Vec<Suggestion> {
+        self.0.lock().map(|mut c| c.complete(line, pos)).unwrap_or_default()
+    }
 }
 
 fn handle_input(
@@ -120,8 +164,11 @@ fn handle_input(
     contract: &str,
     steps: &mut Vec<String>,
     scenario_name: &mut Option<String>,
+    state: &std::sync::Arc<ilold_web::state::AppState>,
 ) -> InputResult {
-    let parts: Vec<&str> = line.splitn(2, ' ').collect();
+    // Allow shortcuts like `st0`, `st1`, `step2` without requiring a space.
+    let normalized = split_numeric_suffix(line);
+    let parts: Vec<&str> = normalized.splitn(2, ' ').collect();
     let cmd = parts[0].to_lowercase();
     let arg = parts.get(1).map(|s| s.trim()).unwrap_or("");
 
@@ -144,6 +191,35 @@ fn handle_input(
                 println!("  Scenario: {}", c_accent(arg));
             }
             InputResult::Continue
+        }
+
+        "ct" | "contracts" => {
+            print_contracts(state, contract);
+            InputResult::Continue
+        }
+        "use" => {
+            if arg.is_empty() {
+                println!("  Usage: use <contract>");
+                return InputResult::Continue;
+            }
+            match state.project.find_contract(Some(arg)) {
+                Ok(c) => {
+                    let name = c.name.clone();
+                    if name == contract {
+                        println!("  Already using {}", c_accent(&name));
+                        return InputResult::Continue;
+                    }
+                    println!("  {} Now using: {}", c_ok("✓"), c_accent(&name));
+                    if !steps.is_empty() {
+                        println!("  {}", c_muted(&format!("Cleared {} step(s) from previous contract", steps.len())));
+                    }
+                    InputResult::SwitchContract(name)
+                }
+                Err(e) => {
+                    eprintln!("  {}", c_danger(&e));
+                    InputResult::Continue
+                }
+            }
         }
 
         "c" | "call" => {
@@ -220,6 +296,14 @@ fn handle_input(
         }
         "f" | "functions" => {
             send_and_print(handle, client, base_url, contract, "Functions", steps);
+            InputResult::Continue
+        }
+        "fa" | "funcs-all" => {
+            send_and_print(handle, client, base_url, contract, "FunctionsAll", steps);
+            InputResult::Continue
+        }
+        "va" | "vars-all" => {
+            send_and_print(handle, client, base_url, contract, "StateVarsAll", steps);
             InputResult::Continue
         }
         "ss" | "session" => {
@@ -494,6 +578,24 @@ fn send_and_print(
     }
 }
 
+fn split_numeric_suffix(line: &str) -> String {
+    let prefixes = ["st", "step"];
+    let first_space = line.find(' ').unwrap_or(line.len());
+    let first_word = &line[..first_space];
+
+    for p in prefixes {
+        if first_word.len() > p.len()
+            && first_word.to_lowercase().starts_with(p)
+            && first_word[p.len()..].chars().all(|c| c.is_ascii_digit())
+        {
+            let (cmd, num) = first_word.split_at(p.len());
+            let rest = &line[first_space..];
+            return format!("{} {}{}", cmd, num, rest);
+        }
+    }
+    line.to_string()
+}
+
 fn normalize_severity(input: &str) -> Option<&'static str> {
     match input.to_lowercase().as_str() {
         "critical" => Some("Critical"),
@@ -571,6 +673,43 @@ fn handle_finding_interactive(
         Ok(result) => print_result(&result, steps),
         Err(e) => eprintln!("  {}", c_danger(&e)),
     }
+}
+
+fn print_contracts(state: &std::sync::Arc<ilold_web::state::AppState>, current: &str) {
+    use ilold_core::model::contract::ContractKind;
+    println!();
+    let max_name = state.project.contracts.iter()
+        .filter(|c| !c.name.is_empty())
+        .map(|c| c.name.chars().count())
+        .max().unwrap_or(0);
+
+    for c in &state.project.contracts {
+        if c.name.is_empty() { continue; }
+        let badge = match c.kind {
+            ContractKind::Contract => c_accent("[C]"),
+            ContractKind::Interface => c_muted("[I]"),
+            ContractKind::Library => c_muted("[L]"),
+            ContractKind::Abstract => c_warn("[A]"),
+        };
+        let marker = if c.name == current {
+            c_ok(" ← current").to_string()
+        } else {
+            String::new()
+        };
+        let padded = fmt::pad_right(&c.name, max_name);
+        let details = format!(
+            "{} functions, {} state vars",
+            c.functions.iter().filter(|f| !f.name.is_empty()).count(),
+            c.state_vars.len(),
+        );
+        let inherits = if c.inherits.is_empty() {
+            String::new()
+        } else {
+            format!(", inherits {}", c.inherits.join(", "))
+        };
+        println!("  {} {}  {}{}{}", badge, c_accent(&padded), c_muted(&details), c_muted(&inherits), marker);
+    }
+    println!();
 }
 
 fn print_findings_list(
@@ -660,6 +799,89 @@ fn print_result(result: &CommandResult, steps: &[String]) {
             }
             println!();
         }
+        CommandResult::FunctionListAll { functions } => {
+            println!();
+            let max_name = functions.iter()
+                .filter(|f| !f.name.is_empty())
+                .map(|f| f.name.chars().count())
+                .max().unwrap_or(0);
+
+            let own: Vec<_> = functions.iter().filter(|f| !f.is_inherited).collect();
+            let inherited: Vec<_> = functions.iter().filter(|f| f.is_inherited).collect();
+
+            for entry in &own {
+                if entry.name.is_empty() { continue; }
+                let badge = access_colored(&entry.access);
+                let padded_name = fmt::pad_right(&entry.name, max_name);
+                let mut tags: Vec<&str> = Vec::new();
+                if entry.writes_state { tags.push("writes state"); }
+                if entry.has_external_calls { tags.push("external calls"); }
+                if entry.is_read_only { tags.push("view"); }
+                let tag_str = if tags.is_empty() {
+                    String::new()
+                } else {
+                    format!("  {}", c_muted(&tags.join(", ")))
+                };
+                println!("  {} {}{}", badge, c_accent(&padded_name), tag_str);
+            }
+
+            if !inherited.is_empty() {
+                println!();
+                println!("  {}", c_muted("inherited:"));
+                for entry in &inherited {
+                    let badge = access_colored(&entry.access);
+                    let padded_name = fmt::pad_right(&entry.name, max_name);
+                    let origin = format!("from {}", entry.origin);
+                    println!("  {} {}  {}", badge, c_muted(&padded_name), c_muted(&origin));
+                }
+            }
+            println!();
+        }
+        CommandResult::StateVarListAll { state_vars } => {
+            println!();
+            let max_name = state_vars.iter()
+                .map(|v| v.name.chars().count())
+                .max().unwrap_or(0);
+            let max_tag = 9;
+
+            let own: Vec<_> = state_vars.iter().filter(|v| !v.is_inherited).collect();
+            let inherited: Vec<_> = state_vars.iter().filter(|v| v.is_inherited).collect();
+
+            let render_tag = |is_const: bool, is_immut: bool| -> String {
+                let text = if is_const { "const" }
+                    else if is_immut { "immutable" }
+                    else { "mutable" };
+                let padded = fmt::pad_right(text, max_tag);
+                if is_const || is_immut {
+                    c_muted(&padded).to_string()
+                } else {
+                    c_warn(&padded).to_string()
+                }
+            };
+
+            for entry in &own {
+                let tag = render_tag(entry.is_constant, entry.is_immutable);
+                let padded_name = fmt::pad_right(&entry.name, max_name);
+                println!("  {} {}  {}", tag, c_accent(&padded_name), c_muted(&entry.type_name));
+            }
+
+            if !inherited.is_empty() {
+                println!();
+                println!("  {}", c_muted("inherited:"));
+                for entry in &inherited {
+                    let tag = render_tag(entry.is_constant, entry.is_immutable);
+                    let padded_name = fmt::pad_right(&entry.name, max_name);
+                    let origin = format!("from {}", entry.origin);
+                    println!("  {} {}  {}  {}",
+                        tag,
+                        c_muted(&padded_name),
+                        c_muted(&entry.type_name),
+                        c_muted(&origin),
+                    );
+                }
+            }
+            println!();
+        }
         CommandResult::FindingAdded { id } => {
             println!("  {} Finding {} added", c_ok("✓"), c_accent(id));
         }
@@ -726,6 +948,11 @@ fn print_vars(val: &serde_json::Value) {
         Some(v) => v,
         None => { println!("  No state variables found."); return; }
     };
+    let max_name = vars.iter()
+        .filter_map(|v| v.get("name").and_then(|n| n.as_str()))
+        .map(|n| n.chars().count())
+        .max().unwrap_or(0);
+    let max_tag = 9; // "immutable" is the longest
     println!();
     for v in vars {
         let name = v.get("name").and_then(|n| n.as_str()).unwrap_or("?");
@@ -733,15 +960,18 @@ fn print_vars(val: &serde_json::Value) {
         let is_const = v.get("is_constant").and_then(|n| n.as_bool()).unwrap_or(false);
         let is_immut = v.get("is_immutable").and_then(|n| n.as_bool()).unwrap_or(false);
 
-        let tag = if is_const {
-            c_muted("const").to_string()
-        } else if is_immut {
-            c_muted("immutable").to_string()
+        let tag_text = if is_const { "const" }
+            else if is_immut { "immutable" }
+            else { "mutable" };
+        let padded_tag = fmt::pad_right(tag_text, max_tag);
+        let tag = if is_const || is_immut {
+            c_muted(&padded_tag).to_string()
         } else {
-            c_warn("mutable").to_string()
+            c_warn(&padded_tag).to_string()
         };
 
-        println!("  {} {} {}", tag, c_accent(name), c_muted(type_name));
+        let padded_name = fmt::pad_right(name, max_name);
+        println!("  {} {}  {}", tag, c_accent(&padded_name), c_muted(type_name));
     }
     println!();
 }
@@ -756,38 +986,169 @@ fn print_narrative(val: &serde_json::Value) {
         let mod_str = if mods.is_empty() { String::new() } else { format!(" — {}", c_muted(&mods)) };
         println!("  {} [{}]{}", c_bright(name), c_accent(access), mod_str);
     }
+
+    // Build the list of sections that will be shown so we know which is last
+    // (for picking the trailing branch character).
+    #[derive(Default)]
+    struct TransitiveGroup {
+        writes: Vec<String>,
+        reads: Vec<String>,
+        external: Vec<String>,
+        events: Vec<String>,
+    }
+
+    enum Section<'a> {
+        Paths { total: u64, happy: u64, revert: u64 },
+        StringList { label: &'a str, label_color: SectionColor, items: Vec<String> },
+        Transitive(Vec<(String, TransitiveGroup)>),
+        Observations(Vec<String>),
+    }
+    enum SectionColor { Muted, Danger, Warn, Accent }
+
+    let color = |c: &SectionColor, s: &str| -> String {
+        match c {
+            SectionColor::Muted => c_muted(s).to_string(),
+            SectionColor::Danger => c_danger(s).to_string(),
+            SectionColor::Warn => c_warn(s).to_string(),
+            SectionColor::Accent => c_accent(s).to_string(),
+        }
+    };
+
+    let mut sections: Vec<Section> = Vec::new();
+
     if let Some(total) = val.get("total_paths").and_then(|v| v.as_u64()) {
         let happy = val.get("happy_paths").and_then(|v| v.as_u64()).unwrap_or(0);
         let revert = val.get("revert_paths").and_then(|v| v.as_u64()).unwrap_or(0);
-        println!("  ├── {} path(s): {} happy, {} revert", total, c_ok(&happy.to_string()), c_danger(&revert.to_string()));
+        sections.push(Section::Paths { total, happy, revert });
     }
-    if let Some(reads) = val.get("state_reads").and_then(|v| v.as_array()) {
-        if !reads.is_empty() {
-            let vars: Vec<&str> = reads.iter().filter_map(|r| r.as_str()).collect();
-            println!("  ├── {} {}", c_muted("reads:"), c_muted(&vars.join(", ")));
-        }
+
+    let collect_strs = |key: &str| -> Vec<String> {
+        val.get(key)
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|s| s.as_str().map(|s| s.to_string())).collect())
+            .unwrap_or_default()
+    };
+
+    let reads = collect_strs("state_reads");
+    if !reads.is_empty() {
+        sections.push(Section::StringList { label: "State reads", label_color: SectionColor::Muted, items: reads });
     }
-    if let Some(writes) = val.get("state_writes").and_then(|v| v.as_array()) {
-        if !writes.is_empty() {
-            let vars: Vec<&str> = writes.iter().filter_map(|w| w.as_str()).collect();
-            println!("  ├── {} {}", c_danger("writes:"), c_warn(&vars.join(", ")));
-        }
+    let writes = collect_strs("state_writes");
+    if !writes.is_empty() {
+        sections.push(Section::StringList { label: "State writes", label_color: SectionColor::Danger, items: writes });
     }
-    if let Some(calls) = val.get("external_calls").and_then(|v| v.as_array()) {
-        if !calls.is_empty() {
-            let names: Vec<&str> = calls.iter().filter_map(|c| c.as_str()).collect();
-            println!("  ├── {} {}", c_warn("calls:"), c_muted(&names.join(", ")));
-        }
+    let internal = collect_strs("internal_calls");
+    if !internal.is_empty() {
+        sections.push(Section::StringList { label: "Internal calls", label_color: SectionColor::Accent, items: internal });
     }
-    let obs = val.get("observations").and_then(|v| v.as_array());
-    let has_obs = obs.map(|o| !o.is_empty()).unwrap_or(false);
-    if has_obs {
-        let obs = obs.unwrap();
-        println!("  └── {}:", c_danger("observations"));
-        for (i, o) in obs.iter().enumerate() {
-            let branch = if i == obs.len() - 1 { "└── " } else { "├── " };
-            if let Some(desc) = o.get("description").and_then(|v| v.as_str()) {
-                println!("      {}{}", c_muted(branch), c_danger(desc));
+    let externals = collect_strs("external_calls");
+    if !externals.is_empty() {
+        sections.push(Section::StringList { label: "External calls", label_color: SectionColor::Warn, items: externals });
+    }
+    let events = collect_strs("events");
+    if !events.is_empty() {
+        sections.push(Section::StringList { label: "Events", label_color: SectionColor::Accent, items: events });
+    }
+
+    // Transitive effects (grouped by chain)
+    let collect_transitive = |key: &str| -> Vec<(Vec<String>, String)> {
+        val.get(key)
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|e| {
+                        let via = e.get("via")?.as_array()?
+                            .iter().filter_map(|s| s.as_str().map(|s| s.to_string()))
+                            .collect::<Vec<_>>();
+                        let item = e.get("item")?.as_str()?.to_string();
+                        Some((via, item))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+
+    let t_writes = collect_transitive("transitive_state_writes");
+    let t_reads = collect_transitive("transitive_state_reads");
+    let t_external = collect_transitive("transitive_external_calls");
+    let t_events = collect_transitive("transitive_events");
+
+    if !t_writes.is_empty() || !t_reads.is_empty() || !t_external.is_empty() || !t_events.is_empty() {
+        use std::collections::BTreeMap;
+        let mut groups: BTreeMap<String, TransitiveGroup> = BTreeMap::new();
+        let join_chain = |via: &[String]| via.join(" → ");
+        for (via, item) in t_writes { groups.entry(join_chain(&via)).or_default().writes.push(item); }
+        for (via, item) in t_reads { groups.entry(join_chain(&via)).or_default().reads.push(item); }
+        for (via, item) in t_external { groups.entry(join_chain(&via)).or_default().external.push(item); }
+        for (via, item) in t_events { groups.entry(join_chain(&via)).or_default().events.push(item); }
+        let ordered: Vec<(String, TransitiveGroup)> = groups.into_iter().collect();
+        sections.push(Section::Transitive(ordered));
+    }
+
+    let obs_items: Vec<String> = val
+        .get("observations")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|o| o.get("description").and_then(|v| v.as_str()).map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    if !obs_items.is_empty() {
+        sections.push(Section::Observations(obs_items));
+    }
+
+    let total = sections.len();
+    for (i, section) in sections.iter().enumerate() {
+        let last = i == total - 1;
+        let branch = if last { "└──" } else { "├──" };
+        let cont = if last { "   " } else { "│  " };
+        match section {
+            Section::Paths { total, happy, revert } => {
+                println!(
+                    "  {} {} path(s): {} happy, {} revert",
+                    c_muted(branch), total, c_ok(&happy.to_string()), c_danger(&revert.to_string())
+                );
+            }
+            Section::StringList { label, label_color, items } => {
+                println!("  {} {}:", c_muted(branch), color(label_color, label));
+                for (j, item) in items.iter().enumerate() {
+                    let leaf = if j == items.len() - 1 { "└──" } else { "├──" };
+                    println!("  {}    {} {}", c_muted(cont), c_muted(leaf), c_muted(item));
+                }
+            }
+            Section::Transitive(groups) => {
+                println!("  {} {}:", c_muted(branch), c_warn("Transitive effects"));
+                let gtotal = groups.len();
+                for (gi, (chain, g)) in groups.iter().enumerate() {
+                    let glast = gi == gtotal - 1;
+                    let gbranch = if glast { "└──" } else { "├──" };
+                    let gcont = if glast { "   " } else { "│  " };
+                    println!("  {}    {} {} {}", c_muted(cont), c_muted(gbranch), c_muted("via"), c_muted(chain));
+
+                    let mut parts: Vec<(&str, &Vec<String>)> = Vec::new();
+                    if !g.writes.is_empty() { parts.push(("writes", &g.writes)); }
+                    if !g.reads.is_empty() { parts.push(("reads", &g.reads)); }
+                    if !g.external.is_empty() { parts.push(("external", &g.external)); }
+                    if !g.events.is_empty() { parts.push(("emits", &g.events)); }
+                    let ptotal = parts.len();
+                    for (pi, (plabel, pitems)) in parts.iter().enumerate() {
+                        let plast = pi == ptotal - 1;
+                        let pbranch = if plast { "└──" } else { "├──" };
+                        println!(
+                            "  {}    {}    {} {}: {}",
+                            c_muted(cont), c_muted(gcont), c_muted(pbranch),
+                            c_muted(plabel), c_muted(&pitems.join(", "))
+                        );
+                    }
+                }
+            }
+            Section::Observations(items) => {
+                println!("  {} {}:", c_muted(branch), c_danger("Observations"));
+                for (j, item) in items.iter().enumerate() {
+                    let leaf = if j == items.len() - 1 { "└──" } else { "├──" };
+                    println!("  {}    {} {}", c_muted(cont), c_muted(leaf), c_danger(item));
+                }
             }
         }
     }
@@ -836,7 +1197,11 @@ fn print_help() {
         ("cl",     "clear",            "Reset sequence"),
         ("s",      "state",            "Show accumulated state"),
         ("f",      "functions",        "List available functions"),
+        ("fa",     "funcs-all",        "List all accessible (incl. inherited)"),
         ("v",      "vars",             "List state variables"),
+        ("va",     "vars-all",         "List all accessible (incl. inherited)"),
+        ("ct",     "contracts",        "List project contracts"),
+        ("",       "use <contract>",   "Switch active contract"),
         ("w",      "who <var>",        "Who reads/writes a variable"),
         ("i",      "info <func>",      "Function detail (no sequence change)"),
         ("seq",    "sequence",         "Sequence narrative with dependencies"),
@@ -909,6 +1274,7 @@ impl Prompt for IloldPrompt {
 
 struct IloldCompleter {
     functions: Vec<String>,
+    contracts: Vec<String>,
 }
 
 impl Completer for IloldCompleter {
@@ -923,14 +1289,18 @@ impl Completer for IloldCompleter {
             || line_lower.starts_with("who ")
             || line_lower.starts_with("status ");
 
-        if !needs_func {
+        let needs_contract = line_lower.starts_with("use ");
+
+        if !needs_func && !needs_contract {
             return Vec::new();
         }
 
         let arg_start = line[..pos].rfind(' ').map(|i| i + 1).unwrap_or(0);
         let partial = &line[arg_start..pos];
 
-        self.functions.iter()
+        let source = if needs_contract { &self.contracts } else { &self.functions };
+
+        source.iter()
             .filter(|f| f.starts_with(partial))
             .map(|f| Suggestion {
                 value: f.clone(),

@@ -7,6 +7,7 @@ use crate::cfg::types::CfgStatement;
 use crate::model::contract::ContractDef;
 use crate::model::function::{Mutability, Visibility};
 use crate::model::project::Project;
+use crate::util::is_type_cast;
 
 use super::types::*;
 
@@ -147,23 +148,6 @@ fn resolve_external(
     });
     index.insert(key, idx);
     idx
-}
-
-/// Filter out type casts that look like function calls (IERC20(addr), address(0), uint256(x))
-fn is_type_cast(name: &str) -> bool {
-    let name = name.trim();
-    // Solidity elementary types
-    if name.starts_with("type(") || name.starts_with("address") || name.starts_with("uint")
-        || name.starts_with("int") || name.starts_with("bytes") || name.starts_with("bool")
-        || name.starts_with("string")
-    {
-        return true;
-    }
-    // Interface type casts: starts with I + uppercase (IERC20, IUniswapV2Pair)
-    if name.starts_with('I') && name.len() > 1 && name.chars().nth(1).is_some_and(|c| c.is_uppercase()) {
-        return true;
-    }
-    false
 }
 
 fn add_or_increment_edge(graph: &mut CallGraph, from: NodeIndex, to: NodeIndex) {
