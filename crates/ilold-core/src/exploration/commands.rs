@@ -10,9 +10,19 @@ use crate::narrative::function::build_function_narrative;
 use crate::narrative::sequence::build_sequence_narrative;
 use crate::narrative::types::{FunctionNarrative, SequenceNarrative};
 use crate::pathtree::types::PathTree;
+use crate::journal::export::export_markdown;
 use crate::sequence::analysis::{FunctionBehavior, TransitionInfo};
 
 use super::session::{ExplorationSession, VariableSummary};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FunctionEntry {
+    pub name: String,
+    pub access: AccessLevel,
+    pub writes_state: bool,
+    pub has_external_calls: bool,
+    pub is_read_only: bool,
+}
 
 pub struct AnalysisData<'a> {
     pub contract: &'a ContractDef,
@@ -35,6 +45,9 @@ pub enum SessionCommand {
     Status { func: String, status: ReviewStatus },
     Session,
     Who { variable: String },
+    Export,
+    SaveSession,
+    LoadSession { json: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,7 +66,7 @@ pub enum CommandResult {
         summary: Vec<VariableSummary>,
     },
     FunctionList {
-        functions: Vec<(String, AccessLevel)>,
+        functions: Vec<FunctionEntry>,
     },
     FindingAdded {
         id: String,
@@ -69,6 +82,16 @@ pub enum CommandResult {
         variable: String,
         writers: Vec<(String, AccessLevel)>,
         readers: Vec<(String, AccessLevel)>,
+    },
+    Exported {
+        markdown: String,
+    },
+    SessionSaved {
+        json: String,
+    },
+    SessionLoaded {
+        contract: String,
+        steps: Vec<String>,
     },
     Error {
         message: String,
@@ -111,9 +134,20 @@ pub fn execute_command(
         SessionCommand::State => CommandResult::StateView {
             summary: session.variable_summary(),
         },
-        SessionCommand::Functions => CommandResult::FunctionList {
-            functions: classify_all(data.contract),
-        },
+        SessionCommand::Functions => {
+            let classifications = classify_all(data.contract);
+            let functions: Vec<FunctionEntry> = classifications.into_iter().map(|(name, access)| {
+                let behavior = data.behaviors.iter().find(|b| b.name == name);
+                FunctionEntry {
+                    name,
+                    access,
+                    writes_state: behavior.map(|b| !b.state_writes.is_empty()).unwrap_or(false),
+                    has_external_calls: behavior.map(|b| !b.external_calls.is_empty()).unwrap_or(false),
+                    is_read_only: behavior.map(|b| b.read_only).unwrap_or(true),
+                }
+            }).collect();
+            CommandResult::FunctionList { functions }
+        }
         SessionCommand::Finding { severity, title, description } => {
             execute_finding(session, severity, title, description, timestamp)
         }
@@ -127,6 +161,27 @@ pub fn execute_command(
             findings_count: session.journal.findings.len(),
         },
         SessionCommand::Who { variable } => execute_who(data, &variable),
+        SessionCommand::Export => {
+            let md = export_markdown(&session.journal, data.contract.functions.len());
+            CommandResult::Exported { markdown: md }
+        }
+        SessionCommand::SaveSession => {
+            match serde_json::to_string_pretty(session) {
+                Ok(json) => CommandResult::SessionSaved { json },
+                Err(e) => CommandResult::Error { message: format!("Serialize failed: {e}") },
+            }
+        }
+        SessionCommand::LoadSession { json } => {
+            match serde_json::from_str::<ExplorationSession>(&json) {
+                Ok(loaded) => {
+                    let contract = loaded.contract.clone();
+                    let step_names: Vec<String> = loaded.steps.iter().map(|s| s.function.clone()).collect();
+                    *session = loaded;
+                    CommandResult::SessionLoaded { contract, steps: step_names }
+                }
+                Err(e) => CommandResult::Error { message: format!("Deserialize failed: {e}") },
+            }
+        }
     }
 }
 
@@ -250,8 +305,12 @@ fn execute_who(data: &AnalysisData, variable: &str) -> CommandResult {
         .collect();
 
     let readers: Vec<(String, AccessLevel)> = data.behaviors.iter()
-        .filter(|b| b.state_reads.iter().any(|r| r.to_lowercase() == var_lower))
-        .filter(|b| !b.state_writes.iter().any(|w| w.to_lowercase() == var_lower))
+        .filter(|b| {
+            let in_reads = b.state_reads.iter().any(|r| r.to_lowercase() == var_lower);
+            let in_preconditions = b.preconditions.iter().any(|p| p.to_lowercase().contains(&var_lower));
+            (in_reads || in_preconditions)
+                && !b.state_writes.iter().any(|w| w.to_lowercase() == var_lower)
+        })
         .map(|b| (b.name.clone(), access_for(&b.name)))
         .collect();
 

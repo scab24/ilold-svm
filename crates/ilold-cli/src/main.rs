@@ -7,6 +7,7 @@ mod analyze;
 mod colors;
 mod context;
 mod explore;
+mod fmt;
 
 #[derive(Parser)]
 #[command(name = "ilold", version, about = "Smart contract execution path analyzer")]

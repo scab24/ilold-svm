@@ -12,6 +12,7 @@ use ilold_core::classify::entry_points::AccessLevel;
 use ilold_core::exploration::commands::CommandResult;
 
 use crate::colors::*;
+use crate::fmt;
 
 pub async fn run(paths: Vec<PathBuf>, port: u16, max_seq_depth: usize) -> Result<()> {
     println!("Analyzing {} file(s)...", paths.len());
@@ -29,23 +30,12 @@ pub async fn run(paths: Vec<PathBuf>, port: u16, max_seq_depth: usize) -> Result
 
     let func_count = function_names.len();
 
-    println!(
-        "Ready: {} functions analyzed\n",
-        func_count,
-    );
-    println!("  ┌─────────────────────────────────────────┐");
-    println!("  │  {} — {}",
-        c_bright("ilold explore"),
-        c_accent(&contract_name),
-    );
-    println!("  │  {} functions | Type {} for help",
-        func_count,
-        c_accent("?"),
-    );
-    println!("  │  Web UI: {}",
-        c_muted(&format!("http://localhost:{actual_port}")),
-    );
-    println!("  └─────────────────────────────────────────┘\n");
+    let banner = fmt::header_box(&[
+        &format!("ilold explore — {}", contract_name),
+        &format!("{} functions | Type ? for help", func_count),
+        &format!("Web UI: http://localhost:{}", actual_port),
+    ]);
+    println!("{}\n", banner);
 
     let handle = tokio::runtime::Handle::current();
     let repl_thread = std::thread::spawn(move || {
@@ -252,7 +242,40 @@ fn handle_input(
             InputResult::Continue
         }
         "fi" | "finding" => {
-            handle_finding_interactive(handle, client, base_url, contract, steps);
+            if arg.is_empty() {
+                handle_finding_interactive(handle, client, base_url, contract, steps);
+            } else {
+                // Parse: fi <severity> <title> [description]
+                let finding_parts: Vec<&str> = arg.splitn(2, ' ').collect();
+                if finding_parts.len() < 2 {
+                    println!("  Usage: fi <severity> <title>");
+                    println!("  Or just: fi (interactive mode)");
+                } else {
+                    let severity_input = finding_parts[0];
+                    let rest = finding_parts[1];
+                    match normalize_severity(severity_input) {
+                        Some(severity) => {
+                            let body = serde_json::json!({
+                                "contract": contract,
+                                "command": {
+                                    "Finding": {
+                                        "severity": severity,
+                                        "title": rest,
+                                        "description": ""
+                                    }
+                                }
+                            });
+                            match send_command(handle, client, base_url, &body) {
+                                Ok(result) => print_result(&result, steps),
+                                Err(e) => eprintln!("  {}", c_danger(&e)),
+                            }
+                        }
+                        None => {
+                            println!("  {}", c_danger("Invalid severity. Valid: critical, high, medium, low, info"));
+                        }
+                    }
+                }
+            }
             InputResult::Continue
         }
         "status" => {
@@ -337,7 +360,70 @@ fn handle_input(
             InputResult::Continue
         }
         "ex" | "export" => {
-            println!("  {}", c_muted("Export not yet implemented (session persistence needed)"));
+            let body = serde_json::json!({ "contract": contract, "command": "Export" });
+            match send_command(handle, client, base_url, &body) {
+                Ok(CommandResult::Exported { markdown }) => {
+                    let filename = format!("ilold-report-{}.md", contract);
+                    match std::fs::write(&filename, &markdown) {
+                        Ok(_) => println!("  {} Exported to {}", c_ok("✓"), c_accent(&filename)),
+                        Err(e) => eprintln!("  {} Failed to write: {}", c_danger("✗"), e),
+                    }
+                }
+                Ok(other) => print_result(&other, steps),
+                Err(e) => eprintln!("  {}", c_danger(&e)),
+            }
+            InputResult::Continue
+        }
+
+        "save" => {
+            if arg.is_empty() {
+                println!("  Usage: save <name>");
+                return InputResult::Continue;
+            }
+            let body = serde_json::json!({ "contract": contract, "command": "SaveSession" });
+            match send_command(handle, client, base_url, &body) {
+                Ok(CommandResult::SessionSaved { json }) => {
+                    let dir = dirs::home_dir()
+                        .map(|h| h.join(".ilold").join("sessions"))
+                        .unwrap_or_else(|| std::path::PathBuf::from(".ilold/sessions"));
+                    std::fs::create_dir_all(&dir).ok();
+                    let path = dir.join(format!("{}.json", arg));
+                    match std::fs::write(&path, &json) {
+                        Ok(_) => println!("  {} Saved to {}", c_ok("✓"), c_accent(&path.display().to_string())),
+                        Err(e) => eprintln!("  {} Write failed: {}", c_danger("✗"), e),
+                    }
+                }
+                Ok(other) => print_result(&other, steps),
+                Err(e) => eprintln!("  {}", c_danger(&e)),
+            }
+            InputResult::Continue
+        }
+        "load" => {
+            if arg.is_empty() {
+                println!("  Usage: load <name>");
+                return InputResult::Continue;
+            }
+            let dir = dirs::home_dir()
+                .map(|h| h.join(".ilold").join("sessions"))
+                .unwrap_or_else(|| std::path::PathBuf::from(".ilold/sessions"));
+            let path = dir.join(format!("{}.json", arg));
+            let json = match std::fs::read_to_string(&path) {
+                Ok(j) => j,
+                Err(e) => {
+                    eprintln!("  {} File not found: {} ({})", c_danger("✗"), path.display(), e);
+                    return InputResult::Continue;
+                }
+            };
+            let body = serde_json::json!({ "contract": contract, "command": { "LoadSession": { "json": json } } });
+            match send_command(handle, client, base_url, &body) {
+                Ok(CommandResult::SessionLoaded { steps: loaded_steps, .. }) => {
+                    *steps = loaded_steps;
+                    println!("  {} Session loaded ({} steps)", c_ok("✓"), steps.len());
+                    return InputResult::UpdatePrompt;
+                }
+                Ok(other) => print_result(&other, steps),
+                Err(e) => eprintln!("  {}", c_danger(&e)),
+            }
             InputResult::Continue
         }
 
@@ -513,32 +599,23 @@ fn print_result(result: &CommandResult, steps: &[String]) {
         CommandResult::StepAdded { step_index, function, access, state_changed } => {
             let badge = access_colored(access);
             println!();
-            println!("  {}[ STEP {}: {} ]{}", "═".truecolor(60, 70, 90), step_index, c_bright(function), "═".truecolor(60, 70, 90));
-            println!("  {} {} {}", badge, c_bright(function), format_access_detail(access));
+            println!("  {} Step {}: {} {} {}", c_ok("+"), step_index, c_bright(function), badge, format_access_detail(access));
             if !state_changed.is_empty() {
-                println!("  {}[ STATE ]{}", "═".truecolor(60, 70, 90), "═".truecolor(60, 70, 90));
+                println!("    {}:", c_muted("State writes"));
                 for var in state_changed {
-                    println!("    {} {}", c_danger("✏"), c_warn(var));
+                    println!("      {} {}", c_muted("·"), c_warn(var));
                 }
             }
-            println!("  {}[ SEQUENCE ]{}", "═".truecolor(60, 70, 90), "═".truecolor(60, 70, 90));
-            for (i, name) in steps.iter().enumerate() {
-                if i == *step_index {
-                    println!("  {} {}. {}  ← current", ">".truecolor(100, 160, 110), i, c_bright(name));
-                } else {
-                    println!("    {}. {}", i, c_muted(name));
-                }
-            }
+            let seq_str = steps.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(" → ");
+            println!("    {}: {}", c_muted("Sequence"), c_accent(&seq_str));
             println!();
         }
         CommandResult::StepRemoved { remaining } => {
-            println!("  Step removed. {} remaining.", remaining);
+            println!();
+            println!("  {} Step removed. {} remaining.", c_warn("-"), remaining);
             if !steps.is_empty() {
-                println!("  {}[ SEQUENCE ]{}", "═".truecolor(60, 70, 90), "═".truecolor(60, 70, 90));
-                for (i, name) in steps.iter().enumerate() {
-                    let marker = if i == steps.len() - 1 { " ← current" } else { "" };
-                    println!("    {}. {}{}", i, c_muted(name), c_ok(marker));
-                }
+                let seq_str = steps.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(" → ");
+                println!("    {}: {}", c_muted("Sequence"), c_accent(&seq_str));
             }
             println!();
         }
@@ -551,7 +628,7 @@ fn print_result(result: &CommandResult, steps: &[String]) {
                 return;
             }
             println!();
-            println!("  {}[ STATE ]{}", "═".truecolor(60, 70, 90), "═".truecolor(60, 70, 90));
+            println!("{}", fmt::separator("STATE"));
             for var in summary {
                 println!("  {} {}", c_bright(&var.variable), "");
                 for change in &var.changes {
@@ -562,10 +639,24 @@ fn print_result(result: &CommandResult, steps: &[String]) {
         }
         CommandResult::FunctionList { functions } => {
             println!();
-            for (name, access) in functions {
-                if name.is_empty() { continue; }
-                let badge = access_colored(access);
-                println!("  {badge} {}", c_accent(name));
+            let max_name = functions.iter()
+                .filter(|f| !f.name.is_empty())
+                .map(|f| f.name.chars().count())
+                .max().unwrap_or(0);
+            for entry in functions {
+                if entry.name.is_empty() { continue; }
+                let badge = access_colored(&entry.access);
+                let padded_name = fmt::pad_right(&entry.name, max_name);
+                let mut tags: Vec<&str> = Vec::new();
+                if entry.writes_state { tags.push("writes state"); }
+                if entry.has_external_calls { tags.push("external calls"); }
+                if entry.is_read_only { tags.push("view"); }
+                let tag_str = if tags.is_empty() {
+                    String::new()
+                } else {
+                    format!("  {}", c_muted(&tags.join(", ")))
+                };
+                println!("  {} {}{}", badge, c_accent(&padded_name), tag_str);
             }
             println!();
         }
@@ -605,6 +696,15 @@ fn print_result(result: &CommandResult, steps: &[String]) {
                 }
             }
             println!();
+        }
+        CommandResult::Exported { markdown } => {
+            println!("  {} chars exported", markdown.len());
+        }
+        CommandResult::SessionSaved { json } => {
+            println!("  Session serialized ({} bytes)", json.len());
+        }
+        CommandResult::SessionLoaded { contract, steps: loaded_steps } => {
+            println!("  Session loaded: {} ({} steps)", contract, loaded_steps.len());
         }
         CommandResult::Error { message } => {
             println!("  {}", c_danger(message));
@@ -730,28 +830,41 @@ fn print_sequence_narrative(val: &serde_json::Value) {
 }
 
 fn print_help() {
+    let cmds: &[(&str, &str, &str)] = &[
+        ("c",      "call <func>",      "Add function to sequence"),
+        ("b",      "back",             "Remove last step"),
+        ("cl",     "clear",            "Reset sequence"),
+        ("s",      "state",            "Show accumulated state"),
+        ("f",      "functions",        "List available functions"),
+        ("v",      "vars",             "List state variables"),
+        ("w",      "who <var>",        "Who reads/writes a variable"),
+        ("i",      "info <func>",      "Function detail (no sequence change)"),
+        ("seq",    "sequence",         "Sequence narrative with dependencies"),
+        ("st",     "step <index>",     "Re-inspect a specific step"),
+        ("ss",     "session",          "Full session state"),
+        ("fi",     "finding [sev] [t]","Record a finding"),
+        ("n",      "note <text>",      "Add note to current step"),
+        ("sc",     "scenario <name>",  "Name the current sequence"),
+        ("",       "status <f> <s>",   "Change review status"),
+        ("fl",     "findings",         "List recorded findings"),
+        ("ex",     "export",           "Export findings as markdown"),
+        ("",       "save <name>",      "Save session to disk"),
+        ("",       "load <name>",      "Load session from disk"),
+        ("",       "browser",          "Open web UI"),
+        ("q",      "quit/exit",        "Exit"),
+    ];
+
     println!();
     println!("  {}  Commands:", c_bright("ilold explore"));
     println!();
-    println!("  {}  {}   call <func>       Add function to sequence", c_accent("c"), c_muted("|"));
-    println!("  {}  {}   back              Remove last step", c_accent("b"), c_muted("|"));
-    println!("  {} {}   clear             Reset sequence", c_accent("cl"), c_muted("|"));
-    println!("  {}  {}   state             Show accumulated state", c_accent("s"), c_muted("|"));
-    println!("  {}  {}   functions         List available functions", c_accent("f"), c_muted("|"));
-    println!("  {}  {}   vars              List state variables", c_accent("v"), c_muted("|"));
-    println!("  {}  {}   who <var>         Who reads/writes a variable", c_accent("w"), c_muted("|"));
-    println!("  {}  {}   info <func>       Function detail (no sequence change)", c_accent("i"), c_muted("|"));
-    println!("  {} {}   sequence          Sequence narrative with dependencies", c_accent("seq"), c_muted("|"));
-    println!("  {} {}   step <index>      Re-inspect a specific step", c_accent("st"), c_muted("|"));
-    println!("  {} {}   session           Full session state", c_accent("ss"), c_muted("|"));
-    println!("  {} {}   finding           Record a finding (interactive)", c_accent("fi"), c_muted("|"));
-    println!("  {}  {}   note <text>       Add note to current step", c_accent("n"), c_muted("|"));
-    println!("  {} {}   scenario <name>   Name the current sequence", c_accent("sc"), c_muted("|"));
-    println!("        status <f> <s>    Change review status");
-    println!("  {} {}   findings          List recorded findings", c_accent("fl"), c_muted("|"));
-    println!("  {} {}   export            Export findings as markdown", c_accent("ex"), c_muted("|"));
-    println!("        browser           Open web UI");
-    println!("  {}  {}   quit/exit          Exit", c_accent("q"), c_muted("|"));
+    for (shortcut, name, desc) in cmds {
+        let sc = if shortcut.is_empty() {
+            format!("  {}  ", fmt::pad_right("", 3))
+        } else {
+            format!("  {} {}", c_accent(&fmt::pad_right(shortcut, 3)), c_muted("|"))
+        };
+        println!("  {} {}  {}", sc, c_accent(&fmt::pad_right(name, 18)), c_muted(desc));
+    }
     println!();
 }
 
