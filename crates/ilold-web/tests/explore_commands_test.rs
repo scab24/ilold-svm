@@ -255,9 +255,8 @@ async fn trace_swap_shows_external_call_before_update_writes() {
 
 #[tokio::test]
 async fn trace_getreserves_has_no_empty_target_writes() {
-    // Regression: `return (reserve0, reserve1, blockTimestampLast)` used to
-    // become an Assignment with an empty target because the classify_expression
-    // catchall emitted fake Assignments for any non-call, non-assign expression.
+    // Regression for classify_expression catchall emitting fake Assignments
+    // for tuple returns. getReserves must have zero Write events.
     let paths = vec![fixture("uniswap_v2_pair.sol")];
     let (_, port) = ilold_web::start_server(paths, 0, 2).await.unwrap();
 
@@ -272,18 +271,6 @@ async fn trace_getreserves_has_no_empty_target_writes() {
     let mut events: Vec<FlowEvent> = Vec::new();
     flatten_flow_tree(&tree["root"], &mut events);
 
-    for e in &events {
-        if e.variant == "Write" {
-            let target = e.payload.get("target").and_then(|v| v.as_str()).unwrap_or("");
-            assert!(
-                !target.is_empty(),
-                "Write with empty target leaked into trace — classify_expression fallback regression: {:?}",
-                e.payload,
-            );
-        }
-    }
-
-    // getReserves just reads state + returns. No writes expected at all.
     let write_count = events.iter().filter(|e| e.variant == "Write").count();
     assert_eq!(write_count, 0, "getReserves should emit no Write events");
 }

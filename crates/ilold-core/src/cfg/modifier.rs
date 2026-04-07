@@ -3,21 +3,18 @@ use crate::model::statement::{Statement, StatementKind};
 
 use super::error::CfgError;
 
-/// Statement tagged with the modifier it originates from (if any).
-/// `provenance == None` means the statement is part of the function's own body.
+/// A statement tagged with the name of the modifier it came from, or `None`
+/// when the statement is part of the function's own body.
 #[derive(Debug, Clone)]
 pub struct TaggedStatement {
     pub stmt: Statement,
     pub provenance: Option<String>,
 }
 
-/// Inline modifier chain around a function body.
+/// Inline a chain of modifiers around a function body.
 ///
-/// Given modifiers [onlyOwner, nonReentrant] and function body:
-/// 1. Replace _ in nonReentrant with function body
-/// 2. Replace _ in onlyOwner with result of step 1
-///
-/// Modifiers are processed LAST to FIRST because each one wraps the previous result.
+/// Modifiers wrap last-to-first: `[onlyOwner, nonReentrant]` means the result
+/// of inlining `nonReentrant` around the body is then inlined into `onlyOwner`.
 pub fn inline_modifiers(
     body: &[Statement],
     modifier_defs: &[&ModifierDef],
@@ -59,10 +56,9 @@ fn has_placeholder(stmts: &[Statement]) -> bool {
     })
 }
 
-/// Same as `replace_placeholder` but preserves provenance: every statement from
-/// the modifier body is tagged with `modifier_name`, while the placeholder
-/// substitution keeps the inner function body's existing tags (which may be
-/// `None` or an inner modifier from a nested inlining step).
+/// Replace each `_` placeholder in `modifier_body` with `function_body`,
+/// tagging modifier statements with `modifier_name`. Inner tags in the
+/// function body (from prior nested inlining) are preserved.
 fn replace_placeholder_tagged(
     modifier_body: &[Statement],
     function_body: &[TaggedStatement],
@@ -73,9 +69,6 @@ fn replace_placeholder_tagged(
     for stmt in modifier_body {
         match &stmt.kind {
             StatementKind::Placeholder => {
-                // The placeholder becomes the inner body verbatim — inner tags
-                // are preserved so nested modifiers / function body stay
-                // correctly attributed.
                 result.extend(function_body.iter().cloned());
             }
             StatementKind::Block { statements } => {
@@ -183,11 +176,8 @@ fn replace_placeholder_tagged(
     result
 }
 
-/// Helper: recursive replacement inside compound statements, returns a flat
-/// Vec<Statement> (dropping the tagging layer, because compound statements
-/// store Statement not TaggedStatement). The inner recursion still correctly
-/// re-tags top-level statements via the main `replace_placeholder_tagged`
-/// caller when used at the outermost level.
+/// Placeholder replacement inside compound statements. Drops the tag layer
+/// because compound statements store plain `Statement`, not `TaggedStatement`.
 fn replace_placeholder_tagged_block(
     modifier_body: &[Statement],
     function_body: &[TaggedStatement],
@@ -197,95 +187,6 @@ fn replace_placeholder_tagged_block(
         .into_iter()
         .map(|t| t.stmt)
         .collect()
-}
-
-/// Replace all Placeholder statements with the given body.
-#[allow(dead_code)]
-fn replace_placeholder(modifier_body: &[Statement], function_body: &[Statement]) -> Vec<Statement> {
-    let mut result = Vec::new();
-
-    for stmt in modifier_body {
-        match &stmt.kind {
-            StatementKind::Placeholder => {
-                result.extend(function_body.iter().cloned());
-            }
-            StatementKind::Block { statements } => {
-                result.push(Statement {
-                    kind: StatementKind::Block {
-                        statements: replace_placeholder(statements, function_body),
-                    },
-                    span: stmt.span,
-                });
-            }
-            StatementKind::UncheckedBlock { statements } => {
-                result.push(Statement {
-                    kind: StatementKind::UncheckedBlock {
-                        statements: replace_placeholder(statements, function_body),
-                    },
-                    span: stmt.span,
-                });
-            }
-            StatementKind::If { condition, then_body, else_body } => {
-                result.push(Statement {
-                    kind: StatementKind::If {
-                        condition: condition.clone(),
-                        then_body: replace_placeholder(then_body, function_body),
-                        else_body: else_body
-                            .as_ref()
-                            .map(|e| replace_placeholder(e, function_body)),
-                    },
-                    span: stmt.span,
-                });
-            }
-            StatementKind::For { init, condition, increment, body } => {
-                result.push(Statement {
-                    kind: StatementKind::For {
-                        init: init.clone(),
-                        condition: condition.clone(),
-                        increment: increment.clone(),
-                        body: replace_placeholder(body, function_body),
-                    },
-                    span: stmt.span,
-                });
-            }
-            StatementKind::While { condition, body } => {
-                result.push(Statement {
-                    kind: StatementKind::While {
-                        condition: condition.clone(),
-                        body: replace_placeholder(body, function_body),
-                    },
-                    span: stmt.span,
-                });
-            }
-            StatementKind::DoWhile { body, condition } => {
-                result.push(Statement {
-                    kind: StatementKind::DoWhile {
-                        body: replace_placeholder(body, function_body),
-                        condition: condition.clone(),
-                    },
-                    span: stmt.span,
-                });
-            }
-            StatementKind::TryCatch { expression, clauses } => {
-                let new_clauses = clauses.iter().map(|c| crate::model::statement::CatchClause {
-                    name: c.name.clone(),
-                    params: c.params.clone(),
-                    body: replace_placeholder(&c.body, function_body),
-                }).collect();
-                result.push(Statement {
-                    kind: StatementKind::TryCatch {
-                        expression: expression.clone(),
-                        clauses: new_clauses,
-                    },
-                    span: stmt.span,
-                });
-            }
-            // For any other statement, keep as-is
-            _ => result.push(stmt.clone()),
-        }
-    }
-
-    result
 }
 
 #[cfg(test)]
