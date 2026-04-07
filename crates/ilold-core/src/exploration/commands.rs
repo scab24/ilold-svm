@@ -9,6 +9,7 @@ use crate::model::contract::ContractDef;
 use crate::model::project::Project;
 use crate::narrative::function::build_function_narrative;
 use crate::narrative::sequence::build_sequence_narrative;
+use crate::narrative::trace::{build_flow_tree, FlowConfig, FlowTree};
 use crate::narrative::types::{FunctionNarrative, SequenceNarrative};
 use crate::pathtree::types::PathTree;
 use crate::journal::export::export_markdown;
@@ -568,6 +569,24 @@ pub fn get_function_info(
     };
 
     Ok(build_function_narrative(owning, func, pt, cfg, behaviors, data.project, data.all_sequence_analyses))
+}
+
+pub fn get_flow_tree(
+    func_name: &str,
+    data: &AnalysisData,
+    max_depth: usize,
+    include_reverts: bool,
+) -> Result<FlowTree, String> {
+    let (owning, func) = data.project
+        .resolve_function(data.contract, func_name)
+        .ok_or_else(|| format!("Function '{}' not found", func_name))?;
+
+    let key = (owning.name.clone(), func_name.to_string());
+    let cfg = data.cfgs.get(&key)
+        .ok_or_else(|| format!("No CFG for {}::{}", owning.name, func_name))?;
+
+    let config = FlowConfig { max_depth, include_reverts };
+    Ok(build_flow_tree(owning, func, cfg, data.project, data.cfgs, &config))
 }
 
 pub fn get_sequence_narrative(

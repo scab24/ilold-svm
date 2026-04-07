@@ -1,16 +1,17 @@
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
 use serde::Deserialize;
 
 use ilold_core::exploration::commands::{
     AnalysisData, CommandResult, SessionCommand,
-    canvas_patch_from, execute_command, get_function_info, get_sequence_narrative,
+    canvas_patch_from, execute_command, get_flow_tree, get_function_info, get_sequence_narrative,
     get_session_state, get_step_narrative,
 };
 use ilold_core::exploration::session::{ExplorationSession, VariableSummary};
+use ilold_core::narrative::trace::FlowTree;
 use ilold_core::narrative::types::{FunctionNarrative, SequenceNarrative};
 
 use crate::state::AppState;
@@ -144,4 +145,28 @@ pub async fn get_function_detail(
         .map_err(|e| (StatusCode::NOT_FOUND, e))?;
 
     Ok(Json(narrative))
+}
+
+#[derive(Deserialize)]
+pub struct TraceQuery {
+    #[serde(default)]
+    pub depth: Option<usize>,
+    #[serde(default)]
+    pub reverts: Option<bool>,
+}
+
+pub async fn get_flow_trace(
+    State(state): State<Arc<AppState>>,
+    Path((contract_name, func_name)): Path<(String, String)>,
+    Query(params): Query<TraceQuery>,
+) -> Result<Json<FlowTree>, (StatusCode, String)> {
+    let data = build_analysis_data(&state, &contract_name)?;
+
+    let max_depth = params.depth.unwrap_or(2);
+    let include_reverts = params.reverts.unwrap_or(false);
+
+    let tree = get_flow_tree(&func_name, &data, max_depth, include_reverts)
+        .map_err(|e| (StatusCode::NOT_FOUND, e))?;
+
+    Ok(Json(tree))
 }

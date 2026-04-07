@@ -420,6 +420,38 @@ fn handle_input(
             }
             InputResult::Continue
         }
+        "tr" | "trace" => {
+            if arg.is_empty() {
+                println!("  Usage: trace <function> [--depth N] [--reverts]");
+                return InputResult::Continue;
+            }
+            // Parse optional flags: --depth N, --reverts
+            let (func_name, depth, reverts) = parse_trace_args(arg);
+            let func_name = match func_name {
+                Some(f) => f,
+                None => {
+                    println!("  Usage: trace <function> [--depth N] [--reverts]");
+                    return InputResult::Continue;
+                }
+            };
+            let mut url = format!("{base_url}/api/session/trace/{contract}/{func_name}");
+            let mut sep = '?';
+            if let Some(d) = depth {
+                url.push_str(&format!("{sep}depth={d}"));
+                sep = '&';
+            }
+            if reverts {
+                url.push_str(&format!("{sep}reverts=true"));
+            }
+            match send_get(handle, client, &url) {
+                Ok(val) => match serde_json::from_value::<ilold_core::narrative::trace::FlowTree>(val) {
+                    Ok(tree) => print!("{}", fmt::render_flow_tree(&tree)),
+                    Err(e) => eprintln!("  {} Parse FlowTree: {}", c_danger("✗"), e),
+                },
+                Err(e) => eprintln!("  {}", c_danger(&e)),
+            }
+            InputResult::Continue
+        }
         "seq" | "sequence" => {
             match send_get(handle, client, &format!("{base_url}/api/session/sequence")) {
                 Ok(val) => print_sequence_narrative(&val),
@@ -594,6 +626,34 @@ fn split_numeric_suffix(line: &str) -> String {
         }
     }
     line.to_string()
+}
+
+fn parse_trace_args(arg: &str) -> (Option<String>, Option<usize>, bool) {
+    let tokens: Vec<&str> = arg.split_whitespace().collect();
+    let mut func: Option<String> = None;
+    let mut depth: Option<usize> = None;
+    let mut reverts = false;
+    let mut i = 0;
+    while i < tokens.len() {
+        let t = tokens[i];
+        if t == "--depth" {
+            if let Some(v) = tokens.get(i + 1).and_then(|s| s.parse::<usize>().ok()) {
+                depth = Some(v);
+                i += 2;
+                continue;
+            }
+            i += 1;
+        } else if t == "--reverts" {
+            reverts = true;
+            i += 1;
+        } else if func.is_none() {
+            func = Some(t.to_string());
+            i += 1;
+        } else {
+            i += 1;
+        }
+    }
+    (func, depth, reverts)
 }
 
 fn normalize_severity(input: &str) -> Option<&'static str> {
@@ -1203,7 +1263,8 @@ fn print_help() {
         ("ct",     "contracts",        "List project contracts"),
         ("",       "use <contract>",   "Switch active contract"),
         ("w",      "who <var>",        "Who reads/writes a variable"),
-        ("i",      "info <func>",      "Function detail (no sequence change)"),
+        ("i",      "info <func>",      "Function detail"),
+        ("tr",     "trace <func>",     "Execution flow tree (inlined)"),
         ("seq",    "sequence",         "Sequence narrative with dependencies"),
         ("st",     "step <index>",     "Re-inspect a specific step"),
         ("ss",     "session",          "Full session state"),
@@ -1285,6 +1346,8 @@ impl Completer for IloldCompleter {
             || line_lower.starts_with("call ")
             || line_lower.starts_with("i ")
             || line_lower.starts_with("info ")
+            || line_lower.starts_with("tr ")
+            || line_lower.starts_with("trace ")
             || line_lower.starts_with("w ")
             || line_lower.starts_with("who ")
             || line_lower.starts_with("status ");

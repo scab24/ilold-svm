@@ -14,6 +14,16 @@ pub struct CfgBuilder {
     graph: CfgGraph,
     next_block_id: usize,
     current_block: NodeIndex,
+    /// Modifier name attached to statements being processed right now, or
+    /// `None` when processing the function's own body.
+    ///
+    /// Limitation: only top-level statements of a modifier are tagged. If a
+    /// modifier contains a compound statement (if/for/while) with the
+    /// placeholder inside, statements nested under that compound node lose
+    /// their modifier provenance because `process_statement` does not save/
+    /// restore this field across recursive descent. This is acceptable for
+    /// common modifiers (onlyOwner, nonReentrant, lock, whenNotPaused).
+    current_modifier: Option<String>,
 }
 
 impl CfgBuilder {
@@ -34,6 +44,7 @@ impl CfgBuilder {
             graph: CfgGraph::new(),
             next_block_id: 0,
             current_block: NodeIndex::new(0), // will be replaced
+            current_modifier: None,
         };
 
         let entry = builder.add_block(BlockKind::Entry);
@@ -45,8 +56,11 @@ impl CfgBuilder {
         };
 
         // Inline modifiers if any
-        let body = if function.modifiers.is_empty() {
+        let tagged_body: Vec<super::modifier::TaggedStatement> = if function.modifiers.is_empty() {
             body
+                .into_iter()
+                .map(|s| super::modifier::TaggedStatement { stmt: s, provenance: None })
+                .collect()
         } else {
             let modifier_defs: Vec<&_> = function
                 .modifiers
@@ -62,14 +76,18 @@ impl CfgBuilder {
             if modifier_defs.len() == function.modifiers.len() {
                 inline_modifiers(&body, &modifier_defs)?
             } else {
-                // Some modifiers not found (likely inherited). Skip inlining for those.
                 body
+                    .into_iter()
+                    .map(|s| super::modifier::TaggedStatement { stmt: s, provenance: None })
+                    .collect()
             }
         };
 
-        for stmt in &body {
-            builder.process_statement(stmt);
+        for tagged in &tagged_body {
+            builder.current_modifier = tagged.provenance.clone();
+            builder.process_statement(&tagged.stmt);
         }
+        builder.current_modifier = None;
 
         // If current block has no outgoing edges and is NOT already terminal, add implicit return
         if !builder.block_is_terminal(builder.current_block)
@@ -129,9 +147,11 @@ impl CfgBuilder {
                 self.add_edge(self.current_block, revert, BranchEdge::Unconditional);
             }
             StatementKind::Emit { event_name, .. } => {
+                let from_modifier = self.current_modifier.clone();
                 self.add_stmt_to_current(CfgStatement::EmitEvent {
                     event: event_name.clone(),
                     span: None,
+                    from_modifier,
                 });
             }
             StatementKind::Block { statements } => {
@@ -149,11 +169,13 @@ impl CfgBuilder {
             }
             StatementKind::VariableDeclaration { name, initial_value, .. } => {
                 if let Some(val) = initial_value {
+                    let from_modifier = self.current_modifier.clone();
                     self.add_stmt_to_current(CfgStatement::Assignment {
                         target: name.clone(),
                         value: expr_to_string(val),
                         operator: crate::model::expression::AssignOperator::Assign,
                         span: None,
+                        from_modifier,
                     });
                 }
             }
@@ -161,7 +183,8 @@ impl CfgBuilder {
                 self.process_try_catch(expression, clauses);
             }
             StatementKind::Assembly { .. } => {
-                self.add_stmt_to_current(CfgStatement::AssemblyBlock { span: None });
+                let from_modifier = self.current_modifier.clone();
+                self.add_stmt_to_current(CfgStatement::AssemblyBlock { span: None, from_modifier });
             }
             StatementKind::Break | StatementKind::Continue | StatementKind::Placeholder => {
                 // Break/Continue handled by loop processors
@@ -354,7 +377,7 @@ impl CfgBuilder {
 
     fn process_return(&mut self, value: Option<&Expression>) {
         if let Some(expr) = value {
-            for s in classify_expression(expr) {
+            for s in classify_expression(expr, &self.current_modifier) {
                 self.add_stmt_to_current(s);
             }
         }
@@ -369,7 +392,7 @@ impl CfgBuilder {
         clauses: &[crate::model::statement::CatchClause],
     ) {
         let before = self.current_block;
-        for s in classify_expression(expression) {
+        for s in classify_expression(expression, &self.current_modifier) {
             self.add_stmt_to_current(s);
         }
 
@@ -418,7 +441,7 @@ impl CfgBuilder {
         }
 
         // Not require/assert — classify and add to current block
-        for s in classify_expression(expr) {
+        for s in classify_expression(expr, &self.current_modifier) {
             self.add_stmt_to_current(s);
         }
     }
@@ -428,10 +451,12 @@ impl CfgBuilder {
         let message = arguments.get(1).map(expr_to_string);
 
         let cond_str = condition.clone();
+        let from_modifier = self.current_modifier.clone();
         self.add_stmt_to_current(CfgStatement::RequireCheck {
             condition,
             message,
             span: None,
+            from_modifier,
         });
 
         let before = self.current_block;
@@ -458,10 +483,12 @@ impl CfgBuilder {
     fn process_assert(&mut self, arguments: &[Expression]) {
         let condition = arguments.first().map(expr_to_string).unwrap_or_default();
         let cond_str = condition.clone();
+        let from_modifier = self.current_modifier.clone();
 
         self.add_stmt_to_current(CfgStatement::AssertCheck {
             condition,
             span: None,
+            from_modifier,
         });
 
         let before = self.current_block;
@@ -496,37 +523,25 @@ impl CfgBuilder {
 /// Classify an expression into CfgStatements for the detection engine.
 /// Returns multiple statements when an expression contains embedded calls
 /// (e.g., `x = foo()` produces both an Assignment and an InternalCall).
-fn classify_expression(expr: &Expression) -> Vec<CfgStatement> {
+fn classify_expression(expr: &Expression, from_modifier: &Option<String>) -> Vec<CfgStatement> {
     let mut stmts = Vec::new();
-    collect_calls(expr, &mut stmts);
+    collect_calls(expr, &mut stmts, from_modifier);
 
-    match &expr.kind {
-        ExpressionKind::FunctionCall { .. } => {
-            // Already handled by collect_calls
-        }
-        ExpressionKind::Assignment { target, operator, value } => {
-            stmts.push(CfgStatement::Assignment {
-                target: expr_to_string(target),
-                value: expr_to_string(value),
-                operator: *operator,
-                span: None,
-            });
-        }
-        _ => {
-            stmts.push(CfgStatement::Assignment {
-                target: String::new(),
-                value: expr_to_string(expr),
-                operator: crate::model::expression::AssignOperator::Assign,
-                span: None,
-            });
-        }
+    if let ExpressionKind::Assignment { target, operator, value } = &expr.kind {
+        stmts.push(CfgStatement::Assignment {
+            target: expr_to_string(target),
+            value: expr_to_string(value),
+            operator: *operator,
+            span: None,
+            from_modifier: from_modifier.clone(),
+        });
     }
 
     stmts
 }
 
 /// Recursively scan an expression for function calls and add them as CfgStatements.
-fn collect_calls(expr: &Expression, stmts: &mut Vec<CfgStatement>) {
+fn collect_calls(expr: &Expression, stmts: &mut Vec<CfgStatement>, from_modifier: &Option<String>) {
     match &expr.kind {
         ExpressionKind::FunctionCall { callee, arguments } => {
             // Classify this call
@@ -538,6 +553,7 @@ fn collect_calls(expr: &Expression, stmts: &mut Vec<CfgStatement>) {
                         stmts.push(CfgStatement::InternalCall {
                             function: name.clone(),
                             span: None,
+                            from_modifier: from_modifier.clone(),
                         });
                     }
                 }
@@ -547,12 +563,14 @@ fn collect_calls(expr: &Expression, stmts: &mut Vec<CfgStatement>) {
                             stmts.push(CfgStatement::InternalCall {
                                 function: member.clone(),
                                 span: None,
+                                from_modifier: from_modifier.clone(),
                             });
                         } else {
                             stmts.push(CfgStatement::ExternalCall {
                                 target: name.clone(),
                                 function: member.clone(),
                                 span: None,
+                                from_modifier: from_modifier.clone(),
                             });
                         }
                     } else {
@@ -560,6 +578,7 @@ fn collect_calls(expr: &Expression, stmts: &mut Vec<CfgStatement>) {
                             target: expr_to_string(object),
                             function: member.clone(),
                             span: None,
+                            from_modifier: from_modifier.clone(),
                         });
                     }
                 }
@@ -567,39 +586,40 @@ fn collect_calls(expr: &Expression, stmts: &mut Vec<CfgStatement>) {
                     stmts.push(CfgStatement::InternalCall {
                         function: expr_to_string(callee),
                         span: None,
+                        from_modifier: from_modifier.clone(),
                     });
                 }
             }
             // Also recurse into arguments (they might contain calls too)
             for arg in arguments {
-                collect_calls(arg, stmts);
+                collect_calls(arg, stmts, from_modifier);
             }
         }
         // Recurse into sub-expressions
         ExpressionKind::Assignment { target, value, .. } => {
-            collect_calls(target, stmts);
-            collect_calls(value, stmts);
+            collect_calls(target, stmts, from_modifier);
+            collect_calls(value, stmts, from_modifier);
         }
         ExpressionKind::BinaryOp { left, right, .. } => {
-            collect_calls(left, stmts);
-            collect_calls(right, stmts);
+            collect_calls(left, stmts, from_modifier);
+            collect_calls(right, stmts, from_modifier);
         }
         ExpressionKind::UnaryOp { operand, .. } => {
-            collect_calls(operand, stmts);
+            collect_calls(operand, stmts, from_modifier);
         }
         ExpressionKind::MemberAccess { object, .. } => {
-            collect_calls(object, stmts);
+            collect_calls(object, stmts, from_modifier);
         }
         ExpressionKind::IndexAccess { base, index } => {
-            collect_calls(base, stmts);
+            collect_calls(base, stmts, from_modifier);
             if let Some(idx) = index {
-                collect_calls(idx, stmts);
+                collect_calls(idx, stmts, from_modifier);
             }
         }
         ExpressionKind::Ternary { condition, true_expr, false_expr } => {
-            collect_calls(condition, stmts);
-            collect_calls(true_expr, stmts);
-            collect_calls(false_expr, stmts);
+            collect_calls(condition, stmts, from_modifier);
+            collect_calls(true_expr, stmts, from_modifier);
+            collect_calls(false_expr, stmts, from_modifier);
         }
         _ => {}
     }

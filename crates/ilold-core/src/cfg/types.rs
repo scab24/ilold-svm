@@ -36,8 +36,6 @@ pub enum BranchEdge {
     CatchClause { kind: String },
 }
 
-/// Classified operations inside a BasicBlock.
-/// This classification drives the detection engine in Phase 3.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CfgStatement {
     Assignment {
@@ -45,42 +43,62 @@ pub enum CfgStatement {
         value: String,
         operator: AssignOperator,
         span: Option<SourceSpan>,
+        #[serde(default)]
+        from_modifier: Option<String>,
     },
     ExternalCall {
         target: String,
         function: String,
         span: Option<SourceSpan>,
+        #[serde(default)]
+        from_modifier: Option<String>,
     },
     InternalCall {
         function: String,
         span: Option<SourceSpan>,
+        #[serde(default)]
+        from_modifier: Option<String>,
     },
     EmitEvent {
         event: String,
         span: Option<SourceSpan>,
+        #[serde(default)]
+        from_modifier: Option<String>,
     },
     StateRead {
         variable: String,
         span: Option<SourceSpan>,
+        #[serde(default)]
+        from_modifier: Option<String>,
     },
     StateWrite {
         variable: String,
         span: Option<SourceSpan>,
+        #[serde(default)]
+        from_modifier: Option<String>,
     },
     EthTransfer {
         to: String,
         span: Option<SourceSpan>,
+        #[serde(default)]
+        from_modifier: Option<String>,
     },
     RequireCheck {
         condition: String,
         message: Option<String>,
         span: Option<SourceSpan>,
+        #[serde(default)]
+        from_modifier: Option<String>,
     },
     AssertCheck {
         condition: String,
         span: Option<SourceSpan>,
+        #[serde(default)]
+        from_modifier: Option<String>,
     },
     AssemblyBlock {
         span: Option<SourceSpan>,
+        #[serde(default)]
+        from_modifier: Option<String>,
     },
 }
