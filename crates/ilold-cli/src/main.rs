@@ -6,6 +6,8 @@ use clap::Parser;
 mod analyze;
 mod colors;
 mod context;
+mod explore;
+mod fmt;
 
 #[derive(Parser)]
 #[command(name = "ilold", version, about = "Smart contract execution path analyzer")]
@@ -46,6 +48,14 @@ enum Commands {
         #[arg(long, default_value = "3")]
         max_seq_depth: usize,
     },
+    /// Interactive exploration REPL with web canvas
+    Explore {
+        path: PathBuf,
+        #[arg(long, default_value = "0")]
+        port: u16,
+        #[arg(long, default_value = "3")]
+        max_seq_depth: usize,
+    },
 }
 
 #[tokio::main]
@@ -65,6 +75,13 @@ async fn main() -> Result<()> {
                 anyhow::bail!("No .sol files found at {}", path.display());
             }
             ilold_web::serve(paths, port, max_seq_depth).await
+        }
+        Commands::Explore { path, port, max_seq_depth } => {
+            let paths = collect_sol_files(&path)?;
+            if paths.is_empty() {
+                anyhow::bail!("No .sol files found at {}", path.display());
+            }
+            explore::run(paths, port, max_seq_depth).await
         }
     }
 }

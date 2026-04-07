@@ -97,7 +97,7 @@ impl ExplorationSession {
                 let func = self.steps.get(m.step_index)
                     .map(|s| s.function.as_str())
                     .unwrap_or("?");
-                format!("{}{} (step {}, {})", op_str, m.value_expr, m.step_index + 1, func)
+                format!("{}{} (step {}, {})", op_str, m.value_expr, m.step_index, func)
             }).collect();
 
             VariableSummary { variable: var, changes }
