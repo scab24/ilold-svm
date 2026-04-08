@@ -14,6 +14,7 @@ use ilold_core::exploration::session::{ExplorationSession, VariableSummary};
 use ilold_core::exploration::timeline::{build_variable_timeline, VariableTimeline};
 use ilold_core::narrative::trace::FlowTree;
 use ilold_core::narrative::types::{FunctionNarrative, SequenceNarrative};
+use ilold_core::slicing::{build_slice_result, SliceDirection, SliceResult};
 
 use crate::state::AppState;
 
@@ -216,6 +217,66 @@ pub async fn get_flow_trace(
         .map_err(|e| (StatusCode::NOT_FOUND, e))?;
 
     Ok(Json(tree))
+}
+
+#[derive(Deserialize)]
+pub struct SliceQuery {
+    /// `backward`, `forward`, or `both`. Defaults to `both` when absent.
+    /// Short forms `b`/`f` and synonyms `back`/`fwd`/`all` are accepted.
+    #[serde(default)]
+    pub direction: Option<String>,
+}
+
+/// Dataflow slice for `variable` inside `function` of the session's
+/// current contract. The function is resolved from the active session so
+/// the auditor doesn't have to re-type the contract name; if no session
+/// exists the endpoint returns 404.
+pub async fn get_function_slice(
+    State(state): State<Arc<AppState>>,
+    Path((func_name, variable)): Path<(String, String)>,
+    Query(params): Query<SliceQuery>,
+) -> Result<Json<SliceResult>, (StatusCode, String)> {
+    let contract_name = {
+        let guard = state.session.read().unwrap();
+        guard.as_ref()
+            .ok_or((StatusCode::NOT_FOUND, "No active session".into()))?
+            .contract
+            .clone()
+    };
+
+    let contract = state.project.contracts.iter()
+        .find(|c| c.name == contract_name)
+        .ok_or((
+            StatusCode::NOT_FOUND,
+            format!("Contract '{}' not found", contract_name),
+        ))?;
+
+    let function = contract.functions.iter()
+        .find(|f| f.name == func_name)
+        .ok_or((
+            StatusCode::NOT_FOUND,
+            format!("Function '{}' not found in {}", func_name, contract_name),
+        ))?;
+
+    let direction = parse_slice_direction(params.direction.as_deref())
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+
+    Ok(Json(build_slice_result(function, &variable, direction)))
+}
+
+fn parse_slice_direction(raw: Option<&str>) -> Result<SliceDirection, String> {
+    let Some(value) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(SliceDirection::Both);
+    };
+    match value.to_ascii_lowercase().as_str() {
+        "backward" | "back" | "b" => Ok(SliceDirection::Backward),
+        "forward" | "fwd" | "f" => Ok(SliceDirection::Forward),
+        "both" | "all" => Ok(SliceDirection::Both),
+        other => Err(format!(
+            "invalid direction {:?}, expected backward|forward|both",
+            other
+        )),
+    }
 }
 
 /// Parse a comma-separated `expand` query value into a set of step_ids.

@@ -2,8 +2,8 @@ use colored::Colorize;
 
 use ilold_core::exploration::session::MutationScope;
 use ilold_core::exploration::timeline::{TimelineEntry, VariableTimeline};
-use ilold_core::model::expression::AssignOperator;
 use ilold_core::narrative::trace::{FlowKind, FlowNode, FlowTree};
+use ilold_core::slicing::{SliceDirection, SliceEntry, SliceResult};
 
 use crate::colors::{c_accent, c_bright, c_danger, c_muted, c_ok, c_warn};
 
@@ -204,7 +204,7 @@ pub(crate) fn format_flow_label(kind: &FlowKind) -> (&'static str, String) {
         }
         FlowKind::Assert { condition } => ("◇", format!("assert({})", condition)),
         FlowKind::Write { target, value, op } => {
-            ("✏", format!("{} {} {}", target, assign_op_str(*op), value))
+            ("✏", format!("{} {} {}", target, op.as_str(), value))
         }
         FlowKind::StateWrite { variable } => ("✏", format!("write {}", variable)),
         FlowKind::StateRead { variable } => ("▸", format!("read {}", variable)),
@@ -275,22 +275,6 @@ fn color_for_kind_text(kind: &FlowKind, text: &str) -> colored::ColoredString {
     }
 }
 
-fn assign_op_str(op: AssignOperator) -> &'static str {
-    match op {
-        AssignOperator::Assign => "=",
-        AssignOperator::AddAssign => "+=",
-        AssignOperator::SubAssign => "-=",
-        AssignOperator::MulAssign => "*=",
-        AssignOperator::DivAssign => "/=",
-        AssignOperator::ModAssign => "%=",
-        AssignOperator::BitAndAssign => "&=",
-        AssignOperator::BitOrAssign => "|=",
-        AssignOperator::BitXorAssign => "^=",
-        AssignOperator::ShlAssign => "<<=",
-        AssignOperator::ShrAssign => ">>=",
-    }
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Variable timeline renderer
 // ─────────────────────────────────────────────────────────────────────────────
@@ -338,7 +322,7 @@ fn render_entries(entries: &[TimelineEntry], out: &mut String) {
             prev_step = Some(entry.session_step_index);
         }
 
-        let op = assign_op_str(entry.operator);
+        let op = entry.operator.as_str();
         let flow_ref = entry.flow_step_id
             .map(|id| format!(" [trace step {}]", id))
             .unwrap_or_default();
@@ -367,6 +351,62 @@ fn render_entries(entries: &[TimelineEntry], out: &mut String) {
                 out.push_str(&format!("          {} {}\n", c_muted("•"), c_muted(cond)));
             }
         }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Dataflow slice renderer
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub fn render_slice_result(res: &SliceResult) -> String {
+    let mut out = String::new();
+    out.push('\n');
+
+    let header = format!(
+        "{} {} {} {}",
+        c_bright(&res.function),
+        c_muted("·"),
+        c_bright(&res.variable),
+        c_muted("— dataflow slice"),
+    );
+    out.push_str(&format!("  {}\n", header));
+    out.push_str(&format!("  {}\n", "═".repeat(60).truecolor(60, 70, 90)));
+
+    let show_backward = matches!(
+        res.direction,
+        SliceDirection::Backward | SliceDirection::Both
+    );
+    let show_forward = matches!(
+        res.direction,
+        SliceDirection::Forward | SliceDirection::Both
+    );
+
+    if show_backward {
+        render_slice_side("backward", &res.backward, &mut out);
+    }
+    if show_forward {
+        render_slice_side("forward", &res.forward, &mut out);
+    }
+
+    out.push('\n');
+    out
+}
+
+fn render_slice_side(label: &str, entries: &[SliceEntry], out: &mut String) {
+    out.push_str(&format!("  {}\n", c_warn(&format!("[{}]", label))));
+    if entries.is_empty() {
+        out.push_str(&format!("    {}\n", c_muted("(empty)")));
+        return;
+    }
+    for entry in entries {
+        let line_tag = entry.span
+            .map(|s| format!("L{:<4}", s.start_line))
+            .unwrap_or_else(|| "L?   ".into());
+        out.push_str(&format!(
+            "    {} {}\n",
+            c_muted(&line_tag),
+            entry.text,
+        ));
     }
 }
 

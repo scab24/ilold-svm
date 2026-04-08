@@ -504,6 +504,33 @@ fn handle_input(
             }
             InputResult::Continue
         }
+        "sl" | "slice" => {
+            let parts: Vec<&str> = arg.split_whitespace().collect();
+            if parts.len() < 2 {
+                println!("  Usage: slice <function> <variable> [--backward|--forward|--both]");
+                return InputResult::Continue;
+            }
+            let func_name = parts[0];
+            let var_name = parts[1];
+            let direction = parts.iter().skip(2).find_map(|a| match *a {
+                "--backward" | "-b" => Some("backward"),
+                "--forward" | "-f" => Some("forward"),
+                "--both" => Some("both"),
+                _ => None,
+            });
+            let mut url = format!("{base_url}/api/session/slice/{func_name}/{var_name}");
+            if let Some(d) = direction {
+                url.push_str(&format!("?direction={d}"));
+            }
+            match send_get(handle, client, &url) {
+                Ok(val) => match serde_json::from_value::<ilold_core::slicing::SliceResult>(val) {
+                    Ok(res) => print!("{}", fmt::render_slice_result(&res)),
+                    Err(e) => eprintln!("  {} Parse SliceResult: {}", c_danger("✗"), e),
+                },
+                Err(e) => eprintln!("  {}", c_danger(&e)),
+            }
+            InputResult::Continue
+        }
         "st" | "step" => {
             if arg.is_empty() {
                 println!("  Usage: step <index>");
@@ -1373,6 +1400,7 @@ fn print_help() {
         ("",       "trace step <N>",   "Re-render a session step's persisted trace"),
         ("seq",    "sequence",         "Sequence narrative with dependencies"),
         ("tl",     "timeline <var>",   "Cross-step variable mutation history"),
+        ("sl",     "slice <fn> <var>", "Backward+forward dataflow slice for a variable"),
         ("st",     "step <index>",     "Re-inspect a specific step"),
         ("ss",     "session",          "Full session state"),
         ("fi",     "finding [sev] [t]","Record a finding"),
@@ -1457,7 +1485,9 @@ impl Completer for IloldCompleter {
             || line_lower.starts_with("trace ")
             || line_lower.starts_with("w ")
             || line_lower.starts_with("who ")
-            || line_lower.starts_with("status ");
+            || line_lower.starts_with("status ")
+            || (line_lower.starts_with("sl ") && line[..pos].matches(' ').count() == 1)
+            || (line_lower.starts_with("slice ") && line[..pos].matches(' ').count() == 1);
 
         let needs_contract = line_lower.starts_with("use ");
 
