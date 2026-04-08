@@ -455,6 +455,114 @@ async fn session_step_persists_flow_tree_with_populated_flow_step_ids() {
     }
 }
 
+/// A pre-Phase-2a session JSON (no flow_tree, no flow_step_id, no scope,
+/// no trace_config) must load cleanly and the existing commands must
+/// still work in a degraded mode:
+///   - `s` (state) renders mutations using the legacy `step N` format
+///   - `seq` works without flow_summary entries
+///   - `tr step <N>` returns the documented 404 for legacy sessions
+#[tokio::test]
+async fn legacy_session_loads_and_degrades_gracefully() {
+    let paths = vec![fixture("staking.sol")];
+    let (_, port) = ilold_web::start_server(paths, 0, 2).await.unwrap();
+
+    let client = reqwest::Client::new();
+
+    // 1. Build a real session with two steps so we get a valid AuditJournal
+    //    serialized form, then save it.
+    for func in ["deposit", "withdraw"] {
+        let res = client
+            .post(format!("http://127.0.0.1:{port}/api/cmd"))
+            .json(&serde_json::json!({"contract": "Staking", "command": {"Call": {"func": func}}}))
+            .send().await.unwrap();
+        assert!(res.status().is_success());
+    }
+    let res = client
+        .post(format!("http://127.0.0.1:{port}/api/cmd"))
+        .json(&serde_json::json!({"contract": "Staking", "command": "SaveSession"}))
+        .send().await.unwrap();
+    let body: serde_json::Value = res.json().await.unwrap();
+    let json_str = body["SessionSaved"]["json"].as_str().unwrap().to_string();
+
+    // 2. Strip Phase-2a fields from the JSON to simulate a legacy session.
+    let mut session: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+    {
+        let steps = session["steps"].as_array_mut().unwrap();
+        for step in steps {
+            let obj = step.as_object_mut().unwrap();
+            obj.remove("flow_tree");
+            obj.remove("trace_config");
+            if let Some(muts) = obj.get_mut("mutations").and_then(|v| v.as_array_mut()) {
+                for m in muts {
+                    if let Some(m_obj) = m.as_object_mut() {
+                        m_obj.remove("flow_step_id");
+                        m_obj.remove("scope");
+                    }
+                }
+            }
+        }
+    }
+    let stripped = serde_json::to_string(&session).unwrap();
+
+    // 3. Load the stripped session — must succeed thanks to #[serde(default)].
+    let res = client
+        .post(format!("http://127.0.0.1:{port}/api/cmd"))
+        .json(&serde_json::json!({
+            "contract": "Staking",
+            "command": {"LoadSession": {"json": stripped}}
+        }))
+        .send().await.unwrap();
+    assert!(res.status().is_success(), "load failed: {}", res.status());
+
+    // 4. `s` (state) — change lines should NOT have a `:N` flow ref because
+    //    the legacy mutations have flow_step_id = None.
+    let res = client
+        .post(format!("http://127.0.0.1:{port}/api/cmd"))
+        .json(&serde_json::json!({"contract": "Staking", "command": "State"}))
+        .send().await.unwrap();
+    assert!(res.status().is_success());
+    let body: serde_json::Value = res.json().await.unwrap();
+    let summary = body["StateView"]["summary"].as_array().unwrap();
+    assert!(!summary.is_empty());
+    for var in summary {
+        for change in var["changes"].as_array().unwrap() {
+            let s = change.as_str().unwrap();
+            assert!(s.contains("(step "), "missing step ref: {:?}", s);
+            // Legacy format: 'step N,' (comma after digit) — NOT 'step N:M'
+            assert!(
+                !s.contains(":") || !s.split("step ").nth(1).map(|r| r.starts_with(|c: char| c.is_ascii_digit())).unwrap_or(false)
+                || s.split("(step ").nth(1).and_then(|r| r.split(',').next())
+                    .map(|n| !n.contains(':')).unwrap_or(true),
+                "legacy mutation should not have flow_step ref: {:?}", s
+            );
+        }
+    }
+
+    // 5. `seq` — must work but flow_summary must be null on every step.
+    let res = client
+        .get(format!("http://127.0.0.1:{port}/api/session/sequence"))
+        .send().await.unwrap();
+    assert!(res.status().is_success());
+    let narrative: serde_json::Value = res.json().await.unwrap();
+    let steps = narrative["steps"].as_array().unwrap();
+    assert_eq!(steps.len(), 2);
+    for step in steps {
+        assert!(step["flow_summary"].is_null(),
+            "legacy step should have null flow_summary: {:?}", step);
+    }
+
+    // 6. `tr step 0` — must return 404 with the documented legacy message.
+    let res = client
+        .get(format!("http://127.0.0.1:{port}/api/session/step/0/trace"))
+        .send().await.unwrap();
+    assert_eq!(res.status(), reqwest::StatusCode::NOT_FOUND);
+    let err = res.text().await.unwrap();
+    assert!(
+        err.contains("no persisted trace") || err.contains("pre-Phase-2a"),
+        "expected legacy-session error message, got: {:?}", err
+    );
+}
+
 /// After 2 `c <func>` calls, `seq` must return a SequenceNarrative whose
 /// every step has a populated `flow_summary` with sane counts. Verifies
 /// Task 1.9 enrichment is wired through the API.
