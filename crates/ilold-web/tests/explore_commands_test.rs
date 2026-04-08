@@ -455,6 +455,56 @@ async fn session_step_persists_flow_tree_with_populated_flow_step_ids() {
     }
 }
 
+/// After 2 `c <func>` calls, `seq` must return a SequenceNarrative whose
+/// every step has a populated `flow_summary` with sane counts. Verifies
+/// Task 1.9 enrichment is wired through the API.
+#[tokio::test]
+async fn sequence_narrative_includes_flow_summary_per_step() {
+    let paths = vec![fixture("staking.sol")];
+    let (_, port) = ilold_web::start_server(paths, 0, 2).await.unwrap();
+
+    let client = reqwest::Client::new();
+    let post_call = |func: &'static str| {
+        let client = client.clone();
+        async move {
+            client
+                .post(format!("http://127.0.0.1:{port}/api/cmd"))
+                .json(&serde_json::json!({"contract": "Staking", "command": {"Call": {"func": func}}}))
+                .send().await.unwrap()
+        }
+    };
+
+    assert!(post_call("deposit").await.status().is_success());
+    assert!(post_call("withdraw").await.status().is_success());
+
+    let res = client
+        .get(format!("http://127.0.0.1:{port}/api/session/sequence"))
+        .send().await.unwrap();
+    assert!(res.status().is_success());
+    let narrative: serde_json::Value = res.json().await.unwrap();
+
+    let steps = narrative["steps"].as_array().unwrap();
+    assert_eq!(steps.len(), 2);
+
+    for step in steps {
+        let summary = &step["flow_summary"];
+        assert!(!summary.is_null(),
+            "step {:?} has null flow_summary; should have been populated by get_sequence_narrative",
+            step["function"]);
+        assert!(summary["total_steps"].as_u64().unwrap() > 0);
+        assert!(summary["mutation_count"].as_u64().unwrap() > 0,
+            "expected at least one mutation in {:?}", step["function"]);
+        // mutation_refs is a list mirroring mutation_count
+        let refs = summary["mutation_refs"].as_array().unwrap();
+        assert_eq!(refs.len() as u64, summary["mutation_count"].as_u64().unwrap());
+        // Each ref carries variable + flow_step_id + session_step_index
+        for r in refs {
+            assert!(!r["variable"].as_str().unwrap().is_empty());
+            assert!(r["flow_step_id"].as_u64().is_some());
+        }
+    }
+}
+
 /// `GET /api/session/step/{N}/trace` returns the persisted FlowTree of
 /// the session step. Verifies the new endpoint is wired correctly and
 /// that the persisted tree round-trips through HTTP.

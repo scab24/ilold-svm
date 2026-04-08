@@ -1278,6 +1278,31 @@ fn print_sequence_narrative(val: &serde_json::Value) {
             }
         }
     }
+    if let Some(steps) = val.get("steps").and_then(|v| v.as_array()) {
+        let any_summary = steps.iter().any(|s| !s.get("flow_summary").map(|v| v.is_null()).unwrap_or(true));
+        if any_summary {
+            println!("  {}:", c_warn("Flow summaries"));
+            for (i, step) in steps.iter().enumerate() {
+                let summary = match step.get("flow_summary") {
+                    Some(s) if !s.is_null() => s,
+                    _ => continue,
+                };
+                let func = step.get("function").and_then(|v| v.as_str()).unwrap_or("?");
+                let total = summary.get("total_steps").and_then(|v| v.as_u64()).unwrap_or(0);
+                let muts = summary.get("mutation_count").and_then(|v| v.as_u64()).unwrap_or(0);
+                let ext = summary.get("external_call_count").and_then(|v| v.as_u64()).unwrap_or(0);
+                let int_n = summary.get("internal_call_count").and_then(|v| v.as_u64()).unwrap_or(0);
+                let dl = summary.get("depth_limited_count").and_then(|v| v.as_u64()).unwrap_or(0);
+                println!(
+                    "    {} {}  {} ops | {} mutations | {} ext calls | {} internal{}",
+                    c_accent(&format!("step {}", i)),
+                    c_bright(func),
+                    total, muts, ext, int_n,
+                    if dl > 0 { format!(" ({} depth-limited)", dl) } else { String::new() },
+                );
+            }
+        }
+    }
     println!();
 }
 

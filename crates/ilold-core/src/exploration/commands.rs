@@ -8,7 +8,7 @@ use crate::journal::types::{Finding, ReviewStatus, Severity};
 use crate::model::contract::ContractDef;
 use crate::model::project::Project;
 use crate::narrative::function::build_function_narrative;
-use crate::narrative::sequence::build_sequence_narrative;
+use crate::narrative::sequence::{build_sequence_narrative, compute_flow_summary};
 use crate::narrative::trace::{build_flow_tree, FlowConfig, FlowTree};
 use crate::narrative::types::{FunctionNarrative, SequenceNarrative};
 use crate::pathtree::types::PathTree;
@@ -610,10 +610,22 @@ pub fn get_sequence_narrative(
     }
 
     let names: Vec<&str> = session.current_sequence();
-    Ok(build_sequence_narrative(
+    let mut narrative = build_sequence_narrative(
         &session.contract, &names,
         data.behaviors, data.transitions, data.classifications,
-    ))
+    );
+
+    // Enrich each narrative step with the FlowSummary derived from the
+    // session's persisted flow_tree. Legacy steps without a tree get
+    // None, which the renderer treats as "no summary available".
+    for (i, step) in narrative.steps.iter_mut().enumerate() {
+        if let Some(session_step) = session.steps.get(i) {
+            step.flow_summary = session_step.flow_tree.as_ref()
+                .map(|tree| compute_flow_summary(tree, i));
+        }
+    }
+
+    Ok(narrative)
 }
 
 pub fn get_session_state(session: &ExplorationSession) -> Vec<VariableSummary> {

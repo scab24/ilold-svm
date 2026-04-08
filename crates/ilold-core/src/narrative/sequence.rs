@@ -1,6 +1,7 @@
 use crate::classify::entry_points::AccessLevel;
 use crate::sequence::analysis::{FunctionBehavior, TransitionInfo};
 
+use super::trace::{FlowKind, FlowNode, FlowTree};
 use super::types::*;
 
 pub fn build_sequence_narrative(
@@ -93,4 +94,54 @@ fn extract_variable_from_condition(cond: &str) -> String {
         }
     }
     String::new()
+}
+
+/// Walk a persisted FlowTree and aggregate counts + mutation refs into
+/// a compact `FlowSummary` for use in sequence narratives.
+pub fn compute_flow_summary(tree: &FlowTree, session_step_index: usize) -> FlowSummary {
+    let mut summary = FlowSummary {
+        total_steps: 0,
+        mutation_count: 0,
+        external_call_count: 0,
+        internal_call_count: 0,
+        depth_limited_count: 0,
+        mutation_refs: Vec::new(),
+    };
+    walk_for_summary(&tree.root, session_step_index, &mut summary);
+    summary
+}
+
+fn walk_for_summary(node: &FlowNode, session_step_index: usize, summary: &mut FlowSummary) {
+    summary.total_steps += 1;
+    match &node.kind {
+        FlowKind::Write { target, .. } => {
+            summary.mutation_count += 1;
+            summary.mutation_refs.push(MutationRef {
+                variable: target.clone(),
+                flow_step_id: node.step_id,
+                session_step_index,
+            });
+        }
+        FlowKind::StateWrite { variable } => {
+            summary.mutation_count += 1;
+            summary.mutation_refs.push(MutationRef {
+                variable: variable.clone(),
+                flow_step_id: node.step_id,
+                session_step_index,
+            });
+        }
+        FlowKind::ExternalCall { .. } | FlowKind::EthTransfer { .. } => {
+            summary.external_call_count += 1;
+        }
+        FlowKind::InternalCall { depth_limited, .. } => {
+            summary.internal_call_count += 1;
+            if *depth_limited {
+                summary.depth_limited_count += 1;
+            }
+        }
+        _ => {}
+    }
+    for child in &node.children {
+        walk_for_summary(child, session_step_index, summary);
+    }
 }
