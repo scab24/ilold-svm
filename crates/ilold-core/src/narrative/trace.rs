@@ -303,6 +303,54 @@ fn call_chain_via(chain: &[String]) -> Option<String> {
     }
 }
 
+/// Find the chain of branch conditions that had to be true to reach the
+/// node with `target_step_id` in the tree. Returns `None` if the target
+/// is not present.
+///
+/// `BranchTrue { cond }` contributes `cond`; `BranchFalse { cond }`
+/// contributes `!(cond)`. The branch node's own conditions are NOT
+/// included in its own path — they describe the path TO its children.
+pub fn collect_path_conditions(
+    tree: &FlowTree,
+    target_step_id: usize,
+) -> Option<Vec<String>> {
+    let mut path: Vec<String> = Vec::new();
+    if collect_path_rec(&tree.root, target_step_id, &mut path) {
+        Some(path)
+    } else {
+        None
+    }
+}
+
+fn collect_path_rec(node: &FlowNode, target: usize, path: &mut Vec<String>) -> bool {
+    if node.step_id == target {
+        return true;
+    }
+
+    let pushed = match &node.kind {
+        FlowKind::BranchTrue { condition } => {
+            path.push(condition.clone());
+            true
+        }
+        FlowKind::BranchFalse { condition } => {
+            path.push(format!("!({})", condition));
+            true
+        }
+        _ => false,
+    };
+
+    for child in &node.children {
+        if collect_path_rec(child, target, path) {
+            return true;
+        }
+    }
+
+    if pushed {
+        path.pop();
+    }
+    false
+}
+
 fn next_id(counter: &mut usize) -> usize {
     let id = *counter;
     *counter += 1;
@@ -782,4 +830,107 @@ fn count_statements(cfg: &CfgGraph) -> usize {
     cfg.node_indices()
         .map(|n| cfg[n].statements.len())
         .sum()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn leaf(step_id: usize, kind: FlowKind) -> FlowNode {
+        FlowNode {
+            step_id,
+            depth: 0,
+            kind,
+            from_modifier: None,
+            children: Vec::new(),
+        }
+    }
+
+    fn parent(step_id: usize, kind: FlowKind, children: Vec<FlowNode>) -> FlowNode {
+        FlowNode {
+            step_id,
+            depth: 0,
+            kind,
+            from_modifier: None,
+            children,
+        }
+    }
+
+    /// Build a synthetic tree:
+    ///   Entry (0)
+    ///   ├── BranchTrue("a > 0") (1)
+    ///   │   └── BranchFalse("b > 0") (2)
+    ///   │       └── Write reserve0 (3)
+    ///   └── BranchFalse("a > 0") (4)
+    ///       └── Write balance (5)
+    fn fixture_tree() -> FlowTree {
+        let inner_write = leaf(3, FlowKind::Write {
+            target: "reserve0".into(),
+            value: "x".into(),
+            op: AssignOperator::Assign,
+        });
+        let bf_inner = parent(2, FlowKind::BranchFalse { condition: "b > 0".into() }, vec![inner_write]);
+        let bt_outer = parent(1, FlowKind::BranchTrue { condition: "a > 0".into() }, vec![bf_inner]);
+
+        let other_write = leaf(5, FlowKind::Write {
+            target: "balance".into(),
+            value: "y".into(),
+            op: AssignOperator::Assign,
+        });
+        let bf_outer = parent(4, FlowKind::BranchFalse { condition: "a > 0".into() }, vec![other_write]);
+
+        let root = parent(
+            0,
+            FlowKind::Entry { signature: "f()".into() },
+            vec![bt_outer, bf_outer],
+        );
+
+        FlowTree {
+            contract: "C".into(),
+            function: "f".into(),
+            signature: "f()".into(),
+            modifiers: Vec::new(),
+            max_depth: 4,
+            root,
+        }
+    }
+
+    #[test]
+    fn collect_path_conditions_inside_nested_branches() {
+        let tree = fixture_tree();
+        // Step 3 lives inside BranchTrue(a>0) → BranchFalse(b>0) → Write
+        let path = collect_path_conditions(&tree, 3).expect("step 3 should be reachable");
+        assert_eq!(path, vec!["a > 0".to_string(), "!(b > 0)".to_string()]);
+    }
+
+    #[test]
+    fn collect_path_conditions_in_other_branch() {
+        let tree = fixture_tree();
+        // Step 5 lives inside BranchFalse(a>0) → Write
+        let path = collect_path_conditions(&tree, 5).expect("step 5 should be reachable");
+        assert_eq!(path, vec!["!(a > 0)".to_string()]);
+    }
+
+    #[test]
+    fn collect_path_conditions_root_returns_empty_path() {
+        let tree = fixture_tree();
+        // Root itself has step_id 0 — no conditions on the path TO the root.
+        let path = collect_path_conditions(&tree, 0).expect("root should be reachable");
+        assert!(path.is_empty());
+    }
+
+    #[test]
+    fn collect_path_conditions_branch_node_itself() {
+        let tree = fixture_tree();
+        // Step 2 IS the BranchFalse(b>0) node. Its own condition is NOT
+        // included; only the parent BranchTrue(a>0) is.
+        let path = collect_path_conditions(&tree, 2).expect("step 2 should be reachable");
+        assert_eq!(path, vec!["a > 0".to_string()]);
+    }
+
+    #[test]
+    fn collect_path_conditions_returns_none_for_unknown_step() {
+        let tree = fixture_tree();
+        assert!(collect_path_conditions(&tree, 9999).is_none());
+    }
 }

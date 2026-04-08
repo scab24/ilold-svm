@@ -213,20 +213,6 @@ pub struct VariableSummary {
 mod tests {
     use super::*;
 
-    fn dummy_state_var(name: &str) -> StateVar {
-        StateVar {
-            name: name.into(),
-            type_name: "uint256".into(),
-            visibility: crate::model::function::Visibility::Public,
-            is_constant: false,
-            is_immutable: false,
-            initial_value: None,
-            span: crate::model::common::SourceSpan {
-                file_index: 0, start_line: 0, start_col: 0, end_line: 0, end_col: 0,
-            },
-        }
-    }
-
     #[test]
     fn new_session_is_empty() {
         let s = ExplorationSession::new("Staking", "myproject");
