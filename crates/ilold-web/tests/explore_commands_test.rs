@@ -455,6 +455,109 @@ async fn session_step_persists_flow_tree_with_populated_flow_step_ids() {
     }
 }
 
+/// `?expand=N` forces a specific InternalCall to be inlined regardless
+/// of `depth`. Verifies the new query parameter wires through to the
+/// walker's expand_set.
+#[tokio::test]
+async fn tr_swap_expand_inlines_update() {
+    let paths = vec![fixture("uniswap_v2_pair.sol")];
+    let (_, port) = ilold_web::start_server(paths, 0, 2).await.unwrap();
+
+    let client = reqwest::Client::new();
+
+    // 1. Build the trace at depth 2 — _update should appear depth_limited.
+    let res = client
+        .get(format!("http://127.0.0.1:{port}/api/session/trace/UniswapV2Pair/swap?depth=2"))
+        .send().await.unwrap();
+    assert!(res.status().is_success());
+    let tree: serde_json::Value = res.json().await.unwrap();
+
+    // 2. Find the first InternalCall to _update with depth_limited=true.
+    let mut update_step_id: Option<u64> = None;
+    fn find_depth_limited_update(node: &serde_json::Value, out: &mut Option<u64>) {
+        if out.is_some() { return; }
+        if let Some(obj) = node.get("kind").and_then(|v| v.as_object()) {
+            if let Some(ic) = obj.get("InternalCall") {
+                let is_update = ic.get("function").and_then(|v| v.as_str()) == Some("_update");
+                let is_limited = ic.get("depth_limited").and_then(|v| v.as_bool()) == Some(true);
+                if is_update && is_limited {
+                    if let Some(id) = node.get("step_id").and_then(|v| v.as_u64()) {
+                        *out = Some(id);
+                        return;
+                    }
+                }
+            }
+        }
+        if let Some(children) = node.get("children").and_then(|c| c.as_array()) {
+            for child in children {
+                find_depth_limited_update(child, out);
+                if out.is_some() { return; }
+            }
+        }
+    }
+    find_depth_limited_update(&tree["root"], &mut update_step_id);
+    let target_id = update_step_id
+        .expect("expected at least one depth_limited _update at depth=2");
+
+    // 3. Re-fetch with ?expand=<id>. Now _update at that step_id should be
+    //    inlined (depth_limited=false) AND have non-empty children.
+    let res = client
+        .get(format!(
+            "http://127.0.0.1:{port}/api/session/trace/UniswapV2Pair/swap?depth=2&expand={target_id}"
+        ))
+        .send().await.unwrap();
+    assert!(res.status().is_success());
+    let tree2: serde_json::Value = res.json().await.unwrap();
+
+    // 4. Walk the new tree, find the node with target_id, and assert it's
+    //    no longer depth_limited and has children.
+    fn find_node_by_id<'a>(
+        node: &'a serde_json::Value,
+        target: u64,
+    ) -> Option<&'a serde_json::Value> {
+        if node.get("step_id").and_then(|v| v.as_u64()) == Some(target) {
+            return Some(node);
+        }
+        if let Some(children) = node.get("children").and_then(|c| c.as_array()) {
+            for child in children {
+                if let Some(found) = find_node_by_id(child, target) {
+                    return Some(found);
+                }
+            }
+        }
+        None
+    }
+    let expanded_node = find_node_by_id(&tree2["root"], target_id)
+        .expect("step_id should still exist after expand (canonical step_ids are stable)");
+
+    let kind = expanded_node["kind"].as_object().unwrap();
+    let ic = kind.get("InternalCall")
+        .expect("expanded node should still be an InternalCall");
+    assert_eq!(
+        ic.get("depth_limited").and_then(|v| v.as_bool()),
+        Some(false),
+        "step {} should be expanded (not depth_limited) after ?expand={}",
+        target_id, target_id
+    );
+
+    let children = expanded_node["children"].as_array().unwrap();
+    assert!(!children.is_empty(),
+        "expanded _update must have inlined children");
+
+    // 5. Bonus: those children should include writes to reserve0 / reserve1.
+    let has_reserve_write = children.iter().any(|c| {
+        c.get("kind")
+            .and_then(|k| k.as_object())
+            .and_then(|m| m.get("Write"))
+            .and_then(|w| w.get("target"))
+            .and_then(|t| t.as_str())
+            .map(|s| s.starts_with("reserve"))
+            .unwrap_or(false)
+    });
+    assert!(has_reserve_write,
+        "expanded _update children should include reserve* writes");
+}
+
 /// `GET /api/session/timeline/{var}` returns every mutation of `var`
 /// across the session, ordered by session step then flow_step_id, with
 /// path conditions populated for each entry.

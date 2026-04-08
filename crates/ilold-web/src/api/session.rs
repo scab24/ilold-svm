@@ -194,6 +194,10 @@ pub struct TraceQuery {
     pub depth: Option<usize>,
     #[serde(default)]
     pub reverts: Option<bool>,
+    /// Comma-separated step_ids to force-inline beyond `depth`. Example:
+    /// `?expand=17,24` will inline both calls regardless of max_depth.
+    #[serde(default)]
+    pub expand: Option<String>,
 }
 
 pub async fn get_flow_trace(
@@ -205,9 +209,32 @@ pub async fn get_flow_trace(
 
     let max_depth = params.depth.unwrap_or(2);
     let include_reverts = params.reverts.unwrap_or(false);
+    let expand_set = parse_expand_set(params.expand.as_deref())
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
 
-    let tree = get_flow_tree(&func_name, &data, max_depth, include_reverts)
+    let tree = get_flow_tree(&func_name, &data, max_depth, include_reverts, expand_set)
         .map_err(|e| (StatusCode::NOT_FOUND, e))?;
 
     Ok(Json(tree))
+}
+
+/// Parse a comma-separated `expand` query value into a set of step_ids.
+/// Empty input → empty set. Whitespace around values is tolerated.
+/// Returns `Err` with a descriptive message if any value is not a usize.
+fn parse_expand_set(raw: Option<&str>) -> Result<std::collections::HashSet<usize>, String> {
+    let mut set = std::collections::HashSet::new();
+    let raw = match raw {
+        Some(s) if !s.trim().is_empty() => s,
+        _ => return Ok(set),
+    };
+    for part in raw.split(',') {
+        let trimmed = part.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let id: usize = trimmed.parse()
+            .map_err(|_| format!("invalid step_id in expand: {:?}", trimmed))?;
+        set.insert(id);
+    }
+    Ok(set)
 }

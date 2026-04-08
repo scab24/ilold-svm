@@ -88,7 +88,49 @@ pub fn render_flow_tree(tree: &FlowTree) -> String {
     let mut step: usize = 1;
     render_flow_root(&tree.root, &mut step, &mut out);
 
+    append_expand_hint(tree, &mut out);
+
     out
+}
+
+/// If the rendered tree contains depth-limited InternalCalls, append a
+/// footer listing their canonical step_ids so the auditor knows what to
+/// pass to `tr <func> +N`. Caps at 10 candidates.
+fn append_expand_hint(tree: &FlowTree, out: &mut String) {
+    let mut candidates: Vec<usize> = Vec::new();
+    collect_depth_limited(&tree.root, &mut candidates);
+    if candidates.is_empty() {
+        return;
+    }
+
+    let total = candidates.len();
+    candidates.truncate(10);
+    let csv = candidates.iter()
+        .map(|n| n.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let suffix = if total > 10 {
+        format!("  (… {} more)", total - 10)
+    } else {
+        String::new()
+    };
+
+    out.push('\n');
+    out.push_str(&format!(
+        "  {} {}{}\n",
+        c_muted("tip: expand with `tr <func> +N` — candidates:"),
+        c_accent(&csv),
+        c_muted(&suffix),
+    ));
+}
+
+fn collect_depth_limited(node: &FlowNode, out: &mut Vec<usize>) {
+    if let FlowKind::InternalCall { depth_limited: true, .. } = &node.kind {
+        out.push(node.step_id);
+    }
+    for child in &node.children {
+        collect_depth_limited(child, out);
+    }
 }
 
 fn render_flow_root(root: &FlowNode, step: &mut usize, out: &mut String) {

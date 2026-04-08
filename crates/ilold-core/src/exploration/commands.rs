@@ -584,6 +584,7 @@ pub fn get_flow_tree(
     data: &AnalysisData,
     max_depth: usize,
     include_reverts: bool,
+    expand_set: std::collections::HashSet<usize>,
 ) -> Result<FlowTree, String> {
     let (owning, func) = data.project
         .resolve_function(data.contract, func_name)
@@ -596,7 +597,7 @@ pub fn get_flow_tree(
     let config = FlowConfig {
         max_depth,
         include_reverts,
-        expand_set: std::collections::HashSet::new(),
+        expand_set,
     };
     Ok(build_flow_tree(owning, func, cfg, data.project, data.cfgs, &config))
 }

@@ -445,11 +445,19 @@ fn handle_input(
                     }
                     if parsed.reverts {
                         url.push_str(&format!("{sep}reverts=true"));
+                        sep = '&';
+                    }
+                    if !parsed.expand.is_empty() {
+                        let csv = parsed.expand.iter()
+                            .map(|n| n.to_string())
+                            .collect::<Vec<_>>()
+                            .join(",");
+                        url.push_str(&format!("{sep}expand={csv}"));
                     }
                     url
                 }
                 TraceTarget::SessionStep(idx) => {
-                    // Persisted tree — depth/reverts flags ignored.
+                    // Persisted tree — depth/reverts/expand flags ignored.
                     format!("{base_url}/api/session/step/{idx}/trace")
                 }
             };
@@ -661,6 +669,7 @@ struct TraceArgs {
     target: Option<TraceTarget>,
     depth: Option<usize>,
     reverts: bool,
+    expand: Vec<usize>,
 }
 
 fn parse_trace_args(arg: &str) -> TraceArgs {
@@ -668,6 +677,7 @@ fn parse_trace_args(arg: &str) -> TraceArgs {
     let mut target: Option<TraceTarget> = None;
     let mut depth: Option<usize> = None;
     let mut reverts = false;
+    let mut expand: Vec<usize> = Vec::new();
     let mut i = 0;
     while i < tokens.len() {
         let t = tokens[i];
@@ -680,6 +690,12 @@ fn parse_trace_args(arg: &str) -> TraceArgs {
             i += 1;
         } else if t == "--reverts" {
             reverts = true;
+            i += 1;
+        } else if let Some(rest) = t.strip_prefix('+') {
+            // `+N` — force-inline the call at canonical step_id N.
+            if let Ok(id) = rest.parse::<usize>() {
+                expand.push(id);
+            }
             i += 1;
         } else if t == "step"
             && target.is_none()
@@ -698,7 +714,7 @@ fn parse_trace_args(arg: &str) -> TraceArgs {
             i += 1;
         }
     }
-    TraceArgs { target, depth, reverts }
+    TraceArgs { target, depth, reverts, expand }
 }
 
 fn normalize_severity(input: &str) -> Option<&'static str> {
