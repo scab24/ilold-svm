@@ -305,3 +305,174 @@ async fn trace_update_has_no_internal_calls_and_shows_state_writes() {
     assert!(events.iter().any(|e| e.variant == "EmitEvent"));
     assert!(!events.iter().any(|e| e.variant == "InternalCall"));
 }
+
+/// Collect (step_id, variant) pairs from a FlowTree in pre-order.
+fn collect_step_ids(node: &serde_json::Value, out: &mut Vec<(u64, String)>) {
+    let step_id = node.get("step_id").and_then(|v| v.as_u64()).unwrap_or(0);
+    let variant = match node.get("kind") {
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(serde_json::Value::Object(map)) => {
+            map.keys().next().cloned().unwrap_or_default()
+        }
+        _ => String::new(),
+    };
+    out.push((step_id, variant));
+    if let Some(children) = node.get("children").and_then(|c| c.as_array()) {
+        for child in children {
+            collect_step_ids(child, out);
+        }
+    }
+}
+
+/// Canonical step_ids must be stable across configs that only differ
+/// in max_depth and expand_set. For every step_id present in BOTH trees,
+/// the FlowKind variant must match.
+#[tokio::test]
+async fn step_ids_are_stable_across_max_depth_configs() {
+    let paths = vec![fixture("uniswap_v2_pair.sol")];
+    let (_, port) = ilold_web::start_server(paths, 0, 2).await.unwrap();
+
+    let client = reqwest::Client::new();
+    let get_tree = |depth: usize| {
+        let client = client.clone();
+        async move {
+            let res = client
+                .get(format!(
+                    "http://127.0.0.1:{port}/api/session/trace/UniswapV2Pair/swap?depth={depth}"
+                ))
+                .send().await.unwrap();
+            assert!(res.status().is_success());
+            res.json::<serde_json::Value>().await.unwrap()
+        }
+    };
+
+    let tree_shallow = get_tree(2).await;
+    let tree_deep = get_tree(4).await;
+
+    let mut shallow: Vec<(u64, String)> = Vec::new();
+    collect_step_ids(&tree_shallow["root"], &mut shallow);
+    let mut deep: Vec<(u64, String)> = Vec::new();
+    collect_step_ids(&tree_deep["root"], &mut deep);
+
+    // Both walks must visit a non-trivial tree.
+    assert!(shallow.len() > 5, "shallow tree too small: {}", shallow.len());
+    assert!(deep.len() > shallow.len(),
+        "deep tree should have at least as many nodes as shallow (deep={}, shallow={})",
+        deep.len(), shallow.len());
+
+    // Build maps keyed by step_id.
+    let shallow_map: std::collections::HashMap<u64, &str> =
+        shallow.iter().map(|(id, v)| (*id, v.as_str())).collect();
+    let deep_map: std::collections::HashMap<u64, &str> =
+        deep.iter().map(|(id, v)| (*id, v.as_str())).collect();
+
+    // Every step_id that exists in both trees must map to the same variant.
+    let mut common_ids = 0usize;
+    for (id, shallow_variant) in &shallow_map {
+        if let Some(deep_variant) = deep_map.get(id) {
+            assert_eq!(
+                shallow_variant, deep_variant,
+                "step_id {} has different variants: shallow={:?}, deep={:?}",
+                id, shallow_variant, deep_variant,
+            );
+            common_ids += 1;
+        }
+    }
+    assert!(common_ids > 5, "expected meaningful overlap, got {}", common_ids);
+}
+
+/// After `c <func>`, the persisted session must contain a non-null
+/// flow_tree on the new step AND every harvested mutation must carry a
+/// flow_step_id resolving to a Write/StateWrite node in that tree.
+#[tokio::test]
+async fn session_step_persists_flow_tree_with_populated_flow_step_ids() {
+    let paths = vec![fixture("staking.sol")];
+    let (_, port) = ilold_web::start_server(paths, 0, 2).await.unwrap();
+
+    let client = reqwest::Client::new();
+
+    // 1. Add deposit to the session.
+    let res = client
+        .post(format!("http://127.0.0.1:{port}/api/cmd"))
+        .json(&serde_json::json!({"contract": "Staking", "command": {"Call": {"func": "deposit"}}}))
+        .send().await.unwrap();
+    assert!(res.status().is_success());
+
+    // 2. Save the session via the SaveSession command to get its JSON form.
+    let res = client
+        .post(format!("http://127.0.0.1:{port}/api/cmd"))
+        .json(&serde_json::json!({"contract": "Staking", "command": "SaveSession"}))
+        .send().await.unwrap();
+    assert!(res.status().is_success());
+    let body: serde_json::Value = res.json().await.unwrap();
+    let json_str = body["SessionSaved"]["json"].as_str()
+        .expect("SaveSession should return a JSON string");
+    let session: serde_json::Value = serde_json::from_str(json_str).unwrap();
+
+    // 3. Inspect the persisted step.
+    let steps = session["steps"].as_array().unwrap();
+    assert_eq!(steps.len(), 1);
+    let step = &steps[0];
+
+    // 3a. flow_tree must be non-null.
+    assert!(
+        !step["flow_tree"].is_null(),
+        "step.flow_tree must be persisted (not null) after c <func>"
+    );
+    let flow_tree = &step["flow_tree"];
+    assert_eq!(flow_tree["function"], "deposit");
+    let root = &flow_tree["root"];
+    assert!(root["children"].as_array().unwrap().len() > 0,
+        "persisted flow_tree must have non-empty root.children");
+
+    // 3b. trace_config must be persisted with default depth.
+    assert_eq!(step["trace_config"]["depth"], 2);
+
+    // 3c. Every mutation must have flow_step_id = Some(_).
+    let mutations = step["mutations"].as_array().unwrap();
+    assert!(!mutations.is_empty(), "deposit should produce at least one mutation");
+    for m in mutations {
+        assert!(
+            !m["flow_step_id"].is_null(),
+            "mutation {:?} must have flow_step_id populated",
+            m
+        );
+    }
+
+    // 3d. Each flow_step_id must resolve to a Write or StateWrite node in the
+    //     persisted flow_tree.
+    let mut tree_step_ids: std::collections::HashMap<u64, String> = std::collections::HashMap::new();
+    collect_step_id_kinds(root, &mut tree_step_ids);
+    for m in mutations {
+        let id = m["flow_step_id"].as_u64().unwrap();
+        let variant = tree_step_ids.get(&id)
+            .unwrap_or_else(|| panic!("flow_step_id {} not found in persisted tree", id));
+        assert!(
+            variant == "Write" || variant == "StateWrite",
+            "flow_step_id {} resolves to {}, expected Write or StateWrite",
+            id, variant,
+        );
+    }
+}
+
+/// Collect (step_id, FlowKind variant) pairs from a serialized FlowTree.
+fn collect_step_id_kinds(
+    node: &serde_json::Value,
+    out: &mut std::collections::HashMap<u64, String>,
+) {
+    if let Some(id) = node.get("step_id").and_then(|v| v.as_u64()) {
+        let variant = match node.get("kind") {
+            Some(serde_json::Value::String(s)) => s.clone(),
+            Some(serde_json::Value::Object(map)) => {
+                map.keys().next().cloned().unwrap_or_default()
+            }
+            _ => String::new(),
+        };
+        out.insert(id, variant);
+    }
+    if let Some(children) = node.get("children").and_then(|c| c.as_array()) {
+        for child in children {
+            collect_step_id_kinds(child, out);
+        }
+    }
+}
