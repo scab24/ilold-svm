@@ -333,6 +333,29 @@ fn execute_call(
     };
 
     let function_def = resolved.function;
+
+    // Session steps model real external transactions. Internal/private
+    // functions cannot be invoked from outside the contract, so accepting
+    // them as entry points would produce an execution sequence that is
+    // impossible in practice — biasing every downstream analysis.
+    use crate::model::function::Visibility;
+    if matches!(function_def.visibility, Visibility::Internal | Visibility::Private) {
+        return CommandResult::Error {
+            message: format!(
+                "'{}' is {} and cannot be called from outside the contract — \
+                 not a valid session entry point. Use `tr {}` to view its flow, \
+                 or `c <public_caller>` to trace a real entry point.",
+                func,
+                match function_def.visibility {
+                    Visibility::Internal => "internal",
+                    Visibility::Private => "private",
+                    _ => unreachable!(),
+                },
+                func,
+            ),
+        };
+    }
+
     let access = crate::classify::entry_points::classify_function(function_def, owning_contract);
 
     let combined_state_vars = data.project.inherited_state_vars(data.contract);

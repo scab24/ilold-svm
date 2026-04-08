@@ -455,6 +455,47 @@ async fn session_step_persists_flow_tree_with_populated_flow_step_ids() {
     }
 }
 
+/// Session steps must model real external transactions — an internal
+/// function like `_update` should be rejected with a clear error because
+/// it cannot be called from outside the contract. Letting it in would
+/// build an execution sequence that is impossible on-chain.
+#[tokio::test]
+async fn call_rejects_internal_function_as_session_entry() {
+    let paths = vec![fixture("uniswap_v2_pair.sol")];
+    let (_, port) = ilold_web::start_server(paths, 0, 2).await.unwrap();
+
+    let client = reqwest::Client::new();
+    let res = client
+        .post(format!("http://127.0.0.1:{port}/api/cmd"))
+        .json(&serde_json::json!({
+            "contract": "UniswapV2Pair",
+            "command": {"Call": {"func": "_update"}}
+        }))
+        .send().await.unwrap();
+    assert!(res.status().is_success(), "request should succeed — the error lives in the payload");
+
+    let body: serde_json::Value = res.json().await.unwrap();
+    let msg = body["Error"]["message"].as_str()
+        .expect("expected CommandResult::Error for internal function");
+    assert!(msg.contains("_update"), "error should name the function: {}", msg);
+    assert!(msg.contains("internal") || msg.contains("private"),
+        "error should explain why: {}", msg);
+    assert!(msg.contains("tr") || msg.contains("view"),
+        "error should suggest an alternative: {}", msg);
+
+    // Public entry points must still work — sanity check the happy path.
+    let res = client
+        .post(format!("http://127.0.0.1:{port}/api/cmd"))
+        .json(&serde_json::json!({
+            "contract": "UniswapV2Pair",
+            "command": {"Call": {"func": "swap"}}
+        }))
+        .send().await.unwrap();
+    assert!(res.status().is_success());
+    let body: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(body["StepAdded"]["function"], "swap");
+}
+
 /// `?expand=N` forces a specific InternalCall to be inlined regardless
 /// of `depth`. Verifies the new query parameter wires through to the
 /// walker's expand_set.
