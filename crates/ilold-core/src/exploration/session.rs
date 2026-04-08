@@ -159,7 +159,7 @@ impl ExplorationSession {
         self.steps.iter().map(|s| s.function.as_str()).collect()
     }
 
-    pub fn variable_history(&self) -> HashMap<String, Vec<&StateMutation>> {
+    fn variable_history(&self) -> HashMap<String, Vec<&StateMutation>> {
         let mut history: HashMap<String, Vec<&StateMutation>> = HashMap::new();
         for step in &self.steps {
             for mutation in &step.mutations {
