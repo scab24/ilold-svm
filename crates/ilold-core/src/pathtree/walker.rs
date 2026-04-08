@@ -384,8 +384,7 @@ fn collect_annotations(
                 annotations.has_assembly = true;
             }
             CfgStatement::Assignment { target, value, .. } => {
-                let base_name = target.split('[').next().unwrap_or(target);
-                let base_name = base_name.split('.').next().unwrap_or(base_name);
+                let base_name = crate::util::target_base_name(target);
                 if state_vars.iter().any(|sv| sv.name == base_name) {
                     annotations.state_writes.push(target.clone());
                     let normalized = normalize_path(target);

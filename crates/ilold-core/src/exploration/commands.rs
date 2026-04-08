@@ -15,7 +15,7 @@ use crate::pathtree::types::PathTree;
 use crate::journal::export::export_markdown;
 use crate::sequence::analysis::{FunctionBehavior, SequenceAnalysis, TransitionInfo};
 
-use super::session::{ExplorationSession, VariableSummary};
+use super::session::{ExplorationSession, TraceConfig, VariableSummary};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FunctionEntry {
@@ -61,7 +61,11 @@ pub struct AnalysisData<'a> {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SessionCommand {
-    Call { func: String },
+    Call {
+        func: String,
+        #[serde(default)]
+        trace_config: Option<TraceConfig>,
+    },
     Back,
     Clear,
     State,
@@ -162,7 +166,9 @@ pub fn execute_command(
     timestamp: &str,
 ) -> CommandResult {
     match cmd {
-        SessionCommand::Call { func } => execute_call(session, data, &func, timestamp),
+        SessionCommand::Call { func, trace_config } => {
+            execute_call(session, data, &func, trace_config, timestamp)
+        }
         SessionCommand::Back => execute_back(session),
         SessionCommand::Clear => { session.clear(); CommandResult::Cleared }
         SessionCommand::State => CommandResult::StateView {
@@ -296,6 +302,7 @@ fn execute_call(
     session: &mut ExplorationSession,
     data: &AnalysisData,
     func: &str,
+    trace_config: Option<TraceConfig>,
     timestamp: &str,
 ) -> CommandResult {
     let accessible = data.project.accessible_functions(data.contract);
@@ -330,13 +337,14 @@ fn execute_call(
 
     let combined_state_vars = data.project.inherited_state_vars(data.contract);
     session.add_step_with_internals(
-        func,
+        function_def,
         cfg,
         &combined_state_vars,
         data.project,
         owning_contract,
         data.cfgs,
         timestamp,
+        trace_config.unwrap_or_default(),
     );
 
     let state_changed: Vec<String> = session.steps.last()
@@ -585,7 +593,11 @@ pub fn get_flow_tree(
     let cfg = data.cfgs.get(&key)
         .ok_or_else(|| format!("No CFG for {}::{}", owning.name, func_name))?;
 
-    let config = FlowConfig { max_depth, include_reverts };
+    let config = FlowConfig {
+        max_depth,
+        include_reverts,
+        expand_set: std::collections::HashSet::new(),
+    };
     Ok(build_flow_tree(owning, func, cfg, data.project, data.cfgs, &config))
 }
 

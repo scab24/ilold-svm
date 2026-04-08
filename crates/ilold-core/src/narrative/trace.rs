@@ -13,6 +13,11 @@ use crate::model::expression::AssignOperator;
 use crate::model::function::FunctionDef;
 use crate::model::project::Project;
 
+/// Hard cap on the canonical walk's call-nesting depth. Cycle detection
+/// via `visited_calls` is the primary safeguard; this is a second line of
+/// defence against pathological cases and ensures termination.
+const CANONICAL_WALK_SAFETY_CAP: usize = 32;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FlowTree {
     pub contract: String,
@@ -92,6 +97,7 @@ pub enum FlowKind {
 pub struct FlowConfig {
     pub max_depth: usize,
     pub include_reverts: bool,
+    pub expand_set: HashSet<usize>,
 }
 
 impl Default for FlowConfig {
@@ -99,11 +105,54 @@ impl Default for FlowConfig {
         FlowConfig {
             max_depth: 2,
             include_reverts: false,
+            expand_set: HashSet::new(),
         }
     }
 }
 
+/// A raw write event harvested from a FlowTree, decoupled from any
+/// session-level mutation model. The caller filters and converts.
+#[derive(Debug, Clone)]
+pub struct FlowMutation {
+    pub flow_step_id: usize,
+    pub target: String,
+    pub value: String,
+    pub operator: AssignOperator,
+    pub via: Option<String>,
+}
+
 pub fn build_flow_tree(
+    contract: &ContractDef,
+    function: &FunctionDef,
+    cfg: &CfgGraph,
+    project: &Project,
+    all_cfgs: &HashMap<(String, String), CfgGraph>,
+    config: &FlowConfig,
+) -> FlowTree {
+    let canonical = build_canonical_tree(contract, function, cfg, project, all_cfgs, config);
+    filter_for_render(canonical, config)
+}
+
+/// Build a FlowTree and harvest every write event in one canonical walk.
+/// Mutations are harvested from the pre-filter tree so writes inside
+/// depth-limited calls are still reported.
+pub fn build_flow_tree_with_mutations(
+    contract: &ContractDef,
+    function: &FunctionDef,
+    cfg: &CfgGraph,
+    project: &Project,
+    all_cfgs: &HashMap<(String, String), CfgGraph>,
+    config: &FlowConfig,
+) -> (FlowTree, Vec<FlowMutation>) {
+    let canonical = build_canonical_tree(contract, function, cfg, project, all_cfgs, config);
+    let mutations = harvest_mutations_from_tree(&canonical);
+    let rendered = filter_for_render(canonical, config);
+    (rendered, mutations)
+}
+
+/// Internal: run the canonical walk with stable step_ids but no depth
+/// filtering. Used by both `build_flow_tree` and `build_flow_tree_with_mutations`.
+fn build_canonical_tree(
     contract: &ContractDef,
     function: &FunctionDef,
     cfg: &CfgGraph,
@@ -147,6 +196,113 @@ pub fn build_flow_tree(
     }
 }
 
+/// Second pass over a canonical FlowTree: collapses internal calls whose
+/// children exceed `config.max_depth`, unless their canonical `step_id` is
+/// in `config.expand_set`. Step_ids on remaining nodes are preserved, so
+/// references (e.g. `tr <func> +N`) stay valid across different configs.
+fn filter_for_render(mut tree: FlowTree, config: &FlowConfig) -> FlowTree {
+    filter_node_children(&mut tree.root, config);
+    tree
+}
+
+fn filter_node_children(node: &mut FlowNode, config: &FlowConfig) {
+    if let FlowKind::InternalCall {
+        ref mut depth_limited,
+        ref mut ops_count,
+        ..
+    } = node.kind
+    {
+        let children_depth = node.depth + 1;
+        let should_collapse = children_depth > config.max_depth
+            && !config.expand_set.contains(&node.step_id);
+        if should_collapse && !node.children.is_empty() {
+            *ops_count = count_subtree_nodes(&node.children);
+            *depth_limited = true;
+            node.children.clear();
+            return;
+        }
+    }
+
+    for child in &mut node.children {
+        filter_node_children(child, config);
+    }
+}
+
+fn count_subtree_nodes(children: &[FlowNode]) -> usize {
+    let mut total = 0;
+    for child in children {
+        total += 1;
+        total += count_subtree_nodes(&child.children);
+    }
+    total
+}
+
+/// Pre-order DFS over the tree collecting one FlowMutation per write.
+/// Dedupes by (target, operator, value); first occurrence wins so the
+/// flow_step_id is the earliest in pre-order.
+fn harvest_mutations_from_tree(tree: &FlowTree) -> Vec<FlowMutation> {
+    let mut out = Vec::new();
+    let mut seen: HashSet<(String, AssignOperator, String)> = HashSet::new();
+    harvest_node(&tree.root, &[], &mut out, &mut seen);
+    out
+}
+
+fn harvest_node(
+    node: &FlowNode,
+    call_chain: &[String],
+    out: &mut Vec<FlowMutation>,
+    seen: &mut HashSet<(String, AssignOperator, String)>,
+) {
+    match &node.kind {
+        FlowKind::Write { target, value, op } => {
+            let key = (target.clone(), *op, value.clone());
+            if seen.insert(key) {
+                out.push(FlowMutation {
+                    flow_step_id: node.step_id,
+                    target: target.clone(),
+                    value: value.clone(),
+                    operator: *op,
+                    via: call_chain_via(call_chain),
+                });
+            }
+        }
+        FlowKind::StateWrite { variable } => {
+            let key = (variable.clone(), AssignOperator::Assign, String::new());
+            if seen.insert(key) {
+                out.push(FlowMutation {
+                    flow_step_id: node.step_id,
+                    target: variable.clone(),
+                    value: String::new(),
+                    operator: AssignOperator::Assign,
+                    via: call_chain_via(call_chain),
+                });
+            }
+        }
+        FlowKind::InternalCall { function, .. } => {
+            // Recurse with the extended chain, then early-return so the
+            // fallthrough loop below doesn't re-walk children.
+            let mut new_chain: Vec<String> = call_chain.to_vec();
+            new_chain.push(function.clone());
+            for child in &node.children {
+                harvest_node(child, &new_chain, out, seen);
+            }
+            return;
+        }
+        _ => {}
+    }
+    for child in &node.children {
+        harvest_node(child, call_chain, out, seen);
+    }
+}
+
+fn call_chain_via(chain: &[String]) -> Option<String> {
+    if chain.is_empty() {
+        None
+    } else {
+        Some(chain.join(" -> "))
+    }
+}
+
 fn next_id(counter: &mut usize) -> usize {
     let id = *counter;
     *counter += 1;
@@ -162,6 +318,7 @@ fn build_signature(function: &FunctionDef) -> String {
     format!("{}({})", function.name, params.join(", "))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn walk_cfg(
     cfg: &CfgGraph,
     contract: &ContractDef,
@@ -258,10 +415,14 @@ fn walk_block(
         }
     }
 
-    let edges: Vec<(petgraph::stable_graph::NodeIndex, BranchEdge)> = cfg
+    let mut edges: Vec<(petgraph::stable_graph::NodeIndex, BranchEdge)> = cfg
         .edges_directed(node, Direction::Outgoing)
         .map(|e| (e.target(), e.weight().clone()))
         .collect();
+
+    // Deterministic edge ordering so step_ids are stable across runs,
+    // independent of petgraph's iteration order.
+    edges.sort_by_key(|(target, edge)| (edge.variant_order(), target.index()));
 
     if edges.is_empty() {
         return;
@@ -521,7 +682,10 @@ fn build_internal_call_node(
 
     let call_key = (owning_name.clone(), callee_name.to_string());
     let already_visited = visited_calls.contains(&call_key);
-    let depth_exhausted = depth + 1 > config.max_depth;
+    // Canonical walk always inlines up to the safety cap. Depth-based
+    // pruning is applied by `filter_for_render` as a second pass so that
+    // step_ids remain stable across different max_depth / expand_set values.
+    let depth_exhausted = depth + 1 > CANONICAL_WALK_SAFETY_CAP;
 
     if already_visited || depth_exhausted {
         let ops_count = count_statements(callee_cfg);

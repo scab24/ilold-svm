@@ -58,6 +58,7 @@ pub fn build_sequence_narrative(
             external_calls: ext_calls,
             events,
             dependencies: deps,
+            flow_summary: None,
         });
     }
 

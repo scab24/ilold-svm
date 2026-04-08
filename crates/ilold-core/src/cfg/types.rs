@@ -36,6 +36,23 @@ pub enum BranchEdge {
     CatchClause { kind: String },
 }
 
+impl BranchEdge {
+    /// Canonical ordering used to make CFG traversal deterministic.
+    /// Lower values are visited first; tiebreaker is the target node index.
+    pub fn variant_order(&self) -> u8 {
+        match self {
+            BranchEdge::Unconditional => 0,
+            BranchEdge::ConditionalTrue { .. } => 1,
+            BranchEdge::ConditionalFalse { .. } => 2,
+            BranchEdge::ExternalCallSuccess => 3,
+            BranchEdge::ExternalCallFailure => 4,
+            BranchEdge::LoopBack => 5,
+            BranchEdge::LoopExit => 6,
+            BranchEdge::CatchClause { .. } => 7,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CfgStatement {
     Assignment {

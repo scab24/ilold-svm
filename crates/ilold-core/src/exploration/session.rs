@@ -1,13 +1,15 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::cfg::types::{CfgGraph, CfgStatement};
+use crate::cfg::types::CfgGraph;
 use crate::journal::types::AuditJournal;
 use crate::model::common::StateVar;
 use crate::model::contract::ContractDef;
 use crate::model::expression::AssignOperator;
+use crate::model::function::FunctionDef;
 use crate::model::project::Project;
+use crate::narrative::trace::{build_flow_tree_with_mutations, FlowConfig, FlowTree};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExplorationSession {
@@ -20,6 +22,17 @@ pub struct ExplorationSession {
 pub struct ExplorationStep {
     pub function: String,
     pub mutations: Vec<StateMutation>,
+    #[serde(default)]
+    pub flow_tree: Option<FlowTree>,
+    #[serde(default)]
+    pub trace_config: TraceConfig,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub enum MutationScope {
+    #[default]
+    State,
+    Local,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,7 +43,33 @@ pub struct StateMutation {
     pub step_index: usize,
     #[serde(default)]
     pub via: Option<String>,
+    #[serde(default)]
+    pub flow_step_id: Option<usize>,
+    #[serde(default)]
+    pub scope: MutationScope,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TraceConfig {
+    #[serde(default = "default_trace_depth")]
+    pub depth: usize,
+    #[serde(default)]
+    pub include_reverts: bool,
+    #[serde(default)]
+    pub expand_set: Vec<usize>,
+}
+
+impl Default for TraceConfig {
+    fn default() -> Self {
+        Self {
+            depth: 2,
+            include_reverts: false,
+            expand_set: Vec::new(),
+        }
+    }
+}
+
+fn default_trace_depth() -> usize { 2 }
 
 impl ExplorationSession {
     pub fn new(contract: &str, project: &str) -> Self {
@@ -41,55 +80,63 @@ impl ExplorationSession {
         }
     }
 
-    pub fn add_step(
-        &mut self,
-        function: &str,
-        cfg: &CfgGraph,
-        state_vars: &[StateVar],
-        timestamp: &str,
-    ) -> &ExplorationStep {
-        let step_index = self.steps.len();
-        let mutations = extract_mutations(cfg, state_vars, step_index);
-
-        self.steps.push(ExplorationStep {
-            function: function.into(),
-            mutations,
-        });
-
-        self.journal.record(crate::journal::types::JournalEntry::SequenceExplored {
-            steps: self.steps.iter().map(|s| s.function.clone()).collect(),
-            timestamp: timestamp.into(),
-        });
-
-        self.steps.last().unwrap()
-    }
-
+    /// Append a step, building and persisting its FlowTree. Each harvested
+    /// mutation carries a `flow_step_id` into that tree.
+    #[allow(clippy::too_many_arguments)]
     pub fn add_step_with_internals(
         &mut self,
-        function: &str,
+        function: &FunctionDef,
         cfg: &CfgGraph,
         state_vars: &[StateVar],
         project: &Project,
         owning_contract: &ContractDef,
         all_cfgs: &HashMap<(String, String), CfgGraph>,
         timestamp: &str,
+        trace_config: TraceConfig,
     ) -> &ExplorationStep {
         let step_index = self.steps.len();
-        let mut mutations = extract_mutations(cfg, state_vars, step_index);
 
-        collect_transitive_mutations(
-            cfg,
-            state_vars,
-            project,
+        let flow_config = FlowConfig {
+            max_depth: trace_config.depth,
+            include_reverts: trace_config.include_reverts,
+            expand_set: trace_config.expand_set.iter().copied().collect(),
+        };
+
+        let (flow_tree, raw_mutations) = build_flow_tree_with_mutations(
             owning_contract,
+            function,
+            cfg,
+            project,
             all_cfgs,
-            step_index,
-            &mut mutations,
+            &flow_config,
         );
 
+        // Walker is scope-agnostic; keep only writes whose base name is a
+        // state var and convert into the session-level mutation type.
+        let mutations: Vec<StateMutation> = raw_mutations
+            .into_iter()
+            .filter_map(|fm| {
+                let base = crate::util::target_base_name(&fm.target);
+                if !state_vars.iter().any(|sv| sv.name == base) {
+                    return None;
+                }
+                Some(StateMutation {
+                    variable: fm.target,
+                    operator: fm.operator,
+                    value_expr: fm.value,
+                    step_index,
+                    via: fm.via,
+                    flow_step_id: Some(fm.flow_step_id),
+                    scope: MutationScope::State,
+                })
+            })
+            .collect();
+
         self.steps.push(ExplorationStep {
-            function: function.into(),
+            function: function.name.clone(),
             mutations,
+            flow_tree: Some(flow_tree),
+            trace_config,
         });
 
         self.journal.record(crate::journal::types::JournalEntry::SequenceExplored {
@@ -158,176 +205,6 @@ pub struct VariableSummary {
     pub changes: Vec<String>,
 }
 
-fn extract_mutations(
-    cfg: &CfgGraph,
-    state_vars: &[StateVar],
-    step_index: usize,
-) -> Vec<StateMutation> {
-    let mut mutations = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-
-    for node_idx in cfg.node_indices() {
-        let block = &cfg[node_idx];
-        for stmt in &block.statements {
-            match stmt {
-                CfgStatement::Assignment { target, operator, value, .. } => {
-                    let base = target.split('[').next().unwrap_or(target);
-                    let base = base.split('.').next().unwrap_or(base);
-                    if state_vars.iter().any(|sv| sv.name == base) {
-                        let key = (target.clone(), *operator, value.clone());
-                        if seen.insert(key) {
-                            mutations.push(StateMutation {
-                                variable: target.clone(),
-                                operator: *operator,
-                                value_expr: value.clone(),
-                                step_index,
-                                via: None,
-                            });
-                        }
-                    }
-                }
-                CfgStatement::StateWrite { variable, .. } => {
-                    let key = (variable.clone(), AssignOperator::Assign, String::new());
-                    if seen.insert(key) {
-                        mutations.push(StateMutation {
-                            variable: variable.clone(),
-                            operator: AssignOperator::Assign,
-                            value_expr: String::new(),
-                            step_index,
-                            via: None,
-                        });
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    mutations
-}
-
-fn collect_transitive_mutations(
-    root_cfg: &CfgGraph,
-    state_vars: &[StateVar],
-    project: &Project,
-    owning_contract: &ContractDef,
-    all_cfgs: &HashMap<(String, String), CfgGraph>,
-    step_index: usize,
-    out: &mut Vec<StateMutation>,
-) {
-    use crate::util::is_type_cast;
-
-    let mut visited: HashSet<(String, String)> = HashSet::new();
-
-    // Seed the stack with internal calls from the root CFG.
-    let mut stack: Vec<(String, String, Vec<String>)> = Vec::new();
-    for node_idx in root_cfg.node_indices() {
-        for stmt in &root_cfg[node_idx].statements {
-            if let CfgStatement::InternalCall { function, .. } = stmt {
-                if is_type_cast(function) { continue; }
-                stack.push((owning_contract.name.clone(), function.clone(), vec![function.clone()]));
-            }
-        }
-    }
-
-    let mut seen_direct: HashSet<(String, AssignOperator, String)> = out.iter()
-        .map(|m| (m.variable.clone(), m.operator, m.value_expr.clone()))
-        .collect();
-
-    while let Some((ctx_name, callee, chain)) = stack.pop() {
-        let ctx = match project.contracts.iter().find(|c| c.name == ctx_name) {
-            Some(c) => c,
-            None => continue,
-        };
-
-        // Resolve callee: current contract first, then walk inheritance chain.
-        let (callee_contract_name, callee_cfg) = match resolve_callee_cfg(&callee, ctx, project, all_cfgs) {
-            Some(x) => x,
-            None => continue,
-        };
-
-        let visit_key = (callee_contract_name.clone(), callee.clone());
-        if !visited.insert(visit_key) { continue; }
-
-        let chain_str = chain.join(" -> ");
-
-        for node_idx in callee_cfg.node_indices() {
-            for stmt in &callee_cfg[node_idx].statements {
-                match stmt {
-                    CfgStatement::Assignment { target, operator, value, .. } => {
-                        let base = target.split('[').next().unwrap_or(target);
-                        let base = base.split('.').next().unwrap_or(base);
-                        if state_vars.iter().any(|sv| sv.name == base) {
-                            let key = (target.clone(), *operator, value.clone());
-                            if seen_direct.insert(key) {
-                                out.push(StateMutation {
-                                    variable: target.clone(),
-                                    operator: *operator,
-                                    value_expr: value.clone(),
-                                    step_index,
-                                    via: Some(chain_str.clone()),
-                                });
-                            }
-                        }
-                    }
-                    CfgStatement::StateWrite { variable, .. } => {
-                        let key = (variable.clone(), AssignOperator::Assign, String::new());
-                        if seen_direct.insert(key) {
-                            out.push(StateMutation {
-                                variable: variable.clone(),
-                                operator: AssignOperator::Assign,
-                                value_expr: String::new(),
-                                step_index,
-                                via: Some(chain_str.clone()),
-                            });
-                        }
-                    }
-                    CfgStatement::InternalCall { function, .. } => {
-                        if is_type_cast(function) { continue; }
-                        let mut new_chain = chain.clone();
-                        new_chain.push(function.clone());
-                        stack.push((callee_contract_name.clone(), function.clone(), new_chain));
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-}
-
-fn resolve_callee_cfg<'a>(
-    callee: &str,
-    starting_contract: &ContractDef,
-    project: &Project,
-    all_cfgs: &'a HashMap<(String, String), CfgGraph>,
-) -> Option<(String, &'a CfgGraph)> {
-    let key = (starting_contract.name.clone(), callee.to_string());
-    if let Some(cfg) = all_cfgs.get(&key) {
-        return Some((starting_contract.name.clone(), cfg));
-    }
-
-    let mut visited: HashSet<String> = HashSet::new();
-    let mut queue: Vec<String> = starting_contract.inherits.clone();
-
-    while let Some(parent_name) = queue.pop() {
-        if !visited.insert(parent_name.clone()) { continue; }
-
-        let key = (parent_name.clone(), callee.to_string());
-        if let Some(cfg) = all_cfgs.get(&key) {
-            return Some((parent_name, cfg));
-        }
-
-        if let Some(parent_idx) = project.contract_index.get(&parent_name) {
-            let parent = &project.contracts[*parent_idx];
-            for grand in &parent.inherits {
-                queue.push(grand.clone());
-            }
-        }
-    }
-
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -366,10 +243,14 @@ mod tests {
         s.steps.push(ExplorationStep {
             function: "deposit".into(),
             mutations: vec![],
+            flow_tree: None,
+            trace_config: TraceConfig::default(),
         });
         s.steps.push(ExplorationStep {
             function: "withdraw".into(),
             mutations: vec![],
+            flow_tree: None,
+            trace_config: TraceConfig::default(),
         });
         assert_eq!(s.current_sequence(), vec!["deposit", "withdraw"]);
         s.clear();
@@ -388,6 +269,8 @@ mod tests {
                     value_expr: "amount".into(),
                     step_index: 0,
                     via: None,
+                    flow_step_id: None,
+                    scope: MutationScope::State,
                 },
                 StateMutation {
                     variable: "totalStaked".into(),
@@ -395,8 +278,12 @@ mod tests {
                     value_expr: "amount".into(),
                     step_index: 0,
                     via: None,
+                    flow_step_id: None,
+                    scope: MutationScope::State,
                 },
             ],
+            flow_tree: None,
+            trace_config: TraceConfig::default(),
         });
         s.steps.push(ExplorationStep {
             function: "withdraw".into(),
@@ -407,8 +294,12 @@ mod tests {
                     value_expr: "amount".into(),
                     step_index: 1,
                     via: None,
+                    flow_step_id: None,
+                    scope: MutationScope::State,
                 },
             ],
+            flow_tree: None,
+            trace_config: TraceConfig::default(),
         });
 
         let summaries = s.variable_summary();
