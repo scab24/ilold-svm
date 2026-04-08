@@ -110,6 +110,33 @@ pub async fn get_step_detail(
     Ok(Json(narrative))
 }
 
+/// Return the persisted FlowTree of a session step. The tree is read
+/// directly from `step.flow_tree` — no recomputation against the source
+/// — so the result reflects what the auditor saw when `c <func>` ran.
+pub async fn get_session_step_trace(
+    State(state): State<Arc<AppState>>,
+    Path(step_index): Path<usize>,
+) -> Result<Json<FlowTree>, (StatusCode, String)> {
+    let session_guard = state.session.read().unwrap();
+    let session = session_guard.as_ref()
+        .ok_or((StatusCode::NOT_FOUND, "No active session".into()))?;
+
+    let step = session.steps.get(step_index)
+        .ok_or((StatusCode::NOT_FOUND, format!("step {} not found", step_index)))?;
+
+    let tree = step.flow_tree.clone()
+        .ok_or((
+            StatusCode::NOT_FOUND,
+            format!(
+                "step {} has no persisted trace (loaded from a pre-Phase-2a session); \
+                 use 'tr <func>' to rebuild from source",
+                step_index
+            ),
+        ))?;
+
+    Ok(Json(tree))
+}
+
 pub async fn get_state_detail(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<VariableSummary>>, (StatusCode, String)> {

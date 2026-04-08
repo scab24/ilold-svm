@@ -455,6 +455,51 @@ async fn session_step_persists_flow_tree_with_populated_flow_step_ids() {
     }
 }
 
+/// `GET /api/session/step/{N}/trace` returns the persisted FlowTree of
+/// the session step. Verifies the new endpoint is wired correctly and
+/// that the persisted tree round-trips through HTTP.
+#[tokio::test]
+async fn tr_step_endpoint_returns_persisted_flow_tree() {
+    let paths = vec![fixture("staking.sol")];
+    let (_, port) = ilold_web::start_server(paths, 0, 2).await.unwrap();
+
+    let client = reqwest::Client::new();
+
+    // Add a step to the session.
+    let res = client
+        .post(format!("http://127.0.0.1:{port}/api/cmd"))
+        .json(&serde_json::json!({"contract": "Staking", "command": {"Call": {"func": "deposit"}}}))
+        .send().await.unwrap();
+    assert!(res.status().is_success());
+
+    // GET the persisted trace.
+    let res = client
+        .get(format!("http://127.0.0.1:{port}/api/session/step/0/trace"))
+        .send().await.unwrap();
+    assert!(res.status().is_success(), "endpoint failed: {}", res.status());
+
+    let tree: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(tree["function"], "deposit");
+    assert_eq!(tree["max_depth"], 2);
+    let root = &tree["root"];
+    assert!(root["children"].as_array().unwrap().len() > 0);
+}
+
+/// Requesting an out-of-range step index returns 404.
+#[tokio::test]
+async fn tr_step_endpoint_404_on_unknown_step() {
+    let paths = vec![fixture("staking.sol")];
+    let (_, port) = ilold_web::start_server(paths, 0, 2).await.unwrap();
+
+    let client = reqwest::Client::new();
+
+    // No steps added — index 0 doesn't exist.
+    let res = client
+        .get(format!("http://127.0.0.1:{port}/api/session/step/0/trace"))
+        .send().await.unwrap();
+    assert_eq!(res.status(), reqwest::StatusCode::NOT_FOUND);
+}
+
 /// After `c <func>`, the `s` (state) command's variable summaries must
 /// include `step N:flow_id` references in each change line, proving the
 /// new walker's flow_step_id is propagating through to the render layer.

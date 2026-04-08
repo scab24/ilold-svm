@@ -423,26 +423,36 @@ fn handle_input(
         "tr" | "trace" => {
             if arg.is_empty() {
                 println!("  Usage: trace <function> [--depth N] [--reverts]");
+                println!("         trace step <N>");
                 return InputResult::Continue;
             }
-            // Parse optional flags: --depth N, --reverts
-            let (func_name, depth, reverts) = parse_trace_args(arg);
-            let func_name = match func_name {
-                Some(f) => f,
+            let parsed = parse_trace_args(arg);
+            let target = match parsed.target {
+                Some(t) => t,
                 None => {
                     println!("  Usage: trace <function> [--depth N] [--reverts]");
+                    println!("         trace step <N>");
                     return InputResult::Continue;
                 }
             };
-            let mut url = format!("{base_url}/api/session/trace/{contract}/{func_name}");
-            let mut sep = '?';
-            if let Some(d) = depth {
-                url.push_str(&format!("{sep}depth={d}"));
-                sep = '&';
-            }
-            if reverts {
-                url.push_str(&format!("{sep}reverts=true"));
-            }
+            let url = match target {
+                TraceTarget::Function(func_name) => {
+                    let mut url = format!("{base_url}/api/session/trace/{contract}/{func_name}");
+                    let mut sep = '?';
+                    if let Some(d) = parsed.depth {
+                        url.push_str(&format!("{sep}depth={d}"));
+                        sep = '&';
+                    }
+                    if parsed.reverts {
+                        url.push_str(&format!("{sep}reverts=true"));
+                    }
+                    url
+                }
+                TraceTarget::SessionStep(idx) => {
+                    // Persisted tree — depth/reverts flags ignored.
+                    format!("{base_url}/api/session/step/{idx}/trace")
+                }
+            };
             match send_get(handle, client, &url) {
                 Ok(val) => match serde_json::from_value::<ilold_core::narrative::trace::FlowTree>(val) {
                     Ok(tree) => print!("{}", fmt::render_flow_tree(&tree)),
@@ -628,9 +638,20 @@ fn split_numeric_suffix(line: &str) -> String {
     line.to_string()
 }
 
-fn parse_trace_args(arg: &str) -> (Option<String>, Option<usize>, bool) {
+enum TraceTarget {
+    Function(String),
+    SessionStep(usize),
+}
+
+struct TraceArgs {
+    target: Option<TraceTarget>,
+    depth: Option<usize>,
+    reverts: bool,
+}
+
+fn parse_trace_args(arg: &str) -> TraceArgs {
     let tokens: Vec<&str> = arg.split_whitespace().collect();
-    let mut func: Option<String> = None;
+    let mut target: Option<TraceTarget> = None;
     let mut depth: Option<usize> = None;
     let mut reverts = false;
     let mut i = 0;
@@ -646,14 +667,24 @@ fn parse_trace_args(arg: &str) -> (Option<String>, Option<usize>, bool) {
         } else if t == "--reverts" {
             reverts = true;
             i += 1;
-        } else if func.is_none() {
-            func = Some(t.to_string());
+        } else if t == "step"
+            && target.is_none()
+            && tokens.get(i + 1).and_then(|s| s.parse::<usize>().ok()).is_some()
+        {
+            // `tr step <N>` — re-render a persisted session step.
+            // Only treated as a keyword when the next token parses as usize;
+            // otherwise `step` falls through to be treated as a function name.
+            let idx = tokens[i + 1].parse::<usize>().unwrap();
+            target = Some(TraceTarget::SessionStep(idx));
+            i += 2;
+        } else if target.is_none() {
+            target = Some(TraceTarget::Function(t.to_string()));
             i += 1;
         } else {
             i += 1;
         }
     }
-    (func, depth, reverts)
+    TraceArgs { target, depth, reverts }
 }
 
 fn normalize_severity(input: &str) -> Option<&'static str> {
@@ -1265,6 +1296,7 @@ fn print_help() {
         ("w",      "who <var>",        "Who reads/writes a variable"),
         ("i",      "info <func>",      "Function detail"),
         ("tr",     "trace <func>",     "Execution flow tree (inlined)"),
+        ("",       "trace step <N>",   "Re-render a session step's persisted trace"),
         ("seq",    "sequence",         "Sequence narrative with dependencies"),
         ("st",     "step <index>",     "Re-inspect a specific step"),
         ("ss",     "session",          "Full session state"),
