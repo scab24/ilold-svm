@@ -422,7 +422,7 @@ fn handle_input(
         }
         "tr" | "trace" => {
             if arg.is_empty() {
-                println!("  Usage: trace <function> [--depth N] [--reverts]");
+                println!("  Usage: trace <function> [--depth N] [--reverts] [+N...] [-i]");
                 println!("         trace step <N>");
                 return InputResult::Continue;
             }
@@ -430,7 +430,7 @@ fn handle_input(
             let target = match parsed.target {
                 Some(t) => t,
                 None => {
-                    println!("  Usage: trace <function> [--depth N] [--reverts]");
+                    println!("  Usage: trace <function> [--depth N] [--reverts] [+N...] [-i]");
                     println!("         trace step <N>");
                     return InputResult::Continue;
                 }
@@ -439,7 +439,12 @@ fn handle_input(
                 TraceTarget::Function(func_name) => {
                     let mut url = format!("{base_url}/api/session/trace/{contract}/{func_name}");
                     let mut sep = '?';
-                    if let Some(d) = parsed.depth {
+                    // Interactive mode needs more context to be useful, so
+                    // bump the default depth to 4 when `-i` is set and the
+                    // user didn't pass an explicit `--depth`.
+                    let effective_depth = parsed.depth
+                        .or(if parsed.interactive { Some(4) } else { None });
+                    if let Some(d) = effective_depth {
                         url.push_str(&format!("{sep}depth={d}"));
                         sep = '&';
                     }
@@ -463,7 +468,15 @@ fn handle_input(
             };
             match send_get(handle, client, &url) {
                 Ok(val) => match serde_json::from_value::<ilold_core::narrative::trace::FlowTree>(val) {
-                    Ok(tree) => print!("{}", fmt::render_flow_tree(&tree)),
+                    Ok(tree) => {
+                        if parsed.interactive {
+                            if let Err(e) = crate::interactive::run_trace_viewer(tree) {
+                                eprintln!("  {} interactive viewer: {}", c_danger("✗"), e);
+                            }
+                        } else {
+                            print!("{}", fmt::render_flow_tree(&tree));
+                        }
+                    }
                     Err(e) => eprintln!("  {} Parse FlowTree: {}", c_danger("✗"), e),
                 },
                 Err(e) => eprintln!("  {}", c_danger(&e)),
@@ -670,6 +683,7 @@ struct TraceArgs {
     depth: Option<usize>,
     reverts: bool,
     expand: Vec<usize>,
+    interactive: bool,
 }
 
 fn parse_trace_args(arg: &str) -> TraceArgs {
@@ -678,6 +692,7 @@ fn parse_trace_args(arg: &str) -> TraceArgs {
     let mut depth: Option<usize> = None;
     let mut reverts = false;
     let mut expand: Vec<usize> = Vec::new();
+    let mut interactive = false;
     let mut i = 0;
     while i < tokens.len() {
         let t = tokens[i];
@@ -690,6 +705,9 @@ fn parse_trace_args(arg: &str) -> TraceArgs {
             i += 1;
         } else if t == "--reverts" {
             reverts = true;
+            i += 1;
+        } else if t == "-i" || t == "--interactive" {
+            interactive = true;
             i += 1;
         } else if let Some(rest) = t.strip_prefix('+') {
             // `+N` — force-inline the call at canonical step_id N.
@@ -714,7 +732,7 @@ fn parse_trace_args(arg: &str) -> TraceArgs {
             i += 1;
         }
     }
-    TraceArgs { target, depth, reverts, expand }
+    TraceArgs { target, depth, reverts, expand, interactive }
 }
 
 fn normalize_severity(input: &str) -> Option<&'static str> {
@@ -1351,6 +1369,7 @@ fn print_help() {
         ("w",      "who <var>",        "Who reads/writes a variable"),
         ("i",      "info <func>",      "Function detail"),
         ("tr",     "trace <func>",     "Execution flow tree (inlined)"),
+        ("",       "trace <func> -i",  "Interactive trace viewer (arrows + expand/collapse)"),
         ("",       "trace step <N>",   "Re-render a session step's persisted trace"),
         ("seq",    "sequence",         "Sequence narrative with dependencies"),
         ("tl",     "timeline <var>",   "Cross-step variable mutation history"),

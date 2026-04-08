@@ -192,7 +192,7 @@ fn format_gutter(step: usize) -> String {
     format!("  {} {}", c_accent(&format!("{:03}", step)), c_muted("│"))
 }
 
-fn format_flow_label(kind: &FlowKind) -> (&'static str, String) {
+pub(crate) fn format_flow_label(kind: &FlowKind) -> (&'static str, String) {
     match kind {
         FlowKind::Entry { signature } => ("▶", signature.clone()),
         FlowKind::Require { condition, message } => {
