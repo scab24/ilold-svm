@@ -184,11 +184,15 @@ impl ExplorationSession {
                 let func = self.steps.get(m.step_index)
                     .map(|s| s.function.as_str())
                     .unwrap_or("?");
+                let step_ref = match m.flow_step_id {
+                    Some(id) => format!("step {}:{}", m.step_index, id),
+                    None => format!("step {}", m.step_index),
+                };
                 let suffix = match &m.via {
                     Some(chain) => format!(" via {}", chain),
                     None => String::new(),
                 };
-                format!("{}{} (step {}, {}{})", op_str, m.value_expr, m.step_index, func, suffix)
+                format!("{}{} ({}, {}{})", op_str, m.value_expr, step_ref, func, suffix)
             }).collect();
 
             VariableSummary { variable: var, changes }

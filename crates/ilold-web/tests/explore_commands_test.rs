@@ -455,6 +455,52 @@ async fn session_step_persists_flow_tree_with_populated_flow_step_ids() {
     }
 }
 
+/// After `c <func>`, the `s` (state) command's variable summaries must
+/// include `step N:flow_id` references in each change line, proving the
+/// new walker's flow_step_id is propagating through to the render layer.
+#[tokio::test]
+async fn state_view_renders_flow_step_refs() {
+    let paths = vec![fixture("staking.sol")];
+    let (_, port) = ilold_web::start_server(paths, 0, 2).await.unwrap();
+
+    let client = reqwest::Client::new();
+
+    // Add a step.
+    let res = client
+        .post(format!("http://127.0.0.1:{port}/api/cmd"))
+        .json(&serde_json::json!({"contract": "Staking", "command": {"Call": {"func": "deposit"}}}))
+        .send().await.unwrap();
+    assert!(res.status().is_success());
+
+    // Fetch the state view.
+    let res = client
+        .post(format!("http://127.0.0.1:{port}/api/cmd"))
+        .json(&serde_json::json!({"contract": "Staking", "command": "State"}))
+        .send().await.unwrap();
+    assert!(res.status().is_success());
+    let body: serde_json::Value = res.json().await.unwrap();
+    let summary = body["StateView"]["summary"].as_array().unwrap();
+    assert!(!summary.is_empty(), "deposit should produce state changes");
+
+    // Every change line must carry a `step 0:` prefix followed by a digit
+    // (the new format — `0:` is the session step, the digit is the
+    // flow_step_id from the canonical walker).
+    for var in summary {
+        let changes = var["changes"].as_array().unwrap();
+        for change in changes {
+            let s = change.as_str().unwrap();
+            let has_ref = s.split("step 0:").nth(1)
+                .map(|rest| rest.chars().next().is_some_and(|c| c.is_ascii_digit()))
+                .unwrap_or(false);
+            assert!(
+                has_ref,
+                "change line missing 'step 0:N' flow ref: {:?}",
+                s
+            );
+        }
+    }
+}
+
 /// Collect (step_id, FlowKind variant) pairs from a serialized FlowTree.
 fn collect_step_id_kinds(
     node: &serde_json::Value,
