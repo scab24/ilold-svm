@@ -469,6 +469,20 @@ fn handle_input(
             }
             InputResult::Continue
         }
+        "tl" | "timeline" => {
+            if arg.is_empty() {
+                println!("  Usage: timeline <variable>");
+                return InputResult::Continue;
+            }
+            match send_get(handle, client, &format!("{base_url}/api/session/timeline/{arg}")) {
+                Ok(val) => match serde_json::from_value::<ilold_core::exploration::timeline::VariableTimeline>(val) {
+                    Ok(tl) => print!("{}", fmt::render_variable_timeline(&tl)),
+                    Err(e) => eprintln!("  {} Parse VariableTimeline: {}", c_danger("✗"), e),
+                },
+                Err(e) => eprintln!("  {}", c_danger(&e)),
+            }
+            InputResult::Continue
+        }
         "st" | "step" => {
             if arg.is_empty() {
                 println!("  Usage: step <index>");
@@ -1323,6 +1337,7 @@ fn print_help() {
         ("tr",     "trace <func>",     "Execution flow tree (inlined)"),
         ("",       "trace step <N>",   "Re-render a session step's persisted trace"),
         ("seq",    "sequence",         "Sequence narrative with dependencies"),
+        ("tl",     "timeline <var>",   "Cross-step variable mutation history"),
         ("st",     "step <index>",     "Re-inspect a specific step"),
         ("ss",     "session",          "Full session state"),
         ("fi",     "finding [sev] [t]","Record a finding"),

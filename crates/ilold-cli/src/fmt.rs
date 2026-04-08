@@ -1,5 +1,7 @@
 use colored::Colorize;
 
+use ilold_core::exploration::session::MutationScope;
+use ilold_core::exploration::timeline::{TimelineEntry, VariableTimeline};
 use ilold_core::model::expression::AssignOperator;
 use ilold_core::narrative::trace::{FlowKind, FlowNode, FlowTree};
 
@@ -244,6 +246,85 @@ fn assign_op_str(op: AssignOperator) -> &'static str {
         AssignOperator::BitXorAssign => "^=",
         AssignOperator::ShlAssign => "<<=",
         AssignOperator::ShrAssign => ">>=",
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Variable timeline renderer
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub fn render_variable_timeline(tl: &VariableTimeline) -> String {
+    let mut out = String::new();
+    out.push('\n');
+
+    let header = format!("{} {}", c_bright(&tl.variable), c_muted("— mutation timeline"));
+    out.push_str(&format!("  {}\n", header));
+    out.push_str(&format!(
+        "  {}\n",
+        "═".repeat(60).truecolor(60, 70, 90)
+    ));
+
+    if tl.state_entries.is_empty() && tl.local_entries.is_empty() {
+        out.push_str(&format!("  {}\n\n", c_muted(&format!("no mutations of '{}' in current session", tl.variable))));
+        return out;
+    }
+
+    if !tl.state_entries.is_empty() {
+        out.push_str(&format!("  {}\n", c_warn("[state]")));
+        render_entries(&tl.state_entries, &mut out);
+    }
+
+    if !tl.local_entries.is_empty() {
+        out.push_str(&format!("  {}\n", c_warn("[local]")));
+        render_entries(&tl.local_entries, &mut out);
+    }
+
+    out.push('\n');
+    out
+}
+
+fn render_entries(entries: &[TimelineEntry], out: &mut String) {
+    let mut prev_step: Option<usize> = None;
+    for entry in entries {
+        // Group header per session step.
+        if Some(entry.session_step_index) != prev_step {
+            out.push_str(&format!(
+                "    {} {}\n",
+                c_accent(&format!("session step {}", entry.session_step_index)),
+                c_bright(&entry.function),
+            ));
+            prev_step = Some(entry.session_step_index);
+        }
+
+        let op = assign_op_str(entry.operator);
+        let flow_ref = entry.flow_step_id
+            .map(|id| format!(" [trace step {}]", id))
+            .unwrap_or_default();
+        let via = entry.via.as_deref()
+            .map(|c| format!(" via {}", c))
+            .unwrap_or_default();
+        let scope_tag = match entry.scope {
+            MutationScope::State => "",
+            MutationScope::Local => " (local)",
+        };
+
+        out.push_str(&format!(
+            "      {} {} {} {}{}{}{}\n",
+            c_danger("✏"),
+            c_muted(&entry.target),
+            c_muted(op),
+            c_muted(&entry.value_expr),
+            c_muted(&flow_ref),
+            c_muted(&via),
+            c_muted(scope_tag),
+        ));
+
+        if !entry.reached_when.is_empty() {
+            out.push_str(&format!("        {}\n", c_muted("reached when:")));
+            for cond in &entry.reached_when {
+                out.push_str(&format!("          {} {}\n", c_muted("•"), c_muted(cond)));
+            }
+        }
     }
 }
 

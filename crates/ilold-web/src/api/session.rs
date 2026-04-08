@@ -11,6 +11,7 @@ use ilold_core::exploration::commands::{
     get_session_state, get_step_narrative,
 };
 use ilold_core::exploration::session::{ExplorationSession, VariableSummary};
+use ilold_core::exploration::timeline::{build_variable_timeline, VariableTimeline};
 use ilold_core::narrative::trace::FlowTree;
 use ilold_core::narrative::types::{FunctionNarrative, SequenceNarrative};
 
@@ -135,6 +136,19 @@ pub async fn get_session_step_trace(
         ))?;
 
     Ok(Json(tree))
+}
+
+/// Cross-step variable history with path conditions for each write.
+pub async fn get_variable_timeline_handler(
+    State(state): State<Arc<AppState>>,
+    Path(variable): Path<String>,
+) -> Result<Json<VariableTimeline>, (StatusCode, String)> {
+    let session_guard = state.session.read().unwrap();
+    let session = session_guard.as_ref()
+        .ok_or((StatusCode::NOT_FOUND, "No active session".into()))?;
+
+    let timeline = build_variable_timeline(session, &variable);
+    Ok(Json(timeline))
 }
 
 pub async fn get_state_detail(

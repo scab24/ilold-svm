@@ -29,6 +29,7 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/cmd", post(api::session::handle_command))
         .route("/api/session/step/{index}/narrative", get(api::session::get_step_detail))
         .route("/api/session/step/{index}/trace", get(api::session::get_session_step_trace))
+        .route("/api/session/timeline/{variable}", get(api::session::get_variable_timeline_handler))
         .route("/api/session/state", get(api::session::get_state_detail))
         .route("/api/session/sequence", get(api::session::get_sequence_detail))
         .route("/api/session/function/{contract}/{func}", get(api::session::get_function_detail))

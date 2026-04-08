@@ -455,6 +455,66 @@ async fn session_step_persists_flow_tree_with_populated_flow_step_ids() {
     }
 }
 
+/// `GET /api/session/timeline/{var}` returns every mutation of `var`
+/// across the session, ordered by session step then flow_step_id, with
+/// path conditions populated for each entry.
+#[tokio::test]
+async fn timeline_balances_across_multiple_steps() {
+    let paths = vec![fixture("staking.sol")];
+    let (_, port) = ilold_web::start_server(paths, 0, 2).await.unwrap();
+
+    let client = reqwest::Client::new();
+    let post_call = |func: &'static str| {
+        let client = client.clone();
+        async move {
+            client
+                .post(format!("http://127.0.0.1:{port}/api/cmd"))
+                .json(&serde_json::json!({"contract": "Staking", "command": {"Call": {"func": func}}}))
+                .send().await.unwrap()
+        }
+    };
+
+    assert!(post_call("deposit").await.status().is_success());
+    assert!(post_call("withdraw").await.status().is_success());
+
+    let res = client
+        .get(format!("http://127.0.0.1:{port}/api/session/timeline/balances"))
+        .send().await.unwrap();
+    assert!(res.status().is_success(), "endpoint failed: {}", res.status());
+
+    let tl: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(tl["variable"], "balances");
+
+    let state = tl["state_entries"].as_array().unwrap();
+    assert!(state.len() >= 2,
+        "expected at least 2 entries (deposit + withdraw), got {}", state.len());
+
+    // Locals always empty in Phase 2a-2 (walker doesn't emit locals yet).
+    let locals = tl["local_entries"].as_array().unwrap();
+    assert!(locals.is_empty());
+
+    // Entries are ordered by session_step_index then flow_step_id.
+    let mut prev_key: Option<(u64, u64)> = None;
+    for entry in state {
+        let session_idx = entry["session_step_index"].as_u64().unwrap();
+        let flow_id = entry["flow_step_id"].as_u64().unwrap_or(u64::MAX);
+        let key = (session_idx, flow_id);
+        if let Some(p) = prev_key {
+            assert!(key >= p, "timeline entries not sorted: {:?} after {:?}", key, p);
+        }
+        prev_key = Some(key);
+
+        // Each entry must point to its source function and carry a flow_step_id.
+        assert!(!entry["function"].as_str().unwrap().is_empty());
+        assert!(entry["flow_step_id"].as_u64().is_some(),
+            "non-legacy mutation should have flow_step_id");
+        // Target should start with 'balances' (our base-name match).
+        let target = entry["target"].as_str().unwrap();
+        assert!(target.starts_with("balances"),
+            "target should be a balances variant, got {:?}", target);
+    }
+}
+
 /// A pre-Phase-2a session JSON (no flow_tree, no flow_step_id, no scope,
 /// no trace_config) must load cleanly and the existing commands must
 /// still work in a degraded mode:
