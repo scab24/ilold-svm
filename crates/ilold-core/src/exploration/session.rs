@@ -175,12 +175,7 @@ impl ExplorationSession {
         let history = self.variable_history();
         let mut summaries: Vec<VariableSummary> = history.into_iter().map(|(var, muts)| {
             let changes: Vec<String> = muts.iter().map(|m| {
-                let op_str = match m.operator {
-                    AssignOperator::AddAssign => "+",
-                    AssignOperator::SubAssign => "-",
-                    AssignOperator::Assign => "=",
-                    _ => "?",
-                };
+                let op_str = m.operator.as_str();
                 let func = self.steps.get(m.step_index)
                     .map(|s| s.function.as_str())
                     .unwrap_or("?");
@@ -192,7 +187,7 @@ impl ExplorationSession {
                     Some(chain) => format!(" via {}", chain),
                     None => String::new(),
                 };
-                format!("{}{} ({}, {}{})", op_str, m.value_expr, step_ref, func, suffix)
+                format!("{} {} ({}, {}{})", op_str, m.value_expr, step_ref, func, suffix)
             }).collect();
 
             VariableSummary { variable: var, changes }
@@ -297,7 +292,7 @@ mod tests {
 
         let balances = summaries.iter().find(|s| s.variable == "balances").unwrap();
         assert_eq!(balances.changes.len(), 2);
-        assert!(balances.changes[0].contains("+amount"));
-        assert!(balances.changes[1].contains("-amount"));
+        assert!(balances.changes[0].contains("+= amount"));
+        assert!(balances.changes[1].contains("-= amount"));
     }
 }

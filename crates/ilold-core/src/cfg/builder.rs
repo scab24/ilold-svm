@@ -1,7 +1,7 @@
 use petgraph::stable_graph::NodeIndex;
 
 use crate::model::contract::ContractDef;
-use crate::model::expression::{BinaryOperator, Expression, ExpressionKind, UnaryOperator};
+use crate::model::expression::{Expression, ExpressionKind, UnaryOperator};
 use crate::model::function::FunctionDef;
 use crate::model::project::Project;
 use crate::model::statement::{Statement, StatementKind};
@@ -643,7 +643,7 @@ fn expr_to_string(expr: &Expression) -> String {
             format!("{}({})", expr_to_string(callee), args.join(", "))
         }
         ExpressionKind::BinaryOp { left, operator, right } => {
-            format!("{} {} {}", expr_to_string(left), binop_to_str(operator), expr_to_string(right))
+            format!("{} {} {}", expr_to_string(left), operator.as_str(), expr_to_string(right))
         }
         ExpressionKind::UnaryOp { operator, operand } => match operator {
             UnaryOperator::Not => format!("!{}", expr_to_string(operand)),
@@ -674,26 +674,3 @@ fn expr_to_string(expr: &Expression) -> String {
     }
 }
 
-fn binop_to_str(op: &BinaryOperator) -> &'static str {
-    match op {
-        BinaryOperator::Add => "+",
-        BinaryOperator::Sub => "-",
-        BinaryOperator::Mul => "*",
-        BinaryOperator::Div => "/",
-        BinaryOperator::Mod => "%",
-        BinaryOperator::Pow => "**",
-        BinaryOperator::Eq => "==",
-        BinaryOperator::Neq => "!=",
-        BinaryOperator::Lt => "<",
-        BinaryOperator::Gt => ">",
-        BinaryOperator::Lte => "<=",
-        BinaryOperator::Gte => ">=",
-        BinaryOperator::And => "&&",
-        BinaryOperator::Or => "||",
-        BinaryOperator::BitAnd => "&",
-        BinaryOperator::BitOr => "|",
-        BinaryOperator::BitXor => "^",
-        BinaryOperator::Shl => "<<",
-        BinaryOperator::Shr => ">>",
-    }
-}
