@@ -1,0 +1,179 @@
+# HTTP API Reference
+
+ilold exposes an HTTP API on the configured port (default 3001). All endpoints return JSON. The API is split into three groups: command bus, session queries, and contract queries.
+
+## Command bus
+
+### POST /api/cmd
+
+Execute a session command. This is the single entry point for all state-mutating session operations.
+
+**Request body:**
+
+```
+{
+  "contract": "Staking",          // optional, defaults to session contract
+  "command": { "Call": { "func": "deposit" } }
+}
+```
+
+**Supported commands:**
+
+| Command | Payload | Description |
+|---|---|---|
+| `Call` | `{ "func": "deposit", "trace_config": null }` | Add a function call as a session step |
+| `Back` | `"Back"` | Remove the last step |
+| `Clear` | `"Clear"` | Remove all steps |
+| `State` | `"State"` | Return accumulated state variable summary |
+| `Functions` | `"Functions"` | List functions of the current contract |
+| `FunctionsAll` | `"FunctionsAll"` | List all accessible functions including inherited |
+| `StateVarsAll` | `"StateVarsAll"` | List all accessible state variables including inherited |
+| `Who` | `{ "variable": "totalStaked" }` | Find all writers and readers of a variable |
+| `Finding` | `{ "severity": "High", "title": "...", "description": "..." }` | Record an audit finding |
+| `Note` | `{ "text": "..." }` | Record a free-text note |
+| `Status` | `{ "func": "deposit", "status": "Reviewed" }` | Set review status for a function |
+| `Session` | `"Session"` | Return session overview (contract, steps, finding count) |
+| `Export` | `"Export"` | Export session journal as markdown |
+| `SaveSession` | `"SaveSession"` | Serialize session to JSON |
+| `LoadSession` | `{ "json": "..." }` | Restore session from serialized JSON |
+
+**Response:** A `CommandResult` variant matching the command type. Key variants:
+
+- `StepAdded`: `step_index`, `function`, `access`, `state_changed` (list of variable names)
+- `StateView`: `summary` (list of variable summaries with writers per step)
+- `FunctionList`: `functions` (name, access level, writes_state, has_external_calls)
+- `VariableInfo`: `variable`, `writers` (name + access), `readers` (name + access)
+- `Error`: `message`
+
+## Session query endpoints
+
+These endpoints read from the active session. They return 404 if no session exists (no `Call` command has been issued).
+
+### GET /api/session/state
+
+Returns the accumulated state variable summary across all session steps.
+
+**Response:** Array of `VariableSummary` objects with variable name, type, and per-step write details.
+
+### GET /api/session/sequence
+
+Returns a sequence narrative describing the relationship between session steps. Requires at least 2 steps.
+
+**Response:** `SequenceNarrative` with per-step summaries and flow summaries derived from persisted flow trees.
+
+### GET /api/session/step/{index}/narrative
+
+Returns the function narrative for a specific session step.
+
+**Path params:** `index` -- zero-based step index.
+
+**Response:** `FunctionNarrative` with paths, state writes, external calls, and conditions.
+
+### GET /api/session/step/{index}/trace
+
+Returns the persisted FlowTree of a session step. This is the tree captured when `Call` was executed, not a recomputation.
+
+**Path params:** `index` -- zero-based step index.
+
+**Response:** `FlowTree` with step nodes, each containing operation type, target, conditions, and child steps. Returns 404 if the step has no persisted tree (pre-Phase-2a sessions).
+
+### GET /api/session/timeline/{variable}
+
+Returns a chronological timeline of every write to `variable` across all session steps. Matches by base name (e.g., `balances` matches `balances[msg.sender]`).
+
+**Path params:** `variable` -- state variable name.
+
+**Response:** `VariableTimeline` with `state_entries` and `local_entries`. Each entry contains: `session_step_index`, `function`, `target`, `operator`, `value_expr`, `reached_when` (path conditions), `via` (modifier name if applicable), `scope`.
+
+### GET /api/session/slice/{function}/{variable}
+
+Returns a dataflow slice for `variable` inside `function` of the session's current contract.
+
+**Path params:** `function` -- function name, `variable` -- variable name.
+
+**Query params:**
+
+| Param | Values | Default | Description |
+|---|---|---|---|
+| `direction` | `backward`, `forward`, `both`, `b`, `f`, `all` | `both` | Slice direction |
+
+**Response:** `SliceResult` with `backward` and `forward` arrays. Each entry contains: `path`, `span` (source location), `text` (rendered statement), `origin` (`FunctionBody` or `Modifier(name)`).
+
+### GET /api/session/trace/{contract}/{func}
+
+Returns a FlowTree for the given function, computed on demand from the current analysis data.
+
+**Path params:** `contract` -- contract name, `func` -- function name.
+
+**Query params:**
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `depth` | integer | 2 | Maximum inline depth for internal calls |
+| `reverts` | boolean | false | Include revert paths in the tree |
+| `expand` | string | empty | Comma-separated step IDs to force-inline beyond max depth (e.g., `17,24`) |
+
+**Response:** `FlowTree` with nested step nodes representing the execution flow.
+
+### GET /api/session/function/{contract}/{func}
+
+Returns a function narrative without requiring a session step. Useful for inspecting functions that have not been called in the session.
+
+**Path params:** `contract` -- contract name, `func` -- function name.
+
+**Response:** `FunctionNarrative` with paths, state effects, and behavioral summary.
+
+## Contract query endpoints
+
+These endpoints read from the static analysis data and do not require an active session.
+
+### GET /api/project
+
+Returns a project summary with file count and a list of contracts (name, kind, function count, state variable count, inheritance).
+
+### GET /api/project/map
+
+Returns the full project map with all contracts, their functions (with path counts and external call flags), state variables, and cross-contract relationships extracted from call graphs.
+
+### GET /api/contract/{name}
+
+Returns contract detail: name, kind, inheritance chain, functions (with path stats), state variables, and inherited functions and state variables.
+
+### GET /api/contract/{name}/callgraph
+
+Returns the call graph for a contract in Cytoscape-compatible JSON format. Nodes represent functions (with contract, type, external flag). Edges represent calls (with kind and count).
+
+### GET /api/contract/{name}/{func}/cfg
+
+Returns the control flow graph for a function in Cytoscape-compatible JSON format. Nodes represent basic blocks (entry, normal, return, revert, assembly, loop). Edges represent control flow transitions.
+
+### GET /api/contract/{name}/{func}/paths
+
+Returns the path tree for a function. Contains all execution paths with stats (total, happy, revert) and per-path annotations (state writes, external calls, events).
+
+### GET /api/contract/{name}/sequences
+
+Returns the sequence tree for a contract, showing function interaction patterns.
+
+### GET /api/contract/{name}/analysis
+
+Returns the sequence analysis for a contract: per-function behavior summaries (state writes, state reads, external calls, conditions) and inter-function transition information.
+
+### GET /api/contract/{name}/suggestions
+
+Returns search suggestions for the contract: function names, state variable names, event names, external call targets, and predefined categories (revert, return, assembly).
+
+## WebSocket
+
+### GET /ws
+
+Upgrades to a WebSocket connection. The server pushes `CanvasPatch` messages when session state changes:
+
+- `AddNode`: a step was added (function, access level, step index)
+- `RemoveLastNode`: the last step was removed
+- `ClearAll`: all steps were cleared
+
+## Related pages
+
+- [Session commands](../commands/session.md)
+- [Known Limitations](./limitations.md)

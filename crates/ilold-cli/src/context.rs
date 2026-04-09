@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use ilold_core::cfg::builder::CfgBuilder;
 use ilold_core::cfg::types::CfgGraph;
 use ilold_core::classify::entry_points::{classify_all, AccessLevel};
-use ilold_core::model::contract::{ContractDef, ContractKind};
+use ilold_core::model::contract::ContractDef;
 use ilold_core::model::project::Project;
 use ilold_core::narrative::function::build_function_narrative;
 use ilold_core::narrative::sequence::build_sequence_narrative;
@@ -16,7 +16,7 @@ use ilold_core::parse::ProjectParser;
 use ilold_core::pathtree::config::PruningConfig;
 use ilold_core::pathtree::types::{PathTree, TerminalKind};
 use ilold_core::pathtree::walker::build_path_tree;
-use ilold_core::sequence::analysis::analyze_sequences;
+use ilold_core::sequence::analysis::{analyze_project, analyze_sequences};
 
 use crate::colors::*;
 
@@ -45,15 +45,35 @@ pub fn run(
     let config = PruningConfig::default();
     let mut cfgs: HashMap<(String, String), CfgGraph> = HashMap::new();
     let mut pt_map: HashMap<(String, String), PathTree> = HashMap::new();
+    let combined_state_vars = project.inherited_state_vars(contract);
     for func in &contract.functions {
-        if let Ok(cfg) = CfgBuilder::build(func, contract) {
-            let pt = build_path_tree(&cfg, &contract.name, &func.name, &contract.state_vars, &config);
+        if let Ok(cfg) = CfgBuilder::build_with_project(func, contract, Some(&project)) {
+            let pt = build_path_tree(&cfg, &contract.name, &func.name, &combined_state_vars, &config);
             let key = (contract.name.clone(), func.name.clone());
             cfgs.insert(key.clone(), cfg);
             pt_map.insert(key, pt);
         }
     }
-    let analysis = analyze_sequences(&pt_map, &contract.name);
+    // Build per-contract analyses for every contract in the project so that
+    // transitive effects can span the full inheritance chain.
+    let mut all_sequence_analyses: HashMap<String, ilold_core::sequence::analysis::SequenceAnalysis> = HashMap::new();
+    for c in &project.contracts {
+        let combined = project.inherited_state_vars(c);
+        let mut c_pt_map: HashMap<(String, String), PathTree> = HashMap::new();
+        for func in &c.functions {
+            if let Ok(cfg) = CfgBuilder::build_with_project(func, c, Some(&project)) {
+                let pt = build_path_tree(&cfg, &c.name, &func.name, &combined, &config);
+                c_pt_map.insert((c.name.clone(), func.name.clone()), pt);
+            }
+        }
+        let a = analyze_sequences(&c_pt_map, &c.name);
+        all_sequence_analyses.insert(c.name.clone(), a);
+    }
+    analyze_project(&project, &mut all_sequence_analyses);
+    let analysis = all_sequence_analyses
+        .get(&contract.name)
+        .cloned()
+        .unwrap_or_else(|| analyze_sequences(&pt_map, &contract.name));
 
     if let Some(seq_str) = sequence_filter {
         let names: Vec<&str> = seq_str.split(',').map(|s| s.trim()).collect();
@@ -70,7 +90,7 @@ pub fn run(
         let key = (contract.name.clone(), func_name.to_string());
         let cfg = cfgs.get(&key).ok_or_else(|| anyhow::anyhow!("No CFG for {}", func_name))?;
         let pt = pt_map.get(&key).ok_or_else(|| anyhow::anyhow!("No paths for {}", func_name))?;
-        let narrative = build_function_narrative(contract, func, pt, cfg, &analysis.functions);
+        let narrative = build_function_narrative(contract, func, pt, cfg, &analysis.functions, &project, &all_sequence_analyses);
         print_function(&narrative);
         return Ok(());
     }
@@ -79,25 +99,14 @@ pub fn run(
         let key = (contract.name.clone(), func.name.clone());
         let cfg = cfgs.get(&key)?;
         let pt = pt_map.get(&key)?;
-        Some(build_function_narrative(contract, func, pt, cfg, &analysis.functions))
+        Some(build_function_narrative(contract, func, pt, cfg, &analysis.functions, &project, &all_sequence_analyses))
     }).collect();
     print_overview(contract, &narratives);
     Ok(())
 }
 
 fn find_contract<'a>(project: &'a Project, filter: Option<&str>) -> Result<&'a ContractDef> {
-    if let Some(name) = filter {
-        project.contracts.iter().find(|c| c.name == name)
-            .ok_or_else(|| anyhow::anyhow!("Contract '{}' not found", name))
-    } else {
-        let real: Vec<_> = project.contracts.iter().filter(|c| c.kind != ContractKind::Interface).collect();
-        match real.len() {
-            0 => anyhow::bail!("No contracts found"),
-            1 => Ok(real[0]),
-            _ => anyhow::bail!("Multiple contracts, use --contract: {}",
-                real.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", ")),
-        }
-    }
+    project.find_contract(filter).map_err(|e| anyhow::anyhow!(e))
 }
 
 fn print_list(contract: &ContractDef, classifications: &[(String, AccessLevel)]) {

@@ -21,3 +21,5 @@ reqwest = { version = "0.12", features = ["json"] }
 serde_json = { workspace = true }
 dirs = "6"
 terminal_size = "0.4"
+ratatui = { version = "0.30", default-features = false, features = ["crossterm_0_29"] }
+crossterm = "0.29"

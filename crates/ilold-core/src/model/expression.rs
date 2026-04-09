@@ -86,6 +86,33 @@ pub enum BinaryOperator {
     Shr,
 }
 
+impl BinaryOperator {
+    /// Solidity source-form symbol for the operator (e.g. `Add` → `"+"`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BinaryOperator::Add => "+",
+            BinaryOperator::Sub => "-",
+            BinaryOperator::Mul => "*",
+            BinaryOperator::Div => "/",
+            BinaryOperator::Mod => "%",
+            BinaryOperator::Pow => "**",
+            BinaryOperator::Eq => "==",
+            BinaryOperator::Neq => "!=",
+            BinaryOperator::Lt => "<",
+            BinaryOperator::Gt => ">",
+            BinaryOperator::Lte => "<=",
+            BinaryOperator::Gte => ">=",
+            BinaryOperator::And => "&&",
+            BinaryOperator::Or => "||",
+            BinaryOperator::BitAnd => "&",
+            BinaryOperator::BitOr => "|",
+            BinaryOperator::BitXor => "^",
+            BinaryOperator::Shl => "<<",
+            BinaryOperator::Shr => ">>",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum UnaryOperator {
     Not,
@@ -95,6 +122,23 @@ pub enum UnaryOperator {
     PreDecrement,
     PostIncrement,
     PostDecrement,
+}
+
+impl UnaryOperator {
+    /// Returns `(symbol, is_postfix)`. Prefix ops use `is_postfix = false`
+    /// so the caller can format `op + operand`; postfix increments use
+    /// `true` for `operand + op`.
+    pub fn format_parts(self) -> (&'static str, bool) {
+        match self {
+            UnaryOperator::Not => ("!", false),
+            UnaryOperator::Neg => ("-", false),
+            UnaryOperator::BitNot => ("~", false),
+            UnaryOperator::PreIncrement => ("++", false),
+            UnaryOperator::PreDecrement => ("--", false),
+            UnaryOperator::PostIncrement => ("++", true),
+            UnaryOperator::PostDecrement => ("--", true),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -110,6 +154,26 @@ pub enum AssignOperator {
     BitXorAssign,
     ShlAssign,
     ShrAssign,
+}
+
+impl AssignOperator {
+    /// Solidity source-form symbol for the assignment operator
+    /// (e.g. `AddAssign` → `"+="`, `Assign` → `"="`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AssignOperator::Assign => "=",
+            AssignOperator::AddAssign => "+=",
+            AssignOperator::SubAssign => "-=",
+            AssignOperator::MulAssign => "*=",
+            AssignOperator::DivAssign => "/=",
+            AssignOperator::ModAssign => "%=",
+            AssignOperator::BitAndAssign => "&=",
+            AssignOperator::BitOrAssign => "|=",
+            AssignOperator::BitXorAssign => "^=",
+            AssignOperator::ShlAssign => "<<=",
+            AssignOperator::ShrAssign => ">>=",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

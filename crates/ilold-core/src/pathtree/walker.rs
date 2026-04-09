@@ -226,6 +226,119 @@ pub fn build_path_tree(
     }
 }
 
+/// Normalize a state-var access path by collapsing array indices to `[]`
+/// while preserving struct/field accesses. E.g.
+/// `proposals[id].executed` -> `proposals[].executed`,
+/// `balances[msg.sender]` -> `balances[]`.
+fn normalize_path(target: &str) -> String {
+    let mut out = String::with_capacity(target.len());
+    let mut depth = 0i32;
+    for ch in target.chars() {
+        match ch {
+            '[' => {
+                if depth == 0 {
+                    out.push('[');
+                }
+                depth += 1;
+            }
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    out.push(']');
+                }
+            }
+            _ if depth > 0 => {}
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+/// Check whether an expression mentions a variable name as an identifier
+/// (not as a substring of a larger identifier).
+fn expression_mentions_var(expr: &str, name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let bytes = expr.as_bytes();
+    let nb = name.as_bytes();
+    let mut i = 0;
+    while i + nb.len() <= bytes.len() {
+        if &bytes[i..i + nb.len()] == nb {
+            let before_ok = i == 0 || !is_ident_char(bytes[i - 1]);
+            let after_idx = i + nb.len();
+            let after_ok = after_idx >= bytes.len() || !is_ident_char(bytes[after_idx]);
+            if before_ok && after_ok {
+                return true;
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+fn is_ident_char(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// Extract qualified state-var paths from an expression for a known var name.
+/// Returns normalized forms like `proposals[].executed` for matches.
+fn extract_qualified_paths(expr: &str, name: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    if name.is_empty() {
+        return out;
+    }
+    let bytes = expr.as_bytes();
+    let nb = name.as_bytes();
+    let mut i = 0;
+    while i + nb.len() <= bytes.len() {
+        if &bytes[i..i + nb.len()] == nb {
+            let before_ok = i == 0 || !is_ident_char(bytes[i - 1]);
+            let after_idx = i + nb.len();
+            let after_ok = after_idx >= bytes.len() || !is_ident_char(bytes[after_idx]);
+            if before_ok && after_ok {
+                // Walk forward consuming `[...]` and `.field` chains.
+                let mut end = after_idx;
+                loop {
+                    if end < bytes.len() && bytes[end] == b'[' {
+                        let mut depth = 1i32;
+                        end += 1;
+                        while end < bytes.len() && depth > 0 {
+                            match bytes[end] {
+                                b'[' => depth += 1,
+                                b']' => depth -= 1,
+                                _ => {}
+                            }
+                            end += 1;
+                        }
+                        continue;
+                    }
+                    if end < bytes.len() && bytes[end] == b'.' {
+                        let mut j = end + 1;
+                        while j < bytes.len() && is_ident_char(bytes[j]) {
+                            j += 1;
+                        }
+                        if j > end + 1 {
+                            end = j;
+                            continue;
+                        }
+                    }
+                    break;
+                }
+                let raw = &expr[i..end];
+                let norm = normalize_path(raw);
+                if !out.contains(&norm) {
+                    out.push(norm);
+                }
+                i = end;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
 /// Scan a block's statements and accumulate annotations.
 fn collect_annotations(
     statements: &[CfgStatement],
@@ -252,8 +365,15 @@ fn collect_annotations(
             CfgStatement::RequireCheck { condition, .. } => {
                 annotations.require_checks.push(condition.clone());
                 for sv in state_vars {
-                    if condition.contains(&sv.name) && !annotations.state_reads.contains(&sv.name) {
-                        annotations.state_reads.push(sv.name.clone());
+                    if expression_mentions_var(condition, &sv.name) {
+                        if !annotations.state_reads.contains(&sv.name) {
+                            annotations.state_reads.push(sv.name.clone());
+                        }
+                        for path in extract_qualified_paths(condition, &sv.name) {
+                            if !annotations.state_read_paths.contains(&path) {
+                                annotations.state_read_paths.push(path);
+                            }
+                        }
                     }
                 }
             }
@@ -264,23 +384,41 @@ fn collect_annotations(
                 annotations.has_assembly = true;
             }
             CfgStatement::Assignment { target, value, .. } => {
-                let base_name = target.split('[').next().unwrap_or(target);
-                let base_name = base_name.split('.').next().unwrap_or(base_name);
+                let base_name = crate::util::target_base_name(target);
                 if state_vars.iter().any(|sv| sv.name == base_name) {
                     annotations.state_writes.push(target.clone());
+                    let normalized = normalize_path(target);
+                    if !annotations.state_write_paths.contains(&normalized) {
+                        annotations.state_write_paths.push(normalized);
+                    }
                 }
                 // Detect state reads in the value expression and target
                 for sv in state_vars {
-                    if value.contains(&sv.name) && !annotations.state_reads.contains(&sv.name) {
-                        annotations.state_reads.push(sv.name.clone());
+                    if expression_mentions_var(value, &sv.name) {
+                        if !annotations.state_reads.contains(&sv.name) {
+                            annotations.state_reads.push(sv.name.clone());
+                        }
+                        for path in extract_qualified_paths(value, &sv.name) {
+                            if !annotations.state_read_paths.contains(&path) {
+                                annotations.state_read_paths.push(path);
+                            }
+                        }
                     }
                 }
             }
             CfgStatement::StateWrite { variable, .. } => {
                 annotations.state_writes.push(variable.clone());
+                let normalized = normalize_path(variable);
+                if !annotations.state_write_paths.contains(&normalized) {
+                    annotations.state_write_paths.push(normalized);
+                }
             }
             CfgStatement::StateRead { variable, .. } => {
                 annotations.state_reads.push(variable.clone());
+                let normalized = normalize_path(variable);
+                if !annotations.state_read_paths.contains(&normalized) {
+                    annotations.state_read_paths.push(normalized);
+                }
             }
         }
     }

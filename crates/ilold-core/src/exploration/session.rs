@@ -2,10 +2,14 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::cfg::types::{CfgGraph, CfgStatement};
+use crate::cfg::types::CfgGraph;
 use crate::journal::types::AuditJournal;
 use crate::model::common::StateVar;
+use crate::model::contract::ContractDef;
 use crate::model::expression::AssignOperator;
+use crate::model::function::FunctionDef;
+use crate::model::project::Project;
+use crate::narrative::trace::{build_flow_tree_with_mutations, FlowConfig, FlowTree};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExplorationSession {
@@ -18,6 +22,17 @@ pub struct ExplorationSession {
 pub struct ExplorationStep {
     pub function: String,
     pub mutations: Vec<StateMutation>,
+    #[serde(default)]
+    pub flow_tree: Option<FlowTree>,
+    #[serde(default)]
+    pub trace_config: TraceConfig,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub enum MutationScope {
+    #[default]
+    State,
+    Local,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -26,7 +41,35 @@ pub struct StateMutation {
     pub operator: AssignOperator,
     pub value_expr: String,
     pub step_index: usize,
+    #[serde(default)]
+    pub via: Option<String>,
+    #[serde(default)]
+    pub flow_step_id: Option<usize>,
+    #[serde(default)]
+    pub scope: MutationScope,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TraceConfig {
+    #[serde(default = "default_trace_depth")]
+    pub depth: usize,
+    #[serde(default)]
+    pub include_reverts: bool,
+    #[serde(default)]
+    pub expand_set: Vec<usize>,
+}
+
+impl Default for TraceConfig {
+    fn default() -> Self {
+        Self {
+            depth: 2,
+            include_reverts: false,
+            expand_set: Vec::new(),
+        }
+    }
+}
+
+fn default_trace_depth() -> usize { 2 }
 
 impl ExplorationSession {
     pub fn new(contract: &str, project: &str) -> Self {
@@ -37,19 +80,63 @@ impl ExplorationSession {
         }
     }
 
-    pub fn add_step(
+    /// Append a step, building and persisting its FlowTree. Each harvested
+    /// mutation carries a `flow_step_id` into that tree.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_step_with_internals(
         &mut self,
-        function: &str,
+        function: &FunctionDef,
         cfg: &CfgGraph,
         state_vars: &[StateVar],
+        project: &Project,
+        owning_contract: &ContractDef,
+        all_cfgs: &HashMap<(String, String), CfgGraph>,
         timestamp: &str,
+        trace_config: TraceConfig,
     ) -> &ExplorationStep {
         let step_index = self.steps.len();
-        let mutations = extract_mutations(cfg, state_vars, step_index);
+
+        let flow_config = FlowConfig {
+            max_depth: trace_config.depth,
+            include_reverts: trace_config.include_reverts,
+            expand_set: trace_config.expand_set.iter().copied().collect(),
+        };
+
+        let (flow_tree, raw_mutations) = build_flow_tree_with_mutations(
+            owning_contract,
+            function,
+            cfg,
+            project,
+            all_cfgs,
+            &flow_config,
+        );
+
+        // Walker is scope-agnostic; keep only writes whose base name is a
+        // state var and convert into the session-level mutation type.
+        let mutations: Vec<StateMutation> = raw_mutations
+            .into_iter()
+            .filter_map(|fm| {
+                let base = crate::util::target_base_name(&fm.target);
+                if !state_vars.iter().any(|sv| sv.name == base) {
+                    return None;
+                }
+                Some(StateMutation {
+                    variable: fm.target,
+                    operator: fm.operator,
+                    value_expr: fm.value,
+                    step_index,
+                    via: fm.via,
+                    flow_step_id: Some(fm.flow_step_id),
+                    scope: MutationScope::State,
+                })
+            })
+            .collect();
 
         self.steps.push(ExplorationStep {
-            function: function.into(),
+            function: function.name.clone(),
             mutations,
+            flow_tree: Some(flow_tree),
+            trace_config,
         });
 
         self.journal.record(crate::journal::types::JournalEntry::SequenceExplored {
@@ -72,7 +159,7 @@ impl ExplorationSession {
         self.steps.iter().map(|s| s.function.as_str()).collect()
     }
 
-    pub fn variable_history(&self) -> HashMap<String, Vec<&StateMutation>> {
+    fn variable_history(&self) -> HashMap<String, Vec<&StateMutation>> {
         let mut history: HashMap<String, Vec<&StateMutation>> = HashMap::new();
         for step in &self.steps {
             for mutation in &step.mutations {
@@ -88,16 +175,19 @@ impl ExplorationSession {
         let history = self.variable_history();
         let mut summaries: Vec<VariableSummary> = history.into_iter().map(|(var, muts)| {
             let changes: Vec<String> = muts.iter().map(|m| {
-                let op_str = match m.operator {
-                    AssignOperator::AddAssign => "+",
-                    AssignOperator::SubAssign => "-",
-                    AssignOperator::Assign => "=",
-                    _ => "?",
-                };
+                let op_str = m.operator.as_str();
                 let func = self.steps.get(m.step_index)
                     .map(|s| s.function.as_str())
                     .unwrap_or("?");
-                format!("{}{} (step {}, {})", op_str, m.value_expr, m.step_index, func)
+                let step_ref = match m.flow_step_id {
+                    Some(id) => format!("step {}:{}", m.step_index, id),
+                    None => format!("step {}", m.step_index),
+                };
+                let suffix = match &m.via {
+                    Some(chain) => format!(" via {}", chain),
+                    None => String::new(),
+                };
+                format!("{} {} ({}, {}{})", op_str, m.value_expr, step_ref, func, suffix)
             }).collect();
 
             VariableSummary { variable: var, changes }
@@ -114,69 +204,9 @@ pub struct VariableSummary {
     pub changes: Vec<String>,
 }
 
-fn extract_mutations(
-    cfg: &CfgGraph,
-    state_vars: &[StateVar],
-    step_index: usize,
-) -> Vec<StateMutation> {
-    let mut mutations = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-
-    for node_idx in cfg.node_indices() {
-        let block = &cfg[node_idx];
-        for stmt in &block.statements {
-            match stmt {
-                CfgStatement::Assignment { target, operator, value, .. } => {
-                    let base = target.split('[').next().unwrap_or(target);
-                    let base = base.split('.').next().unwrap_or(base);
-                    if state_vars.iter().any(|sv| sv.name == base) {
-                        let key = (target.clone(), *operator);
-                        if seen.insert(key) {
-                            mutations.push(StateMutation {
-                                variable: target.clone(),
-                                operator: *operator,
-                                value_expr: value.clone(),
-                                step_index,
-                            });
-                        }
-                    }
-                }
-                CfgStatement::StateWrite { variable, .. } => {
-                    let key = (variable.clone(), AssignOperator::Assign);
-                    if seen.insert(key) {
-                        mutations.push(StateMutation {
-                            variable: variable.clone(),
-                            operator: AssignOperator::Assign,
-                            value_expr: String::new(),
-                            step_index,
-                        });
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    mutations
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn dummy_state_var(name: &str) -> StateVar {
-        StateVar {
-            name: name.into(),
-            type_name: "uint256".into(),
-            visibility: crate::model::function::Visibility::Public,
-            is_constant: false,
-            is_immutable: false,
-            initial_value: None,
-            span: crate::model::common::SourceSpan {
-                file_index: 0, start_line: 0, start_col: 0, end_line: 0, end_col: 0,
-            },
-        }
-    }
 
     #[test]
     fn new_session_is_empty() {
@@ -198,10 +228,14 @@ mod tests {
         s.steps.push(ExplorationStep {
             function: "deposit".into(),
             mutations: vec![],
+            flow_tree: None,
+            trace_config: TraceConfig::default(),
         });
         s.steps.push(ExplorationStep {
             function: "withdraw".into(),
             mutations: vec![],
+            flow_tree: None,
+            trace_config: TraceConfig::default(),
         });
         assert_eq!(s.current_sequence(), vec!["deposit", "withdraw"]);
         s.clear();
@@ -219,14 +253,22 @@ mod tests {
                     operator: AssignOperator::AddAssign,
                     value_expr: "amount".into(),
                     step_index: 0,
+                    via: None,
+                    flow_step_id: None,
+                    scope: MutationScope::State,
                 },
                 StateMutation {
                     variable: "totalStaked".into(),
                     operator: AssignOperator::AddAssign,
                     value_expr: "amount".into(),
                     step_index: 0,
+                    via: None,
+                    flow_step_id: None,
+                    scope: MutationScope::State,
                 },
             ],
+            flow_tree: None,
+            trace_config: TraceConfig::default(),
         });
         s.steps.push(ExplorationStep {
             function: "withdraw".into(),
@@ -236,8 +278,13 @@ mod tests {
                     operator: AssignOperator::SubAssign,
                     value_expr: "amount".into(),
                     step_index: 1,
+                    via: None,
+                    flow_step_id: None,
+                    scope: MutationScope::State,
                 },
             ],
+            flow_tree: None,
+            trace_config: TraceConfig::default(),
         });
 
         let summaries = s.variable_summary();
@@ -245,7 +292,7 @@ mod tests {
 
         let balances = summaries.iter().find(|s| s.variable == "balances").unwrap();
         assert_eq!(balances.changes.len(), 2);
-        assert!(balances.changes[0].contains("+amount"));
-        assert!(balances.changes[1].contains("-amount"));
+        assert!(balances.changes[0].contains("+= amount"));
+        assert!(balances.changes[1].contains("-= amount"));
     }
 }

@@ -16,7 +16,7 @@ use ilold_core::parse::ProjectParser;
 use ilold_core::pathtree::config::PruningConfig;
 use ilold_core::pathtree::types::PathTree;
 use ilold_core::pathtree::walker::build_path_tree;
-use ilold_core::sequence::analysis::analyze_sequences;
+use ilold_core::sequence::analysis::{analyze_project, analyze_sequences, SequenceAnalysis};
 use ilold_core::sequence::builder::build_sequence_tree;
 
 use crate::colors::*;
@@ -41,11 +41,29 @@ pub fn run(
     println!("Parsed {} file(s), {} contract(s)\n",
         project.source_files.len(), project.contracts.len());
 
+    // Precompute all per-contract sequence analyses, then run the
+    // inheritance-aware transitive effect pass.
+    let config = PruningConfig::default();
+    let mut all_analyses: HashMap<String, SequenceAnalysis> = HashMap::new();
+    for contract in &project.contracts {
+        let combined_state_vars = project.inherited_state_vars(contract);
+        let mut pt_map: HashMap<(String, String), PathTree> = HashMap::new();
+        for func in &contract.functions {
+            if let Ok(cfg) = CfgBuilder::build_with_project(func, contract, Some(&project)) {
+                let pt = build_path_tree(&cfg, &contract.name, &func.name, &combined_state_vars, &config);
+                pt_map.insert((contract.name.clone(), func.name.clone()), pt);
+            }
+        }
+        let analysis = analyze_sequences(&pt_map, &contract.name);
+        all_analyses.insert(contract.name.clone(), analysis);
+    }
+    analyze_project(&project, &mut all_analyses);
+
     for contract in &project.contracts {
         if let Some(filter) = contract_filter {
             if contract.name != filter { continue; }
         }
-        print_contract(&project, contract, max_seq_depth, verbose);
+        print_contract(&project, contract, max_seq_depth, verbose, &all_analyses);
     }
 
     Ok(())
@@ -56,6 +74,7 @@ fn print_contract(
     contract: &ContractDef,
     max_seq_depth: usize,
     verbose: bool,
+    all_analyses: &HashMap<String, SequenceAnalysis>,
 ) {
     let kind_str = match contract.kind {
         ContractKind::Contract => "contract",
@@ -73,6 +92,7 @@ fn print_contract(
 
     let config = PruningConfig::default();
     let mut path_trees: Vec<PathTree> = Vec::new();
+    let combined_state_vars = project.inherited_state_vars(contract);
 
     for func in &contract.functions {
         let display_name = if func.name.is_empty() {
@@ -92,7 +112,7 @@ fn print_contract(
         match CfgBuilder::build(func, contract) {
             Ok(cfg) => {
                 let pt = build_path_tree(
-                    &cfg, &contract.name, &func.name, &contract.state_vars, &config,
+                    &cfg, &contract.name, &func.name, &combined_state_vars, &config,
                 );
 
                 println!("  {} {} {} — {} blocks, {} edges, {} paths ({} happy, {} revert)",
@@ -169,11 +189,14 @@ fn print_contract(
             }
         }
 
-        let pt_map: HashMap<(String, String), _> = path_trees
-            .iter()
-            .map(|pt| ((pt.contract.clone(), pt.function.clone()), pt.clone()))
-            .collect();
-        let analysis = analyze_sequences(&pt_map, &contract.name);
+        let default_analysis;
+        let analysis = match all_analyses.get(&contract.name) {
+            Some(a) => a,
+            None => {
+                default_analysis = analyze_sequences(&HashMap::new(), &contract.name);
+                &default_analysis
+            }
+        };
 
         if verbose {
             println!("  {}", c_muted("Function behaviors:"));

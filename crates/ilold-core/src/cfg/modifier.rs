@@ -3,47 +3,68 @@ use crate::model::statement::{Statement, StatementKind};
 
 use super::error::CfgError;
 
-/// Inline modifier chain around a function body.
+/// A statement tagged with the name of the modifier it came from, or `None`
+/// when the statement is part of the function's own body.
+#[derive(Debug, Clone)]
+pub struct TaggedStatement {
+    pub stmt: Statement,
+    pub provenance: Option<String>,
+}
+
+/// Inline a chain of modifiers around a function body.
 ///
-/// Given modifiers [onlyOwner, nonReentrant] and function body:
-/// 1. Replace _ in nonReentrant with function body
-/// 2. Replace _ in onlyOwner with result of step 1
-///
-/// Modifiers are processed LAST to FIRST because each one wraps the previous result.
+/// Modifiers wrap last-to-first: `[onlyOwner, nonReentrant]` means the result
+/// of inlining `nonReentrant` around the body is then inlined into `onlyOwner`.
 pub fn inline_modifiers(
     body: &[Statement],
     modifier_defs: &[&ModifierDef],
-) -> Result<Vec<Statement>, CfgError> {
-    let mut current_body = body.to_vec();
+) -> Result<Vec<TaggedStatement>, CfgError> {
+    let mut current: Vec<TaggedStatement> = body
+        .iter()
+        .cloned()
+        .map(|s| TaggedStatement { stmt: s, provenance: None })
+        .collect();
 
-    // Process in reverse: last modifier wraps the body first
     for modifier in modifier_defs.iter().rev() {
         if !has_placeholder(&modifier.body) {
             return Err(CfgError::ModifierMissingPlaceholder {
                 name: modifier.name.clone(),
             });
         }
-        current_body = replace_placeholder(&modifier.body, &current_body);
+        current = replace_placeholder_tagged(&modifier.body, &current, &modifier.name);
     }
 
-    Ok(current_body)
+    Ok(current)
 }
 
 fn has_placeholder(stmts: &[Statement]) -> bool {
     stmts.iter().any(|s| match &s.kind {
         StatementKind::Placeholder => true,
         StatementKind::Block { statements } => has_placeholder(statements),
+        StatementKind::UncheckedBlock { statements } => has_placeholder(statements),
         StatementKind::If { then_body, else_body, .. } => {
             has_placeholder(then_body)
                 || else_body.as_ref().is_some_and(|e| has_placeholder(e))
+        }
+        StatementKind::For { body, .. } => has_placeholder(body),
+        StatementKind::While { body, .. } => has_placeholder(body),
+        StatementKind::DoWhile { body, .. } => has_placeholder(body),
+        StatementKind::TryCatch { clauses, .. } => {
+            clauses.iter().any(|c| has_placeholder(&c.body))
         }
         _ => false,
     })
 }
 
-/// Replace all Placeholder statements with the given body.
-fn replace_placeholder(modifier_body: &[Statement], function_body: &[Statement]) -> Vec<Statement> {
-    let mut result = Vec::new();
+/// Replace each `_` placeholder in `modifier_body` with `function_body`,
+/// tagging modifier statements with `modifier_name`. Inner tags in the
+/// function body (from prior nested inlining) are preserved.
+fn replace_placeholder_tagged(
+    modifier_body: &[Statement],
+    function_body: &[TaggedStatement],
+    modifier_name: &str,
+) -> Vec<TaggedStatement> {
+    let mut result: Vec<TaggedStatement> = Vec::new();
 
     for stmt in modifier_body {
         match &stmt.kind {
@@ -51,31 +72,121 @@ fn replace_placeholder(modifier_body: &[Statement], function_body: &[Statement])
                 result.extend(function_body.iter().cloned());
             }
             StatementKind::Block { statements } => {
-                result.push(Statement {
-                    kind: StatementKind::Block {
-                        statements: replace_placeholder(statements, function_body),
+                let inner = replace_placeholder_tagged_block(statements, function_body, modifier_name);
+                result.push(TaggedStatement {
+                    stmt: Statement {
+                        kind: StatementKind::Block { statements: inner },
+                        span: stmt.span,
                     },
-                    span: stmt.span,
+                    provenance: Some(modifier_name.to_string()),
+                });
+            }
+            StatementKind::UncheckedBlock { statements } => {
+                let inner = replace_placeholder_tagged_block(statements, function_body, modifier_name);
+                result.push(TaggedStatement {
+                    stmt: Statement {
+                        kind: StatementKind::UncheckedBlock { statements: inner },
+                        span: stmt.span,
+                    },
+                    provenance: Some(modifier_name.to_string()),
                 });
             }
             StatementKind::If { condition, then_body, else_body } => {
-                result.push(Statement {
-                    kind: StatementKind::If {
-                        condition: condition.clone(),
-                        then_body: replace_placeholder(then_body, function_body),
-                        else_body: else_body
-                            .as_ref()
-                            .map(|e| replace_placeholder(e, function_body)),
+                let then_body = replace_placeholder_tagged_block(then_body, function_body, modifier_name);
+                let else_body = else_body
+                    .as_ref()
+                    .map(|e| replace_placeholder_tagged_block(e, function_body, modifier_name));
+                result.push(TaggedStatement {
+                    stmt: Statement {
+                        kind: StatementKind::If {
+                            condition: condition.clone(),
+                            then_body,
+                            else_body,
+                        },
+                        span: stmt.span,
                     },
-                    span: stmt.span,
+                    provenance: Some(modifier_name.to_string()),
                 });
             }
-            // For any other statement, keep as-is
-            _ => result.push(stmt.clone()),
+            StatementKind::For { init, condition, increment, body } => {
+                let body = replace_placeholder_tagged_block(body, function_body, modifier_name);
+                result.push(TaggedStatement {
+                    stmt: Statement {
+                        kind: StatementKind::For {
+                            init: init.clone(),
+                            condition: condition.clone(),
+                            increment: increment.clone(),
+                            body,
+                        },
+                        span: stmt.span,
+                    },
+                    provenance: Some(modifier_name.to_string()),
+                });
+            }
+            StatementKind::While { condition, body } => {
+                let body = replace_placeholder_tagged_block(body, function_body, modifier_name);
+                result.push(TaggedStatement {
+                    stmt: Statement {
+                        kind: StatementKind::While {
+                            condition: condition.clone(),
+                            body,
+                        },
+                        span: stmt.span,
+                    },
+                    provenance: Some(modifier_name.to_string()),
+                });
+            }
+            StatementKind::DoWhile { body, condition } => {
+                let body = replace_placeholder_tagged_block(body, function_body, modifier_name);
+                result.push(TaggedStatement {
+                    stmt: Statement {
+                        kind: StatementKind::DoWhile {
+                            body,
+                            condition: condition.clone(),
+                        },
+                        span: stmt.span,
+                    },
+                    provenance: Some(modifier_name.to_string()),
+                });
+            }
+            StatementKind::TryCatch { expression, clauses } => {
+                let new_clauses = clauses.iter().map(|c| crate::model::statement::CatchClause {
+                    name: c.name.clone(),
+                    params: c.params.clone(),
+                    body: replace_placeholder_tagged_block(&c.body, function_body, modifier_name),
+                }).collect();
+                result.push(TaggedStatement {
+                    stmt: Statement {
+                        kind: StatementKind::TryCatch {
+                            expression: expression.clone(),
+                            clauses: new_clauses,
+                        },
+                        span: stmt.span,
+                    },
+                    provenance: Some(modifier_name.to_string()),
+                });
+            }
+            _ => result.push(TaggedStatement {
+                stmt: stmt.clone(),
+                provenance: Some(modifier_name.to_string()),
+            }),
         }
     }
 
     result
+}
+
+/// Placeholder replacement inside compound statements. Drops the tag layer
+/// because compound statements store plain `Statement`, not `TaggedStatement`.
+fn replace_placeholder_tagged_block(
+    modifier_body: &[Statement],
+    function_body: &[TaggedStatement],
+    modifier_name: &str,
+) -> Vec<Statement> {
+    replace_placeholder_tagged(modifier_body, function_body, modifier_name)
+        .into_iter()
+        .map(|t| t.stmt)
+        .collect()
 }
 
 #[cfg(test)]
@@ -132,10 +243,12 @@ mod tests {
 
         let result = inline_modifiers(&body, &[&modifier]).unwrap();
 
-        // Expected: require(isOwner), return
+        // Expected: require(isOwner) tagged with "onlyOwner", return (no tag)
         assert_eq!(result.len(), 2);
-        assert!(matches!(result[0].kind, StatementKind::ExpressionStmt { .. }));
-        assert!(matches!(result[1].kind, StatementKind::Return { .. }));
+        assert!(matches!(result[0].stmt.kind, StatementKind::ExpressionStmt { .. }));
+        assert_eq!(result[0].provenance.as_deref(), Some("onlyOwner"));
+        assert!(matches!(result[1].stmt.kind, StatementKind::Return { .. }));
+        assert_eq!(result[1].provenance, None);
     }
 
     #[test]
@@ -159,10 +272,13 @@ mod tests {
         let body = vec![make_return()];
 
         // function foo() A B { return; }
-        // Expected: require(a), require(b), return
+        // Expected: require(a) [tagged A], require(b) [tagged B], return [no tag]
         let result = inline_modifiers(&body, &[&mod_a, &mod_b]).unwrap();
 
         assert_eq!(result.len(), 3);
+        assert_eq!(result[0].provenance.as_deref(), Some("A"));
+        assert_eq!(result[1].provenance.as_deref(), Some("B"));
+        assert_eq!(result[2].provenance, None);
     }
 
     #[test]

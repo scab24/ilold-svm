@@ -17,7 +17,26 @@ pub struct FunctionNarrative {
     pub state_writes: Vec<String>,
     pub state_reads: Vec<String>,
     pub external_calls: Vec<String>,
+    #[serde(default)]
+    pub internal_calls: Vec<String>,
     pub modifiers: Vec<String>,
+    #[serde(default)]
+    pub events: Vec<String>,
+    #[serde(default)]
+    pub transitive_state_writes: Vec<TransitiveEffect>,
+    #[serde(default)]
+    pub transitive_state_reads: Vec<TransitiveEffect>,
+    #[serde(default)]
+    pub transitive_external_calls: Vec<TransitiveEffect>,
+    #[serde(default)]
+    pub transitive_events: Vec<TransitiveEffect>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransitiveEffect {
+    pub via: Vec<String>,
+    pub item: String,
+    pub origin_contract: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,6 +134,8 @@ pub struct SequenceStep {
     pub external_calls: Vec<String>,
     pub events: Vec<String>,
     pub dependencies: Vec<Dependency>,
+    #[serde(default)]
+    pub flow_summary: Option<FlowSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -122,4 +143,21 @@ pub struct Dependency {
     pub from_step: usize,
     pub variable: String,
     pub relationship: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FlowSummary {
+    pub total_steps: usize,
+    pub mutation_count: usize,
+    pub external_call_count: usize,
+    pub internal_call_count: usize,
+    pub depth_limited_count: usize,
+    pub mutation_refs: Vec<MutationRef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MutationRef {
+    pub variable: String,
+    pub flow_step_id: usize,
+    pub session_step_index: usize,
 }

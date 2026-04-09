@@ -10,5 +10,7 @@ pub mod pathtree;
 pub mod sequence;
 pub mod classify;
 pub mod narrative;
+pub mod slicing;
 pub mod journal;
 pub mod exploration;
+pub mod util;

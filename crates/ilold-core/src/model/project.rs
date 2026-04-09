@@ -1,8 +1,11 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 
-use super::contract::ContractDef;
+use super::common::StateVar;
+use super::contract::{ContractDef, ContractKind};
+use super::function::{FunctionDef, Visibility};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
@@ -23,10 +26,239 @@ impl Project {
             .map(|(i, c)| (c.name.clone(), i))
             .collect();
     }
+
+    /// Find a contract by exact name, or auto-pick the best candidate when
+    /// `filter` is None. Returns Err with a user-facing message on failure.
+    ///
+    /// Auto-pick rules (when filter is None):
+    ///  1. Skip interfaces.
+    ///  2. Prefer "top-level" contracts — those NOT inherited by any other.
+    ///  3. If there's still ambiguity, return Err listing the candidates.
+    pub fn find_contract(&self, filter: Option<&str>) -> Result<&ContractDef, String> {
+        if let Some(name) = filter {
+            return self
+                .contracts
+                .iter()
+                .find(|c| c.name == name)
+                .ok_or_else(|| format!("Contract '{}' not found", name));
+        }
+
+        let non_interface: Vec<&ContractDef> = self
+            .contracts
+            .iter()
+            .filter(|c| c.kind != ContractKind::Interface)
+            .collect();
+
+        match non_interface.len() {
+            0 => Err("No contracts found".into()),
+            1 => Ok(non_interface[0]),
+            _ => {
+                // Collect names that appear as a parent in `inherits` of any contract.
+                let inherited: HashSet<&str> = non_interface
+                    .iter()
+                    .flat_map(|c| c.inherits.iter().map(|s| s.as_str()))
+                    .collect();
+
+                let top_level: Vec<&&ContractDef> = non_interface
+                    .iter()
+                    .filter(|c| !inherited.contains(c.name.as_str()))
+                    .collect();
+
+                match top_level.len() {
+                    1 => Ok(*top_level[0]),
+                    _ => {
+                        let names: Vec<&str> = non_interface.iter().map(|c| c.name.as_str()).collect();
+                        Err(format!(
+                            "Multiple contracts, specify one: {}",
+                            names.join(", ")
+                        ))
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceFile {
     pub path: String,
     pub content: String,
+}
+
+pub struct AccessibleFunction<'a> {
+    pub function: &'a FunctionDef,
+    pub origin: String,
+    pub is_inherited: bool,
+}
+
+impl Project {
+    pub fn accessible_functions<'a>(&'a self, contract: &'a ContractDef) -> Vec<AccessibleFunction<'a>> {
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut result: Vec<AccessibleFunction<'a>> = Vec::new();
+
+        for f in &contract.functions {
+            if f.name.is_empty() { continue; }
+            if seen.insert(f.name.clone()) {
+                result.push(AccessibleFunction {
+                    function: f,
+                    origin: contract.name.clone(),
+                    is_inherited: false,
+                });
+            }
+        }
+
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut queue: Vec<&str> = contract.inherits.iter().map(|s| s.as_str()).collect();
+
+        while let Some(parent_name) = queue.pop() {
+            if !visited.insert(parent_name.to_string()) { continue; }
+
+            let parent_idx = match self.contract_index.get(parent_name) {
+                Some(&i) => i,
+                None => continue,
+            };
+            let parent = &self.contracts[parent_idx];
+
+            for f in &parent.functions {
+                if f.name.is_empty() { continue; }
+                if !matches!(f.visibility, Visibility::Public | Visibility::External) { continue; }
+                if seen.insert(f.name.clone()) {
+                    result.push(AccessibleFunction {
+                        function: f,
+                        origin: parent.name.clone(),
+                        is_inherited: true,
+                    });
+                }
+            }
+
+            for grand in &parent.inherits {
+                queue.push(grand.as_str());
+            }
+        }
+
+        result
+    }
+
+    pub fn resolve_function<'a>(
+        &'a self,
+        contract: &'a ContractDef,
+        func_name: &str,
+    ) -> Option<(&'a ContractDef, &'a FunctionDef)> {
+        let accessible = self.accessible_functions(contract);
+        for af in accessible {
+            if af.function.name == func_name {
+                if af.is_inherited {
+                    return self.contracts.iter()
+                        .find(|c| c.name == af.origin)
+                        .map(|parent| (parent, af.function));
+                } else {
+                    return Some((contract, af.function));
+                }
+            }
+        }
+        None
+    }
+
+    pub fn accessible_state_vars(&self, contract: &ContractDef) -> Vec<(StateVar, String, bool)> {
+        let mut result: Vec<(StateVar, String, bool)> = contract
+            .state_vars
+            .iter()
+            .cloned()
+            .map(|sv| (sv, contract.name.clone(), false))
+            .collect();
+
+        let mut seen_names: HashSet<String> = contract.state_vars.iter()
+            .map(|sv| sv.name.clone())
+            .collect();
+
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut queue: Vec<&str> = contract.inherits.iter().map(|s| s.as_str()).collect();
+
+        while let Some(parent_name) = queue.pop() {
+            if !visited.insert(parent_name.to_string()) { continue; }
+
+            let parent_idx = match self.contract_index.get(parent_name) {
+                Some(&i) => i,
+                None => continue,
+            };
+            let parent = &self.contracts[parent_idx];
+
+            for sv in &parent.state_vars {
+                if seen_names.insert(sv.name.clone()) {
+                    result.push((sv.clone(), parent.name.clone(), true));
+                }
+            }
+
+            for grand in &parent.inherits {
+                queue.push(grand.as_str());
+            }
+        }
+
+        result
+    }
+
+    /// Resolve a modifier by name on `contract`, walking the inheritance chain.
+    /// Returns the first matching `ModifierDef` (current contract first, then
+    /// parents BFS).
+    pub fn resolve_modifier<'a>(
+        &'a self,
+        contract: &'a ContractDef,
+        mod_name: &str,
+    ) -> Option<&'a crate::model::modifier::ModifierDef> {
+        // Try current contract first
+        if let Some(m) = contract.modifiers.iter().find(|m| m.name == mod_name) {
+            return Some(m);
+        }
+
+        // Walk inheritance chain BFS
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut queue: Vec<&str> = contract.inherits.iter().map(|s| s.as_str()).collect();
+
+        while let Some(parent_name) = queue.pop() {
+            if !visited.insert(parent_name.to_string()) {
+                continue;
+            }
+
+            let parent_idx = match self.contract_index.get(parent_name) {
+                Some(&i) => i,
+                None => continue,
+            };
+            let parent = &self.contracts[parent_idx];
+
+            if let Some(m) = parent.modifiers.iter().find(|m| m.name == mod_name) {
+                return Some(m);
+            }
+
+            for grand in &parent.inherits {
+                queue.push(grand.as_str());
+            }
+        }
+
+        None
+    }
+
+    pub fn inherited_state_vars(&self, contract: &ContractDef) -> Vec<StateVar> {
+        let mut result: Vec<StateVar> = contract.state_vars.clone();
+
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut queue: Vec<&str> = contract.inherits.iter().map(|s| s.as_str()).collect();
+
+        while let Some(parent_name) = queue.pop() {
+            if !visited.insert(parent_name.to_string()) { continue; }
+
+            let parent_idx = match self.contract_index.get(parent_name) {
+                Some(&i) => i,
+                None => continue,
+            };
+            let parent = &self.contracts[parent_idx];
+
+            result.extend(parent.state_vars.iter().cloned());
+
+            for grand in &parent.inherits {
+                queue.push(grand.as_str());
+            }
+        }
+
+        result
+    }
 }

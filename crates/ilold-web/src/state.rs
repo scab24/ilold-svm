@@ -17,7 +17,7 @@ use ilold_core::parse::ProjectParser;
 use ilold_core::pathtree::config::PruningConfig;
 use ilold_core::pathtree::types::PathTree;
 use ilold_core::pathtree::walker::build_path_tree;
-use ilold_core::sequence::analysis::{analyze_sequences, SequenceAnalysis};
+use ilold_core::sequence::analysis::{analyze_project, analyze_sequences, SequenceAnalysis};
 use ilold_core::sequence::builder::build_sequence_tree;
 use ilold_core::sequence::types::SequenceTree;
 
@@ -85,16 +85,17 @@ impl AppState {
             call_graphs.insert(contract.name.clone(), cg);
 
             let mut contract_path_trees = Vec::new();
+            let combined_state_vars = project.inherited_state_vars(contract);
 
             for func in &contract.functions {
                 let key = (contract.name.clone(), func.name.clone());
 
-                if let Ok(cfg) = CfgBuilder::build(func, contract) {
+                if let Ok(cfg) = CfgBuilder::build_with_project(func, contract, Some(&project)) {
                     let pt = build_path_tree(
                         &cfg,
                         &contract.name,
                         &func.name,
-                        &contract.state_vars,
+                        &combined_state_vars,
                         &config,
                     );
                     contract_path_trees.push(pt.clone());
@@ -115,6 +116,9 @@ impl AppState {
 
             classifications.insert(contract.name.clone(), classify_all(contract));
         }
+
+        // Compute transitive effects across contracts (inheritance-aware).
+        analyze_project(&project, &mut sequence_analyses);
 
         let (session_tx, _) = broadcast::channel(64);
 
