@@ -1,6 +1,8 @@
 <script lang="ts">
-  import { searchOpen, searchContext, searchNavigate, toggleSearch } from '$lib/stores/search';
-  import { search, type SearchResult } from '$lib/api/ws';
+  import { onDestroy } from 'svelte';
+  import { getSearchOpen, getSearchContext, setSearchNavigate, toggleSearch } from '$lib/stores/search.svelte';
+  import { search } from '$lib/api/ws';
+  import type { SearchResult } from '$lib/api/types';
   import { getSearchSuggestions, type SearchSuggestions } from '$lib/api/rest';
   import DraggablePanel from '$lib/DraggablePanel.svelte';
 
@@ -11,22 +13,26 @@
   let debounceTimer: ReturnType<typeof setTimeout>;
   let inputEl: HTMLInputElement;
 
-  let isOpen = $state(false);
+  let isOpen = $derived(getSearchOpen());
   let currentContract: string | null = $state(null);
   let suggestions: SearchSuggestions | null = $state(null);
 
-  searchOpen.subscribe(v => {
-    isOpen = v;
-    if (v) setTimeout(() => inputEl?.focus(), 50);
+  $effect(() => {
+    if (isOpen) setTimeout(() => inputEl?.focus(), 50);
   });
-  searchContext.subscribe(async v => {
-    currentContract = v;
-    if (v) {
-      try { suggestions = await getSearchSuggestions(v); } catch { suggestions = null; }
-    } else {
-      suggestions = null;
-    }
+
+  $effect(() => {
+    const ctx = getSearchContext();
+    currentContract = ctx;
+    if (!ctx) { suggestions = null; return; }
+    let stale = false;
+    getSearchSuggestions(ctx)
+      .then(s => { if (!stale) suggestions = s; })
+      .catch(() => { if (!stale) suggestions = null; });
+    return () => { stale = true; };
   });
+
+  onDestroy(() => { clearTimeout(debounceTimer); });
 
   function onInput() {
     clearTimeout(debounceTimer);
@@ -46,7 +52,7 @@
   }
 
   function goToResult(r: SearchResult) {
-    searchNavigate.set({ contract: r.contract, func: r.function, pathId: r.path_id });
+    setSearchNavigate({ contract: r.contract, func: r.function, pathId: r.path_id });
   }
 
   function fieldColor(f: string): string {
@@ -240,9 +246,6 @@
     border-radius: 3px;
   }
 
-  .result-contract {
-    font-size: 9px; color: #4a5568; margin-top: 1px;
-  }
 
   .more, .empty {
     text-align: center; padding: 12px;

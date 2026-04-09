@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import SearchPanel from '$lib/SearchPanel.svelte';
-  import { toggleSearch } from '$lib/stores/search';
+  import { toggleSearch } from '$lib/stores/search.svelte';
 
   let { children } = $props();
 

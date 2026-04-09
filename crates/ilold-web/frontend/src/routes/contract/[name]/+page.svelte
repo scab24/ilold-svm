@@ -2,7 +2,7 @@
   import { page } from '$app/state';
   import { onMount, onDestroy, tick } from 'svelte';
   import { getContract, getCallGraph, getCfg, getPaths, getSequences, getSequenceAnalysis, type ContractDetail, type CytoscapeGraph, type SequenceAnalysis } from '$lib/api/rest';
-  import { toggleSearch, setSearchContext, searchNavigate } from '$lib/stores/search';
+  import { toggleSearch, setSearchContext, getSearchNavigate, setSearchNavigate } from '$lib/stores/search.svelte';
   import DraggablePanel from '$lib/DraggablePanel.svelte';
   import Collapsible from '$lib/Collapsible.svelte';
 
@@ -78,45 +78,51 @@
   });
 
   // Listen for search result navigation
-  const unsubSearch = searchNavigate.subscribe(async (nav) => {
+  $effect(() => {
+    const nav = getSearchNavigate();
     if (!nav || !cyInstance || !contract) return;
     if (nav.contract !== contract.name) return;
 
-    // Add function to canvas if not already there
-    if (!canvasFuncs.has(nav.func)) {
-      addFuncToCanvas(nav.func);
-      await tick();
-    }
+    let stale = false;
 
-    // Load paths if needed
-    if (!funcPaths[nav.func]) {
-      try {
-        funcPaths[nav.func] = await getPaths(contract.name, nav.func);
-        funcPaths = { ...funcPaths };
-      } catch { return; }
-    }
-
-    // Expand CFG if not already expanded
-    if (!expandedFuncs.has(nav.func)) {
-      await toggleFuncExpand(nav.func);
-    }
-
-    // Select the function node and the path
-    const funcNode = cyInstance.nodes().filter((n: any) => n.data('label') === nav.func && n.data('_type') === 'function');
-    if (funcNode.length) {
-      selectedNode = funcNode.data();
-      const path = funcPaths[nav.func]?.paths?.find((p: any) => p.id === nav.pathId);
-      if (path) {
-        highlightPath(nav.func, path);
+    (async () => {
+      if (!canvasFuncs.has(nav.func)) {
+        addFuncToCanvas(nav.func);
+        await tick();
       }
-      cyInstance.animate({ center: { eles: funcNode }, zoom: cyInstance.zoom() }, { duration: 300 });
-    }
 
-    searchNavigate.set(null);
+      if (!funcPaths[nav.func]) {
+        try {
+          funcPaths[nav.func] = await getPaths(contract.name, nav.func);
+          funcPaths = { ...funcPaths };
+        } catch { return; }
+      }
+
+      if (stale) return;
+
+      if (!expandedFuncs.has(nav.func)) {
+        await toggleFuncExpand(nav.func);
+      }
+
+      if (stale) return;
+
+      const funcNode = cyInstance.nodes().filter((n: any) =>
+        n.data('label') === nav.func && n.data('_type') === 'function'
+      );
+      if (funcNode.length) {
+        selectedNode = funcNode.data();
+        const path = funcPaths[nav.func]?.paths?.find((p: any) => p.id === nav.pathId);
+        if (path) highlightPath(nav.func, path);
+        cyInstance.animate({ center: { eles: funcNode }, zoom: cyInstance.zoom() }, { duration: 300 });
+      }
+
+      if (!stale) setSearchNavigate(null);
+    })();
+
+    return () => { stale = true; };
   });
 
   onDestroy(() => {
-    unsubSearch();
     if (cyInstance) { cyInstance.destroy(); cyInstance = null; }
   });
 

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { getProjectMap, type ProjectMap, type MapContract } from '$lib/api/rest';
-  import { toggleSearch, setSearchContext } from '$lib/stores/search';
+  import { toggleSearch, setSearchContext } from '$lib/stores/search.svelte';
 
   let projectMap: ProjectMap | null = $state(null);
   let error: string | null = $state(null);
