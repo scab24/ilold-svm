@@ -1490,8 +1490,17 @@ fn print_inline_help(cmd: &str) {
         (&["ss", "session"],  "session",                         "Full session state with all steps."),
         (&["fi", "finding"],  "finding [severity] [text]",       "Record a security finding for the current step."),
         (&["n", "note"],      "note <text>",                     "Attach a note to the current step."),
+        (&["sc", "scenario"],"scenario <name>",                  "Name the current sequence. Example: sc reentrancy-attack"),
         (&["fl", "findings"], "findings",                        "List all recorded findings."),
         (&["ex", "export"],   "export",                          "Export findings as a markdown report."),
+        (&["fa", "funcs-all"],"funcs-all",                       "List all accessible functions including inherited."),
+        (&["va", "vars-all"], "vars-all",                        "List all accessible state variables including inherited."),
+        (&["ct", "contracts"],"contracts",                       "List all contracts in the project."),
+        (&["use"],            "use <contract>",                  "Switch the active contract. Example: use Staking"),
+        (&["status"],         "status <func> <status>",          "Change review status. Example: status deposit reviewed"),
+        (&["save"],           "save <name>",                     "Save session to disk. Example: save my-audit"),
+        (&["load"],           "load <name>",                     "Load session from disk. Example: load my-audit"),
+        (&["browser"],        "browser",                         "Open the web UI in a browser."),
     ];
 
     for (aliases, usage, desc) in entries {

@@ -44,6 +44,10 @@ pub fn forward_slice(flat: &[FlatStatement<'_>], variable: &str) -> Vec<Statemen
             }
         }
 
+        // Known: ancestor merge may over-taint — an enclosing `if (c)`
+        // adds `c` to the tainted set even if the sliced variable has no
+        // data relationship with `c`. Acceptable for v1; a precise
+        // control-dep analysis would require a separate CDG pass.
         if add_ancestors_with_uses(flat, &mut included, &mut tainted) {
             changed = true;
         }

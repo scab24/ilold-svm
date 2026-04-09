@@ -1,7 +1,7 @@
 use petgraph::stable_graph::NodeIndex;
 
 use crate::model::contract::ContractDef;
-use crate::model::expression::{Expression, ExpressionKind, UnaryOperator};
+use crate::model::expression::{Expression, ExpressionKind};
 use crate::model::function::FunctionDef;
 use crate::model::project::Project;
 use crate::model::statement::{Statement, StatementKind};
@@ -645,18 +645,17 @@ fn expr_to_string(expr: &Expression) -> String {
         ExpressionKind::BinaryOp { left, operator, right } => {
             format!("{} {} {}", expr_to_string(left), operator.as_str(), expr_to_string(right))
         }
-        ExpressionKind::UnaryOp { operator, operand } => match operator {
-            UnaryOperator::Not => format!("!{}", expr_to_string(operand)),
-            UnaryOperator::Neg => format!("-{}", expr_to_string(operand)),
-            UnaryOperator::BitNot => format!("~{}", expr_to_string(operand)),
-            _ => format!("{:?}({})", operator, expr_to_string(operand)),
-        },
+        ExpressionKind::UnaryOp { operator, operand } => {
+            let (sym, postfix) = operator.format_parts();
+            let s = expr_to_string(operand);
+            if postfix { format!("{}{}", s, sym) } else { format!("{}{}", sym, s) }
+        }
         ExpressionKind::IndexAccess { base, index } => {
             let idx = index.as_ref().map(|e| expr_to_string(e)).unwrap_or_default();
             format!("{}[{}]", expr_to_string(base), idx)
         }
-        ExpressionKind::Assignment { target, value, .. } => {
-            format!("{} = {}", expr_to_string(target), expr_to_string(value))
+        ExpressionKind::Assignment { target, operator, value } => {
+            format!("{} {} {}", expr_to_string(target), operator.as_str(), expr_to_string(value))
         }
         ExpressionKind::Ternary { condition, true_expr, false_expr } => {
             format!("{} ? {} : {}", expr_to_string(condition), expr_to_string(true_expr), expr_to_string(false_expr))
