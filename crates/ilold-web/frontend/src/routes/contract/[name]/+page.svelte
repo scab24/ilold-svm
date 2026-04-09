@@ -10,6 +10,7 @@
   import BranchMenu from '$lib/components/contract/BranchMenu.svelte';
   import NodeDetailPanel from '$lib/components/contract/NodeDetailPanel.svelte';
   import GraphCanvas from '$lib/components/contract/GraphCanvas.svelte';
+  import SessionSidebar from '$lib/components/session/SessionSidebar.svelte';
 
   let contract: ContractDetail | null = $state(null);
   let error: string | null = $state(null);
@@ -784,6 +785,10 @@
         onfunctiontap={handleFunctionTap}
         onseqnodetap={handleSeqNodeTap}
       />
+
+      {#if contract}
+        <SessionSidebar contract={contract.name} />
+      {/if}
     </div>
 
     {#if selectedNode && contract}
