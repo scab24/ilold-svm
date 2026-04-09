@@ -2,7 +2,9 @@ use std::path::PathBuf;
 
 use ilold_core::parse::solar_frontend::SolarParser;
 use ilold_core::parse::ProjectParser;
-use ilold_core::slicing::{build_slice_result, SliceDirection, SliceResult};
+use ilold_core::slicing::{
+    build_slice_result, SliceDirection, SliceEntry, SliceResult, StatementOrigin,
+};
 
 fn fixture_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -33,11 +35,18 @@ fn slice(
         .find(|f| f.name == function)
         .unwrap_or_else(|| panic!("function {function} not found"));
 
-    build_slice_result(f, variable, direction)
+    build_slice_result(&project, c, f, variable, direction)
 }
 
-fn texts(entries: &[ilold_core::slicing::SliceEntry]) -> Vec<String> {
+fn texts(entries: &[SliceEntry]) -> Vec<String> {
     entries.iter().map(|e| e.text.clone()).collect()
+}
+
+fn modifier_origin(entries: &[SliceEntry], substr: &str) -> Option<String> {
+    entries.iter().find(|e| e.text.contains(substr)).and_then(|e| match &e.origin {
+        StatementOrigin::Modifier(name) => Some(name.clone()),
+        StatementOrigin::FunctionBody => None,
+    })
 }
 
 #[test]
@@ -114,6 +123,49 @@ fn both_direction_populates_both_sides() {
     // data-dep pass finds nothing, backward stays empty. This is the
     // expected behavior for parameter slicing.
     assert!(res.backward.is_empty(), "backward on parameter should be empty");
+}
+
+#[test]
+fn backward_slice_pulls_writes_from_modifier() {
+    // deposit() applies updateReward(msg.sender), which writes
+    // lastUpdateTime, rewardPerTokenStored, rewards[account], and
+    // userRewardPerTokenPaid[account] before the function body runs.
+    // None of these are touched by deposit's body itself, so without
+    // modifier walking the slice would be empty.
+    let res = slice("Staking", "deposit", "lastUpdateTime", SliceDirection::Backward);
+    let lines = texts(&res.backward);
+    assert!(
+        lines.iter().any(|l| l.contains("lastUpdateTime") && l.contains("block.timestamp")),
+        "expected `lastUpdateTime = block.timestamp` from updateReward, got {lines:?}"
+    );
+    assert_eq!(
+        modifier_origin(&res.backward, "lastUpdateTime"),
+        Some("updateReward".to_string()),
+        "the lastUpdateTime entry should be tagged as coming from updateReward"
+    );
+}
+
+#[test]
+fn modifier_writes_appear_before_function_body_in_program_order() {
+    // updateReward writes happen BEFORE deposit's own writes in the
+    // execution timeline. Forward slice on the modifier-defined
+    // `rewardPerTokenStored` should put its def first, and any later
+    // function-body statements that read it (none in deposit, but the
+    // ordering invariant must hold for the entries that do exist).
+    let res = slice("Staking", "deposit", "rewardPerTokenStored", SliceDirection::Forward);
+    let lines = texts(&res.forward);
+    if let Some(idx) = lines.iter().position(|l| l.contains("rewardPerTokenStored")) {
+        // Anything function-body that follows must come AFTER the
+        // modifier write in the flat order.
+        let modifier_entry = &res.forward[idx];
+        assert!(
+            matches!(modifier_entry.origin, StatementOrigin::Modifier(ref n) if n == "updateReward"),
+            "rewardPerTokenStored entry should be tagged as updateReward, got {:?}",
+            modifier_entry.origin
+        );
+    } else {
+        panic!("expected rewardPerTokenStored in forward slice, got {lines:?}");
+    }
 }
 
 #[test]

@@ -3,7 +3,7 @@ use colored::Colorize;
 use ilold_core::exploration::session::MutationScope;
 use ilold_core::exploration::timeline::{TimelineEntry, VariableTimeline};
 use ilold_core::narrative::trace::{FlowKind, FlowNode, FlowTree};
-use ilold_core::slicing::{SliceDirection, SliceEntry, SliceResult};
+use ilold_core::slicing::{SliceDirection, SliceEntry, SliceResult, StatementOrigin};
 
 use crate::colors::{c_accent, c_bright, c_danger, c_muted, c_ok, c_warn};
 
@@ -402,9 +402,14 @@ fn render_slice_side(label: &str, entries: &[SliceEntry], out: &mut String) {
         let line_tag = entry.span
             .map(|s| format!("L{:<4}", s.start_line))
             .unwrap_or_else(|| "L?   ".into());
+        let origin_tag = match &entry.origin {
+            StatementOrigin::FunctionBody => String::new(),
+            StatementOrigin::Modifier(name) => format!("{} ", c_accent(&format!("[mod {}]", name))),
+        };
         out.push_str(&format!(
-            "    {} {}\n",
+            "    {} {}{}\n",
             c_muted(&line_tag),
+            origin_tag,
             entry.text,
         ));
     }

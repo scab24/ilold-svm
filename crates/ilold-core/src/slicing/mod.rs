@@ -28,35 +28,41 @@ pub mod flatten;
 pub mod forward;
 pub mod types;
 
-use crate::model::common::SourceSpan;
+use crate::model::contract::ContractDef;
 use crate::model::function::FunctionDef;
+use crate::model::project::Project;
 
-pub use types::{SliceDirection, SliceEntry, SliceResult, StatementPath};
+pub use types::{SliceDirection, SliceEntry, SliceResult, StatementOrigin, StatementPath};
 
 /// Compute a dataflow slice for `variable` in `function`.
+///
+/// The slicer walks both the function body AND the bodies of every
+/// applied modifier (resolved through the inheritance chain), so writes
+/// hidden inside `nonReentrant` / `updateReward` / etc. show up in the
+/// slice. Each entry carries an `origin` tag distinguishing
+/// function-body statements from modifier statements.
 ///
 /// `Backward`: statements whose values feed into reads of `variable`.
 /// `Forward`:  statements whose values derive from writes of `variable`.
 /// `Both`:     union of backward and forward, annotated per entry.
 pub fn build_slice_result(
+    project: &Project,
+    contract: &ContractDef,
     function: &FunctionDef,
     variable: &str,
     direction: SliceDirection,
 ) -> SliceResult {
-    let body = match &function.body {
-        Some(b) => b,
-        None => {
-            return SliceResult {
-                function: function.name.clone(),
-                variable: variable.to_string(),
-                direction,
-                backward: Vec::new(),
-                forward: Vec::new(),
-            };
-        }
-    };
+    let flat = flatten::flatten_function(project, contract, function);
 
-    let flat = flatten::flatten_function_body(body);
+    if flat.is_empty() {
+        return SliceResult {
+            function: function.name.clone(),
+            variable: variable.to_string(),
+            direction,
+            backward: Vec::new(),
+            forward: Vec::new(),
+        };
+    }
 
     let backward = if matches!(direction, SliceDirection::Backward | SliceDirection::Both) {
         backward::backward_slice(&flat, variable)
@@ -80,17 +86,19 @@ pub fn build_slice_result(
 }
 
 fn entry_for(flat: &[flatten::FlatStatement<'_>], path: StatementPath) -> SliceEntry {
-    let stmt = flat.iter()
-        .find(|f| f.path == path)
-        .map(|f| f.statement);
-    let (span, text) = match stmt {
-        Some(s) => (Some(s.span), extract::statement_text(s)),
-        None => (None, String::new()),
-    };
-    SliceEntry { path, span, text }
-}
-
-/// Convenience reference to a source span on a slice entry.
-pub fn entry_span(entry: &SliceEntry) -> Option<SourceSpan> {
-    entry.span
+    let entry = flat.iter().find(|f| f.path == path);
+    match entry {
+        Some(f) => SliceEntry {
+            path,
+            span: Some(f.statement.span),
+            text: extract::statement_text(f.statement),
+            origin: f.origin.clone(),
+        },
+        None => SliceEntry {
+            path,
+            span: None,
+            text: String::new(),
+            origin: StatementOrigin::FunctionBody,
+        },
+    }
 }

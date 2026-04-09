@@ -261,7 +261,13 @@ pub async fn get_function_slice(
     let direction = parse_slice_direction(params.direction.as_deref())
         .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
 
-    Ok(Json(build_slice_result(function, &variable, direction)))
+    Ok(Json(build_slice_result(
+        &state.project,
+        contract,
+        function,
+        &variable,
+        direction,
+    )))
 }
 
 fn parse_slice_direction(raw: Option<&str>) -> Result<SliceDirection, String> {

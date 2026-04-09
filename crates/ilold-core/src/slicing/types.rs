@@ -13,6 +13,24 @@ pub enum SliceDirection {
     Both,
 }
 
+/// Where a sliced statement was lifted from. The slicer walks both the
+/// function body and the bodies of every applied modifier; entries carry
+/// this tag so renderers can distinguish "real" function code from
+/// modifier code that wraps it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "name")]
+pub enum StatementOrigin {
+    FunctionBody,
+    /// `name` is the modifier identifier (e.g. `updateReward`).
+    Modifier(String),
+}
+
+impl Default for StatementOrigin {
+    fn default() -> Self {
+        StatementOrigin::FunctionBody
+    }
+}
+
 /// Unique identifier for a statement inside a flattened function body.
 ///
 /// The slicing pipeline pre-walks the function body in program order and
@@ -38,6 +56,10 @@ pub struct SliceEntry {
     pub span: Option<SourceSpan>,
     /// Rendered source-like text of the statement (e.g. `reserve0 = uint112(balance0)`).
     pub text: String,
+    /// Function-body statement vs modifier-body statement. Defaults to
+    /// `FunctionBody` so older serialized payloads keep deserializing.
+    #[serde(default)]
+    pub origin: StatementOrigin,
 }
 
 /// Full slice result for a (function, variable) query.
