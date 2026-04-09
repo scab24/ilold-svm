@@ -90,7 +90,42 @@ pub fn render_flow_tree(tree: &FlowTree) -> String {
 
     append_expand_hint(tree, &mut out);
 
+    // Collect state-written variables for cross-ref hints. We extract the
+    // base name (before any `[`) because the slicer works on base identifiers.
+    let mut raw_vars: Vec<&str> = Vec::new();
+    collect_written_vars(&tree.root, &mut raw_vars);
+    let mut base_vars: Vec<String> = raw_vars.iter()
+        .map(|v| v.split('[').next().unwrap_or(v).to_string())
+        .collect();
+    base_vars.sort_unstable();
+    base_vars.dedup();
+    if !base_vars.is_empty() {
+        let hints = base_vars.iter()
+            .take(5)
+            .map(|v| format!("sl {} {}", tree.function, v))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let suffix = if base_vars.len() > 5 {
+            format!(" (+{} more)", base_vars.len() - 5)
+        } else {
+            String::new()
+        };
+        out.push_str(&format!("  {}{}\n", c_muted(&format!("→ {}", hints)), c_muted(&suffix)));
+    }
+
     out
+}
+
+fn collect_written_vars<'a>(node: &'a FlowNode, out: &mut Vec<&'a str>) {
+    match &node.kind {
+        FlowKind::Write { target, .. } | FlowKind::StateWrite { variable: target } => {
+            out.push(target.as_str());
+        }
+        _ => {}
+    }
+    for child in &node.children {
+        collect_written_vars(child, out);
+    }
 }
 
 /// If the rendered tree contains depth-limited InternalCalls, append a
@@ -291,7 +326,7 @@ pub fn render_variable_timeline(tl: &VariableTimeline) -> String {
     ));
 
     if tl.state_entries.is_empty() && tl.local_entries.is_empty() {
-        out.push_str(&format!("  {}\n\n", c_muted(&format!("no mutations of '{}' in current session", tl.variable))));
+        out.push_str(&format!("  {}\n", c_muted(&format!("no mutations of '{}' in current session — add steps with 'c <func>' first", tl.variable))));
         return out;
     }
 
@@ -393,10 +428,10 @@ pub fn render_slice_result(res: &SliceResult) -> String {
     );
 
     if show_backward {
-        render_slice_side("backward", &res.backward, &mut out);
+        render_slice_side("backward", &res.backward, &res.variable, &mut out);
     }
     if show_forward {
-        render_slice_side("forward", &res.forward, &mut out);
+        render_slice_side("forward", &res.forward, &res.variable, &mut out);
     }
 
     out.push_str(&format!(
@@ -408,10 +443,15 @@ pub fn render_slice_result(res: &SliceResult) -> String {
     out
 }
 
-fn render_slice_side(label: &str, entries: &[SliceEntry], out: &mut String) {
+fn render_slice_side(label: &str, entries: &[SliceEntry], var: &str, out: &mut String) {
     out.push_str(&format!("  {}\n", c_warn(&format!("[{}]", label))));
     if entries.is_empty() {
-        out.push_str(&format!("    {}\n", c_muted("(empty)")));
+        let reason = if label == "backward" {
+            format!("no definitions of '{}' found — may be a parameter or set only in constructor/modifier", var)
+        } else {
+            format!("no statements depend on '{}' after its definition in this function", var)
+        };
+        out.push_str(&format!("    {}\n", c_muted(&reason)));
         return;
     }
     for entry in entries {

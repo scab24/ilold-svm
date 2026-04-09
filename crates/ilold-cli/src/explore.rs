@@ -172,6 +172,13 @@ fn handle_input(
     let cmd = parts[0].to_lowercase();
     let arg = parts.get(1).map(|s| s.trim()).unwrap_or("");
 
+    // Inline help: appending ? to any command prints a one-line usage.
+    if cmd.ends_with('?') && cmd.len() > 1 {
+        let base = &cmd[..cmd.len() - 1];
+        print_inline_help(base);
+        return InputResult::Continue;
+    }
+
     match cmd.as_str() {
         "?" | "h" | "help" => { print_help(); InputResult::Continue }
         "q" | "quit" | "exit" => InputResult::Quit,
@@ -506,18 +513,25 @@ fn handle_input(
         }
         "sl" | "slice" => {
             let parts: Vec<&str> = arg.split_whitespace().collect();
-            if parts.len() < 2 {
+            // Separate flags from positional args so order doesn't matter:
+            // `sl deposit totalStaked --backward` and `sl --backward deposit totalStaked`
+            // both parse correctly.
+            let mut positionals: Vec<&str> = Vec::new();
+            let mut direction: Option<&str> = None;
+            for part in &parts {
+                match *part {
+                    "--backward" | "-b" => direction = Some("backward"),
+                    "--forward" | "-f" => direction = Some("forward"),
+                    "--both" => direction = Some("both"),
+                    _ => positionals.push(part),
+                }
+            }
+            if positionals.len() < 2 {
                 println!("  Usage: slice <function> <variable> [--backward|--forward|--both]");
                 return InputResult::Continue;
             }
-            let func_name = parts[0];
-            let var_name = parts[1];
-            let direction = parts.iter().skip(2).find_map(|a| match *a {
-                "--backward" | "-b" => Some("backward"),
-                "--forward" | "-f" => Some("forward"),
-                "--both" => Some("both"),
-                _ => None,
-            });
+            let func_name = positionals[0];
+            let var_name = positionals[1];
             let mut url = format!("{base_url}/api/session/slice/{func_name}/{var_name}");
             if let Some(d) = direction {
                 url.push_str(&format!("?direction={d}"));
@@ -1084,11 +1098,18 @@ fn print_result(result: &CommandResult, steps: &[String]) {
                 }
             }
             if !writers.is_empty() {
-                let hints: Vec<String> = writers.iter()
+                let slice_hints: Vec<String> = writers.iter()
+                    .take(4)
                     .map(|(name, _)| format!("sl {} {}", name, variable))
                     .collect();
-                println!("  {}", c_muted(&format!("→ {}", hints.join(", "))));
+                let suffix = if writers.len() > 4 {
+                    format!(" (+{})", writers.len() - 4)
+                } else {
+                    String::new()
+                };
+                println!("  {}{}", c_muted(&format!("→ {}", slice_hints.join(", "))), c_muted(&suffix));
             }
+            println!("  {}", c_muted(&format!("→ tl {}", variable)));
             println!();
         }
         CommandResult::Exported { markdown } => {
@@ -1324,6 +1345,9 @@ fn print_narrative(val: &serde_json::Value) {
             }
         }
     }
+    if let Some(name) = val.get("name").and_then(|v| v.as_str()) {
+        println!("  {}", c_muted(&format!("→ c {} | tr {}", name, name)));
+    }
     println!();
 }
 
@@ -1388,51 +1412,95 @@ fn print_sequence_narrative(val: &serde_json::Value) {
 }
 
 fn print_help() {
-    let cmds: &[(&str, &str, &str)] = &[
-        ("c",      "call <func>",      "Add function to sequence"),
-        ("b",      "back",             "Remove last step"),
-        ("cl",     "clear",            "Reset sequence"),
-        ("s",      "state",            "Show accumulated state"),
-        ("f",      "functions",        "List available functions"),
-        ("fa",     "funcs-all",        "List all accessible (incl. inherited)"),
-        ("v",      "vars",             "List state variables"),
-        ("va",     "vars-all",         "List all accessible (incl. inherited)"),
-        ("ct",     "contracts",        "List project contracts"),
-        ("",       "use <contract>",   "Switch active contract"),
-        ("w",      "who <var>",        "Who reads/writes a variable"),
-        ("i",      "info <func>",      "Function detail"),
-        ("tr",     "trace <func>",     "Execution flow tree (inlined)"),
-        ("",       "trace <func> -i",  "Interactive trace viewer (arrows + expand/collapse)"),
-        ("",       "trace step <N>",   "Re-render a session step's persisted trace"),
-        ("seq",    "sequence",         "Sequence narrative with dependencies"),
-        ("tl",     "timeline <var>",   "Cross-step variable mutation history"),
-        ("sl",     "slice <fn> <var>", "Backward+forward dataflow slice for a variable"),
-        ("st",     "step <index>",     "Re-inspect a specific step"),
-        ("ss",     "session",          "Full session state"),
-        ("fi",     "finding [sev] [t]","Record a finding"),
-        ("n",      "note <text>",      "Add note to current step"),
-        ("sc",     "scenario <name>",  "Name the current sequence"),
-        ("",       "status <f> <s>",   "Change review status"),
-        ("fl",     "findings",         "List recorded findings"),
-        ("ex",     "export",           "Export findings as markdown"),
-        ("",       "save <name>",      "Save session to disk"),
-        ("",       "load <name>",      "Load session from disk"),
-        ("",       "browser",          "Open web UI"),
-        ("q",      "quit/exit",        "Exit"),
+    let groups: &[(&str, &[(&str, &str, &str)])] = &[
+        ("Session", &[
+            ("c",      "call <func>",      "Add function to sequence"),
+            ("b",      "back",             "Remove last step"),
+            ("cl",     "clear",            "Reset sequence"),
+            ("s",      "state",            "Show accumulated state"),
+            ("seq",    "sequence",         "Sequence narrative with dependencies"),
+            ("st",     "step <index>",     "Re-inspect a specific step"),
+            ("ss",     "session",          "Full session state"),
+        ]),
+        ("Analysis", &[
+            ("w",      "who <var>",        "Who reads/writes a variable"),
+            ("i",      "info <func>",      "Function detail"),
+            ("tr",     "trace <func>",     "Execution flow tree (inlined)"),
+            ("",       "trace <func> -i",  "Interactive trace viewer"),
+            ("",       "trace step <N>",   "Re-render persisted step trace"),
+            ("tl",     "timeline <var>",   "Cross-step variable mutation history"),
+            ("sl",     "slice <fn> <var>", "Dataflow slice for a variable"),
+        ]),
+        ("Contract", &[
+            ("f",      "functions",        "List callable functions"),
+            ("fa",     "funcs-all",        "List all accessible (incl. inherited)"),
+            ("v",      "vars",             "List state variables"),
+            ("va",     "vars-all",         "List all accessible (incl. inherited)"),
+            ("ct",     "contracts",        "List project contracts"),
+            ("",       "use <contract>",   "Switch active contract"),
+        ]),
+        ("Findings", &[
+            ("fi",     "finding [sev] [t]","Record a finding"),
+            ("n",      "note <text>",      "Add note to current step"),
+            ("sc",     "scenario <name>",  "Name the current sequence"),
+            ("",       "status <f> <s>",   "Change review status"),
+            ("fl",     "findings",         "List recorded findings"),
+            ("ex",     "export",           "Export findings as markdown"),
+        ]),
+        ("Workspace", &[
+            ("",       "save <name>",      "Save session to disk"),
+            ("",       "load <name>",      "Load session from disk"),
+            ("",       "browser",          "Open web UI"),
+            ("q",      "quit/exit",        "Exit"),
+        ]),
     ];
 
     println!();
-    println!("  {}  Commands:", c_bright("ilold explore"));
+    println!("  {}  {}", c_bright("ilold explore"), c_muted("— append ? to any command for inline help (e.g. sl?)"));
     println!();
-    for (shortcut, name, desc) in cmds {
-        let sc = if shortcut.is_empty() {
-            format!("  {}  ", fmt::pad_right("", 3))
-        } else {
-            format!("  {} {}", c_accent(&fmt::pad_right(shortcut, 3)), c_muted("|"))
-        };
-        println!("  {} {}  {}", sc, c_accent(&fmt::pad_right(name, 18)), c_muted(desc));
+    for (group_name, cmds) in groups {
+        println!("  {}", c_warn(group_name));
+        for (shortcut, name, desc) in *cmds {
+            let sc = if shortcut.is_empty() {
+                format!("  {}  ", fmt::pad_right("", 3))
+            } else {
+                format!("  {} {}", c_accent(&fmt::pad_right(shortcut, 3)), c_muted("|"))
+            };
+            println!("  {} {}  {}", sc, c_accent(&fmt::pad_right(name, 22)), c_muted(desc));
+        }
+        println!();
     }
-    println!();
+}
+
+fn print_inline_help(cmd: &str) {
+    let entries: &[(&[&str], &str, &str)] = &[
+        (&["c", "call"],      "call <func>",                     "Add function call to session. Example: c deposit"),
+        (&["b", "back"],      "back",                            "Remove last step from the session sequence."),
+        (&["cl", "clear"],    "clear",                           "Reset the entire session (all steps removed)."),
+        (&["s", "state"],     "state",                           "Show accumulated state mutations across all steps."),
+        (&["f", "functions"], "functions",                       "List callable functions in the active contract."),
+        (&["v", "vars"],      "vars",                            "List state variables of the active contract."),
+        (&["w", "who"],       "who <variable>",                  "Show which functions read/write a variable. Example: who totalStaked"),
+        (&["i", "info"],      "info <func>",                     "Function detail: paths, reads, writes, calls. Example: i deposit"),
+        (&["tr", "trace"],    "trace <func> [--depth N] [-i]",   "Execution flow tree. -i for interactive TUI. Example: tr swap --depth 3"),
+        (&["seq", "sequence"],"sequence",                        "Show the narrative of the current call sequence."),
+        (&["tl", "timeline"], "timeline <variable>",             "Cross-step mutation history. Example: tl totalStaked"),
+        (&["sl", "slice"],    "slice <func> <var> [--backward]", "Dataflow slice. Example: sl deposit totalStaked --backward"),
+        (&["st", "step"],     "step <index>",                    "Re-inspect a specific session step. Example: st 0"),
+        (&["ss", "session"],  "session",                         "Full session state with all steps."),
+        (&["fi", "finding"],  "finding [severity] [text]",       "Record a security finding for the current step."),
+        (&["n", "note"],      "note <text>",                     "Attach a note to the current step."),
+        (&["fl", "findings"], "findings",                        "List all recorded findings."),
+        (&["ex", "export"],   "export",                          "Export findings as a markdown report."),
+    ];
+
+    for (aliases, usage, desc) in entries {
+        if aliases.iter().any(|a| *a == cmd) {
+            println!("  {} {}", c_accent(usage), c_muted(desc));
+            return;
+        }
+    }
+    println!("  {} unknown command: {}", c_danger("✗"), cmd);
 }
 
 // ─── Reedline: Prompt ──────────────────────────────────────────────────────
