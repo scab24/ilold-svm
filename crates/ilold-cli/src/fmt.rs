@@ -305,6 +305,17 @@ pub fn render_variable_timeline(tl: &VariableTimeline) -> String {
         render_entries(&tl.local_entries, &mut out);
     }
 
+    // Collect unique function names from all entries for slice hints.
+    let all_entries = tl.state_entries.iter().chain(tl.local_entries.iter());
+    let mut seen = std::collections::HashSet::new();
+    let hints: Vec<String> = all_entries
+        .filter(|e| seen.insert(e.function.clone()))
+        .map(|e| format!("sl {} {}", e.function, tl.variable))
+        .collect();
+    if !hints.is_empty() {
+        out.push_str(&format!("  {}\n", c_muted(&format!("→ {}", hints.join(", ")))));
+    }
+
     out.push('\n');
     out
 }
@@ -387,6 +398,11 @@ pub fn render_slice_result(res: &SliceResult) -> String {
     if show_forward {
         render_slice_side("forward", &res.forward, &mut out);
     }
+
+    out.push_str(&format!(
+        "  {}\n",
+        c_muted(&format!("→ tr {} | tl {}", res.function, res.variable)),
+    ));
 
     out.push('\n');
     out

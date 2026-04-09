@@ -1083,6 +1083,12 @@ fn print_result(result: &CommandResult, steps: &[String]) {
                     println!("      {} {}", access_colored(access), c_muted(name));
                 }
             }
+            if !writers.is_empty() {
+                let hints: Vec<String> = writers.iter()
+                    .map(|(name, _)| format!("sl {} {}", name, variable))
+                    .collect();
+                println!("  {}", c_muted(&format!("→ {}", hints.join(", "))));
+            }
             println!();
         }
         CommandResult::Exported { markdown } => {
