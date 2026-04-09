@@ -1,0 +1,39 @@
+# Introduction
+
+ilold is a static analysis tool for Solidity smart contracts that provides an interactive REPL for exploring execution paths, state mutations, and data flow. Instead of producing a batch report and leaving the auditor to interpret it, ilold builds an in-memory model of the contract and lets you query it interactively, building up call sequences step by step.
+
+## Core Concept
+
+A security audit is a conversation with the code. ilold models that conversation as a **session**: you add function calls one at a time, and the tool tracks how state accumulates across the sequence. At any point you can ask questions -- who writes this variable? what does the data flow look like? what is the full execution tree? -- and get answers scoped to the contract's actual structure.
+
+The session is the central abstraction. Every analysis command operates either on a single function or on the accumulated session state, so the results stay grounded in realistic execution scenarios rather than theoretical possibilities.
+
+## Pipeline
+
+```
+.sol files
+  |
+  v
+Parser (solar-compiler)
+  |
+  v
+Model (contracts, functions, modifiers, state variables)
+  |
+  v
+CFG (control flow graph per function)
+  |
+  v
+Analysis
+  ├── trace    — execution flow tree with modifier inlining
+  ├── slice    — backward/forward dataflow analysis
+  ├── timeline — cross-step mutation history
+  └── narrative — function and sequence summaries
+```
+
+The parser produces a typed model of each contract. From the model, ilold builds a control flow graph per function, then layers analysis passes on top. The REPL exposes these passes as individual commands.
+
+## Key Differentiator
+
+Traditional static analyzers run a fixed set of detectors and produce a flat list of warnings. ilold does not detect vulnerabilities automatically. Instead, it gives the auditor tools to explore the contract interactively: build a call sequence, inspect state changes, trace execution flow, slice data dependencies. The auditor drives the analysis and records findings as they go.
+
+This is closer to how manual audits actually work -- following a thread through the code, checking what happens when functions are called in a specific order, and documenting what you find.

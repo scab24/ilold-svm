@@ -1,0 +1,8 @@
+[book]
+title = "ilold — Smart Contract Audit Explorer"
+authors = ["ilold contributors"]
+language = "en"
+src = "src"
+
+[build]
+build-dir = "../../target/book"
