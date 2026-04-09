@@ -16,7 +16,6 @@
   let seqTree: any = $state(null);
   let seqAnalysis: SequenceAnalysis | null = $state(null);
   let seqExpanded: Map<string, boolean> = $state(new Map());
-  let seqBreadcrumb: string[] = $state([]);
   let seqDirection: 'TB' | 'LR' = $state('TB');
 
   // Branch menu: Shift+click shows a menu to add a branch
@@ -870,23 +869,6 @@
       const edges = cyInstance.edges(`[source = "${blockIds[i]}"][target = "${blockIds[i + 1]}"]`);
       edges.style({ opacity: 1 });
     }
-  }
-
-  function runLayout(animate: boolean) {
-    if (!cyInstance) return;
-    const layout = cyInstance.layout({
-      name: 'dagre',
-      rankDir: 'TB',
-      nodeSep: 40,
-      rankSep: 55,
-      animate,
-      animationDuration: animate ? 400 : 0,
-      animationEasing: 'ease-in-out-quad',
-      fit: !animate, // fit only on initial render
-      padding: 40,
-    } as any);
-    layout.run();
-    layout.stop();
   }
 
   // Palette: dark board
