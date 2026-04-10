@@ -13,7 +13,7 @@
   );
 </script>
 
-<div class="block-node {typeClass}">
+<div class="block-node {typeClass}" class:dimmed={data._dimmed}>
   <span>{data.label}</span>
 </div>
 <Handle type="target" position={Position.Top} />
@@ -52,5 +52,8 @@
     color: #c49a4a;
     border-radius: 50%;
     padding: 8px;
+  }
+  .block-node.dimmed {
+    opacity: 0.2;
   }
 </style>

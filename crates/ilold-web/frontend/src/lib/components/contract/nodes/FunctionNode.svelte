@@ -5,7 +5,7 @@
   let { data }: { data: FunctionNodeData } = $props();
 </script>
 
-<div class="function-node" class:external={data.is_external}>
+<div class="function-node" class:external={data.is_external} class:dimmed={data._dimmed}>
   <span>{data.label}</span>
 </div>
 <Handle type="target" position={Position.Top} />
@@ -30,5 +30,8 @@
     border-color: #b05050;
     color: #c07070;
     font-size: 11px;
+  }
+  .function-node.dimmed {
+    opacity: 0.55;
   }
 </style>

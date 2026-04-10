@@ -99,4 +99,11 @@
     width: 100%;
     height: 100%;
   }
+  :global(.svelte-flow .svelte-flow__node.expanding) {
+    transition: transform 0.3s ease-out;
+  }
+  :global(.svelte-flow .svelte-flow__edge-text) {
+    font-size: 11px;
+    fill: #8bb8e8;
+  }
 </style>

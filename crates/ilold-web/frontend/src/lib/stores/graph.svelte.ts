@@ -8,6 +8,7 @@ export interface FunctionNodeData {
   label: string;
   is_external: boolean;
   contractName?: string;
+  _dimmed?: boolean;
 }
 
 export interface BlockNodeData {
@@ -17,6 +18,7 @@ export interface BlockNodeData {
   node_type: string; // "Entry" | "Return" | "Revert" | "Block" | "LoopCondition"
   _parentFunc: string;
   statements?: string[];
+  _dimmed?: boolean;
 }
 
 export interface SequenceNodeData {

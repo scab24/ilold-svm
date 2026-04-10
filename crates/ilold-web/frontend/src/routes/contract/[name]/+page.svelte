@@ -1,7 +1,7 @@
 <script lang="ts">
   import { page } from '$app/state';
   import { onMount, tick } from 'svelte';
-  import { getContract, getCallGraph, getPaths, getSequences, getSequenceAnalysis, type ContractDetail, type CytoscapeGraph, type SequenceAnalysis } from '$lib/api/rest';
+  import { getContract, getCallGraph, getCfg, getPaths, getSequences, getSequenceAnalysis, type ContractDetail, type CytoscapeGraph, type SequenceAnalysis } from '$lib/api/rest';
   import { toggleSearch, setSearchContext, getSearchNavigate, setSearchNavigate } from '$lib/stores/search.svelte';
   import Legend from '$lib/components/contract/Legend.svelte';
   import FunctionSidebar from '$lib/components/contract/FunctionSidebar.svelte';
@@ -13,12 +13,15 @@
   import SessionSidebar from '$lib/components/session/SessionSidebar.svelte';
   import {
     getNodes, getEdges,
+    setNodes, setEdges,
     addNode, addEdge,
+    addNodes, addEdges,
     removeNodesById, findNode,
     findDescendants,
     type GraphNodeData,
   } from '$lib/stores/graph.svelte';
-  import type { Node } from '@xyflow/svelte';
+  import { runDagreLayout } from '$lib/utils/graph-helpers';
+  import type { Node, Edge } from '@xyflow/svelte';
 
   let contract: ContractDetail | null = $state(null);
   let error: string | null = $state(null);
@@ -42,6 +45,36 @@
 
   let callgraphRaw: CytoscapeGraph | null = $state(null);
   let flowApi: { fitView: (opts?: any) => Promise<boolean> } | null = $state(null);
+  let cfgCache: Record<string, CytoscapeGraph> = $state({});
+
+  /** Merge an opacity value into an edge's style string */
+  function edgeStyle(base: string | undefined, opacity: number): string {
+    // Remove existing opacity from base style, then append new one
+    const cleaned = (base ?? '').replace(/opacity:\s*[\d.]+;?/g, '').trim();
+    const sep = cleaned && !cleaned.endsWith(';') ? '; ' : ' ';
+    return `${cleaned}${cleaned ? sep : ''}opacity: ${opacity}`.trim();
+  }
+
+  /** Reset all _dimmed state on nodes and edges */
+  function resetAllDimmed() {
+    setNodes(getNodes().map(n => {
+      if ('_dimmed' in n.data && n.data._dimmed) {
+        return { ...n, data: { ...n.data, _dimmed: false } as GraphNodeData };
+      }
+      return n;
+    }));
+    setEdges(getEdges().map(e => {
+      if (e.data?._dimmed) {
+        return { ...e, style: edgeStyle(e.style, 1), data: { ...e.data, _dimmed: false } };
+      }
+      return e;
+    }));
+  }
+
+  /** Merge stroke-dasharray + stroke into edge style string */
+  function dashedEdgeStyle(stroke: string): string {
+    return `stroke-dasharray: 5 3; stroke: ${stroke}`;
+  }
 
   onMount(async () => {
     const contractName = page.params.name;
@@ -94,7 +127,10 @@
         selectedNode = { ...funcNode.data, id: funcNode.id };
         const path = funcPaths[nav.func]?.paths?.find((p: any) => p.id === nav.pathId);
         if (path) highlightPath(nav.func, path);
-        // TODO B3-2: fitView/setCenter to navigate to the node
+        if (flowApi) {
+          await tick();
+          flowApi.fitView({ nodes: [{ id: funcNode.id }], padding: 0.5, duration: 400 });
+        }
       }
 
       if (!stale) setSearchNavigate(null);
@@ -194,6 +230,10 @@
 
     removeNodesById(toRemove);
 
+    if (expandedFuncs.has(funcName)) {
+      resetAllDimmed();
+    }
+
     canvasFuncs.delete(funcName);
     canvasFuncs = new Set(canvasFuncs);
     expandedFuncs.delete(funcName);
@@ -207,7 +247,13 @@
 
     if (!selectedNode || selectedNode.id !== node.id) {
       selectedPath = null;
-      // Note: opacity reset deferred to B3-2 (highlightPath)
+      // Reset CFG block highlighting when clicking a different node
+      setNodes(getNodes().map(n => {
+        if (n.data._type === 'block' && '_dimmed' in n.data && n.data._dimmed) {
+          return { ...n, data: { ...n.data, _dimmed: false } as GraphNodeData };
+        }
+        return n;
+      }));
     }
 
     selectedNode = { ...data, id: node.id };
@@ -231,7 +277,7 @@
     selectedNode = null;
     selectedPath = null;
     branchMenu = null;
-    // Note: opacity reset (cy.nodes('.block').style({ opacity: 1 })) deferred to B3-2
+    resetAllDimmed();
   }
 
   function handleContextMenu(event: MouseEvent, node: Node<GraphNodeData>) {
@@ -280,8 +326,142 @@
   }
 
   async function toggleFuncExpand(funcName: string, anchorNodeId?: string) {
-    // TODO B3-2: Port CFG expand/collapse to graph store + dagre layout
-    console.warn(`[B3-2] toggleFuncExpand("${funcName}") — not yet ported`);
+    if (!contract) return;
+    const parentId = anchorNodeId || `${contract.name}::${funcName}`;
+
+    if (expandedFuncs.has(funcName)) {
+      // --- COLLAPSE ---
+      const toRemove = new Set<string>();
+      for (const n of getNodes()) {
+        if ('_parentFunc' in n.data && n.data._parentFunc === funcName) {
+          toRemove.add(n.id);
+        }
+      }
+      removeNodesById(toRemove);
+      resetAllDimmed();
+
+      expandedFuncs.delete(funcName);
+      expandedFuncs = new Set(expandedFuncs);
+      return;
+    }
+
+    // --- EXPAND ---
+    if (!cfgCache[funcName]) {
+      cfgCache[funcName] = await getCfg(contract.name, funcName);
+    }
+    const cfg = cfgCache[funcName];
+    const parentNode = findNode(parentId);
+    const parentPos = parentNode?.position ?? { x: 300, y: 200 };
+
+    // 1. Build Svelte Flow nodes (initially at parent position for animation)
+    const cfgNodes: Node<GraphNodeData>[] = cfg.nodes.map(n => ({
+      id: `cfg:${funcName}:${n.data.id}`,
+      type: 'block',
+      position: { ...parentPos },
+      data: {
+        _type: 'block' as const,
+        label: n.data.label,
+        node_type: n.data.node_type,
+        _parentFunc: funcName,
+        statements: n.data.statements,
+      },
+    }));
+
+    // 2. Build edges
+    const cfgEdges: Edge[] = cfg.edges.map((e, i) => ({
+      id: `cfg-edge:${funcName}:${i}`,
+      source: `cfg:${funcName}:${e.data.source}`,
+      target: `cfg:${funcName}:${e.data.target}`,
+      type: 'default',
+      data: {
+        _type: 'cfg-edge',
+        _parentFunc: funcName,
+        kind: e.data.kind,
+      },
+      label: e.data.kind.includes('ConditionalTrue') ? '✓'
+           : e.data.kind.includes('ConditionalFalse') ? '✗'
+           : undefined,
+      animated: e.data.kind.includes('LoopBack'),
+    }));
+
+    // 3. Link edge: function node → CFG entry block
+    const entryNode = cfg.nodes.find(n => n.data.node_type === 'Entry');
+    if (entryNode) {
+      cfgEdges.push({
+        id: `cfg-link:${funcName}`,
+        source: parentId,
+        target: `cfg:${funcName}:${entryNode.data.id}`,
+        type: 'default',
+        data: { _type: 'cfg-edge', _parentFunc: funcName, kind: 'expand' },
+        style: dashedEdgeStyle('#4a6fa5'),
+      });
+    }
+
+    // 4. Run dagre on CFG subset to get positions
+    const layoutNodes = runDagreLayout(cfgNodes, cfgEdges, {
+      rankDir: 'TB', nodeSep: 30, rankSep: 45,
+    });
+
+    // 5. Offset all positions below the parent function node
+    let minX = Infinity, minY = Infinity, maxX = -Infinity;
+    for (const n of layoutNodes) {
+      if (n.position.x < minX) minX = n.position.x;
+      if (n.position.x > maxX) maxX = n.position.x;
+      if (n.position.y < minY) minY = n.position.y;
+    }
+    const centerX = (minX + maxX) / 2;
+    const offsetX = parentPos.x - centerX;
+    const offsetY = parentPos.y + 60 - minY;
+
+    const finalPositions = new Map<string, { x: number; y: number }>();
+    for (const n of layoutNodes) {
+      finalPositions.set(n.id, { x: n.position.x + offsetX, y: n.position.y + offsetY });
+    }
+
+    // Add nodes at PARENT position (CSS transition will animate to final)
+    addNodes(cfgNodes);
+    addEdges(cfgEdges);
+
+    // 6. After a tick, add expanding class + update positions
+    await tick();
+
+    // Add expanding class for animation
+    for (const n of cfgNodes) {
+      const el = document.querySelector(`[data-id="${n.id}"]`);
+      el?.classList.add('expanding');
+    }
+
+    await tick();
+    setNodes(getNodes().map(n => {
+      const final = finalPositions.get(n.id);
+      return final ? { ...n, position: final } : n;
+    }));
+
+    // Remove expanding class after animation completes
+    setTimeout(() => {
+      for (const n of cfgNodes) {
+        const el = document.querySelector(`[data-id="${n.id}"]`);
+        el?.classList.remove('expanding');
+      }
+    }, 350);
+
+    // 7. Dim function nodes + call edges
+    setNodes(getNodes().map(n => {
+      if (n.data._type === 'function') {
+        const dimmed = n.id !== parentId;
+        return { ...n, data: { ...n.data, _dimmed: dimmed } as GraphNodeData };
+      }
+      return n;
+    }));
+    setEdges(getEdges().map(e => {
+      if (e.data?._type === 'call') {
+        return { ...e, style: edgeStyle(e.style, 0.1), data: { ...e.data, _dimmed: true } };
+      }
+      return e;
+    }));
+
+    expandedFuncs.add(funcName);
+    expandedFuncs = new Set(expandedFuncs);
   }
 
   function addBranch(parentNodeId: string, parentFuncName: string, branchFuncName: string) {
@@ -302,6 +482,7 @@
       }
     }
     if (toRemove.size > 0) removeNodesById(toRemove);
+    resetAllDimmed();
 
     expandedFuncs = new Set();
     seqExpanded = new Map();
@@ -311,9 +492,38 @@
   }
 
   function highlightPath(funcName: string, path: any) {
-    // TODO B3-2: Port path highlighting to store-based opacity
     selectedPath = path;
-    console.warn(`[B3-2] highlightPath("${funcName}") — not yet ported`);
+
+    // Build set of highlighted block IDs
+    const highlightedIds = new Set<string>(
+      path.nodes.map((n: any) => `cfg:${funcName}:b${n.block_id}`)
+    );
+
+    // Build set of highlighted edge pairs (consecutive path nodes)
+    const highlightedEdgePairs = new Set<string>();
+    const blockIds = [...highlightedIds];
+    for (let i = 0; i < blockIds.length - 1; i++) {
+      highlightedEdgePairs.add(`${blockIds[i]}→${blockIds[i + 1]}`);
+    }
+
+    // Update nodes: dim all CFG blocks except highlighted ones
+    setNodes(getNodes().map(n => {
+      if (n.data._type === 'block' && n.data._parentFunc === funcName) {
+        const dimmed = !highlightedIds.has(n.id);
+        return { ...n, data: { ...n.data, _dimmed: dimmed } as GraphNodeData };
+      }
+      return n;
+    }));
+
+    // Update edges: dim all CFG edges except path edges
+    setEdges(getEdges().map(e => {
+      if (e.data?._parentFunc === funcName && e.data?._type === 'cfg-edge') {
+        const key = `${e.source}→${e.target}`;
+        const dimmed = !highlightedEdgePairs.has(key);
+        return { ...e, style: edgeStyle(e.style, dimmed ? 0.1 : 1), data: { ...e.data, _dimmed: dimmed } };
+      }
+      return e;
+    }));
   }
 
 
