@@ -460,7 +460,7 @@
         target: `cfg:${funcName}:${entryNode.data.id}`,
         type: 'default',
         data: { _type: 'cfg-edge', _parentFunc: funcName, kind: 'expand' },
-        style: dashedEdgeStyle('#4a6fa5'),
+        style: dashedEdgeStyle('var(--color-accent-dark)'),
       });
     }
 
@@ -564,7 +564,7 @@
       target: nodeId,
       type: 'default',
       data: { _type: 'seq-edge' },
-      style: dashedEdgeStyle('#5a9a6a'),
+      style: dashedEdgeStyle('var(--color-success)'),
     });
 
     branchMenu = null;
@@ -625,7 +625,7 @@
         type: 'default',
         data: { _type: 'seq-edge' },
         style: transition?.shared_state?.length
-          ? dashedEdgeStyle('#c49a4a')
+          ? dashedEdgeStyle('var(--color-warning)')
           : undefined,
       });
     }
@@ -724,9 +724,9 @@
 
 </script>
 
-<div class="view">
+<div class="fixed inset-0 flex flex-col bg-dark">
   {#if error}
-    <div class="error">{error}</div>
+    <div class="p-6 text-danger">{error}</div>
   {:else}
     <FloatingToolbar
       contractName={contract?.name ?? '...'}
@@ -737,7 +737,7 @@
       oncenter={() => flowApi?.fitView({ padding: 0.1 })}
       onseqdirection={(dir) => { seqDirection = dir; }}
     />
-    <div class="workspace">
+    <div class="flex-1 flex overflow-hidden h-full">
       {#if contract}
         <FunctionSidebar {contract} {canvasFuncs} onadd={addFuncToCanvas} onremove={removeFuncFromCanvas} />
       {/if}
@@ -800,11 +800,3 @@
   {/if}
 </div>
 
-<style>
-  .view { position: fixed; inset: 0; display: flex; flex-direction: column; background: #121215; }
-
-  .error { padding: 24px; color: #b05050; }
-
-  .workspace { flex: 1; display: flex; overflow: hidden; height: 100%; }
-
-</style>

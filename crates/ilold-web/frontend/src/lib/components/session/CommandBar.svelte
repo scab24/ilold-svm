@@ -214,19 +214,21 @@
   }
 </script>
 
-<div class="cmd-bar">
-  <div class="cmd-output" bind:this={outputEl}>
+<div class="cmd-bar flex flex-col bg-dark border border-border rounded-md overflow-hidden font-mono text-xs leading-relaxed h-full">
+  <div class="cmd-output flex-1 overflow-y-auto px-2.5 py-2 min-h-0 max-h-[200px]" bind:this={outputEl}>
     {#each lines as line}
-      <div class="cmd-line" class:cmd={line.kind === 'cmd'} class:err={line.kind === 'err'}>{line.text}</div>
+      <div
+        class="whitespace-pre-wrap break-all leading-[1.6] mb-px {line.kind === 'cmd' ? 'text-accent' : line.kind === 'err' ? 'text-danger-bright' : 'text-text-muted'}"
+      >{line.text}</div>
     {/each}
     {#if lines.length === 0}
-      <div class="cmd-hint">c &lt;func&gt; | b | x | s | f | fa | sv | w &lt;var&gt; | session | export</div>
+      <div class="text-text-dim italic">c &lt;func&gt; | b | x | s | f | fa | sv | w &lt;var&gt; | session | export</div>
     {/if}
   </div>
-  <div class="cmd-input-row">
-    <span class="cmd-prompt">{busy ? '...' : '>'}</span>
+  <div class="flex items-center gap-1.5 px-2.5 py-1.5 border-t border-border bg-surface">
+    <span class="text-accent flex-shrink-0 select-none">{busy ? '...' : '>'}</span>
     <input
-      class="cmd-input"
+      class="cmd-input flex-1 bg-transparent border-none outline-none text-text-light font-[inherit] text-[inherit] caret-accent"
       type="text"
       bind:value={input}
       bind:this={inputEl}
@@ -240,35 +242,11 @@
 </div>
 
 <style>
-  .cmd-bar {
-    display: flex; flex-direction: column;
-    background: #121215; border: 1px solid #252530;
-    border-radius: 6px; overflow: hidden;
-    font-family: 'JetBrains Mono', 'Fira Code', monospace;
-    font-size: 12px; line-height: 1.5;
-    height: 100%;
-  }
-  .cmd-output {
-    flex: 1; overflow-y: auto; padding: 8px 10px;
-    min-height: 0; max-height: 200px;
-  }
+  /* Scrollbar — pseudo-elements require scoped CSS */
   .cmd-output::-webkit-scrollbar { width: 4px; }
-  .cmd-output::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
-  .cmd-line { white-space: pre-wrap; word-break: break-all; color: #8b95a5; line-height: 1.6; margin-bottom: 1px; }
-  .cmd-line.cmd { color: #5b9bd5; }
-  .cmd-line.err { color: #d05050; }
-  .cmd-hint { color: #3a3f4a; font-style: italic; }
-  .cmd-input-row {
-    display: flex; align-items: center; gap: 6px;
-    padding: 6px 10px; border-top: 1px solid #252530;
-    background: #18181e;
-  }
-  .cmd-prompt { color: #5b9bd5; flex-shrink: 0; user-select: none; }
-  .cmd-input {
-    flex: 1; background: transparent; border: none; outline: none;
-    color: #c8d0dc; font-family: inherit; font-size: inherit;
-    caret-color: #5b9bd5;
-  }
-  .cmd-input::placeholder { color: #3a3f4a; }
+  .cmd-output::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 2px; }
+
+  /* Input pseudo-elements */
+  .cmd-input::placeholder { color: var(--color-text-dim); }
   .cmd-input:disabled { opacity: 0.5; }
 </style>

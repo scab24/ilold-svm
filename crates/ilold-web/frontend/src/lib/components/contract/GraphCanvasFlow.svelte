@@ -86,6 +86,6 @@
   }
   :global(.svelte-flow .svelte-flow__edge-text) {
     font-size: 11px;
-    fill: #8bb8e8;
+    fill: var(--color-accent-hover);
   }
 </style>

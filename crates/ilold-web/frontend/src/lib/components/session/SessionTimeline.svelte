@@ -76,39 +76,42 @@
   }
 </script>
 
-<div class="timeline-root">
-  <div class="timeline-header">
-    <span class="timeline-title">Session Timeline</span>
-    <span class="step-count">{steps.length}</span>
+<div class="flex flex-col bg-dark max-h-full h-full overflow-hidden">
+  <!-- Header -->
+  <div class="flex items-center justify-between px-2.5 py-2 border-b border-border flex-shrink-0">
+    <span class="text-[10px] text-text-muted uppercase tracking-[0.5px] font-semibold">Session Timeline</span>
+    <span class="text-[10px] text-text-dim bg-hover px-1.5 py-px rounded-lg font-mono">{steps.length}</span>
   </div>
 
-  <div class="timeline-body" bind:this={scrollContainer}>
+  <!-- Body -->
+  <div class="timeline-body flex-1 overflow-y-auto py-1" bind:this={scrollContainer}>
     {#if steps.length === 0}
-      <div class="empty-state">No steps yet. Use the command bar to call a function.</div>
+      <div class="py-5 px-3 text-text-dim text-[11px] text-center leading-relaxed">No steps yet. Use the command bar to call a function.</div>
     {:else}
-      <ol class="step-list">
+      <ol class="list-none m-0 p-0">
         {#each steps as step (step.step_index)}
           {@const badge = accessBadge(step.access)}
           {@const isHighlighted = highlighted === step.function}
           {@const isExpanded = expandedStep === step.step_index}
           <li
-            class="step-item"
-            class:highlighted={isHighlighted}
-            class:expanded={isExpanded}
+            class="border-l-3 transition-[border-color] duration-150 {isHighlighted ? 'border-l-accent' : 'border-l-transparent'}"
           >
-            <button class="step-btn" onclick={() => toggleNarrative(step.step_index)}>
-              <span class="step-index">{step.step_index}</span>
-              <span class="step-fn">{step.function}</span>
+            <button
+              class="flex items-center gap-1.5 w-full px-2.5 py-1.5 bg-transparent border-none text-text text-[11px] font-mono cursor-pointer text-left hover:bg-hover {isExpanded ? 'bg-surface-alt' : ''}"
+              onclick={() => toggleNarrative(step.step_index)}
+            >
+              <span class="text-text-dim text-[9px] min-w-[16px] text-right">{step.step_index}</span>
+              <span class="flex-1 overflow-hidden text-ellipsis whitespace-nowrap">{step.function}</span>
               <span class="badge {badge.cls}">{badge.text}</span>
-              <span class="step-chevron">{isExpanded ? '▾' : '▸'}</span>
+              <span class="text-text-dim text-[9px] flex-shrink-0">{isExpanded ? '▾' : '▸'}</span>
             </button>
 
             {#if isExpanded}
-              <div class="narrative-panel">
+              <div class="py-2 pr-3 pl-7 border-t border-hover bg-surface">
                 {#if loadingNarrative}
-                  <span class="narrative-loading">Loading...</span>
+                  <span class="text-text-dim text-[10px] italic">Loading...</span>
                 {:else}
-                  <pre class="narrative-text">{narrative}</pre>
+                  <pre class="text-text-muted text-[11px] font-mono m-0 whitespace-pre-wrap break-words leading-relaxed">{narrative}</pre>
                 {/if}
               </div>
             {/if}
@@ -118,122 +121,22 @@
     {/if}
   </div>
 
+  <!-- Footer -->
   {#if steps.length > 0}
-    <div class="timeline-footer">
-      <button class="back-btn" onclick={goBack} disabled={backBusy}>← Back</button>
+    <div class="px-2.5 py-1.5 border-t border-border flex-shrink-0">
+      <button
+        class="w-full py-[5px] bg-hover border border-border rounded-[4px] text-text-muted text-[11px] font-mono cursor-pointer transition-[color,border-color] duration-150 hover:text-text hover:border-accent"
+        onclick={goBack}
+        disabled={backBusy}
+      >
+        ← Back
+      </button>
     </div>
   {/if}
 </div>
 
 <style>
-  .timeline-root {
-    display: flex;
-    flex-direction: column;
-    background: #121215;
-    max-height: 100%;
-    height: 100%;
-    overflow: hidden;
-  }
-
-  .timeline-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 8px 10px;
-    border-bottom: 1px solid #252530;
-    flex-shrink: 0;
-  }
-
-  .timeline-title {
-    font-size: 10px;
-    color: #6b7a8d;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    font-weight: 600;
-  }
-
-  .step-count {
-    font-size: 10px;
-    color: #4a5568;
-    background: #1e1e28;
-    padding: 1px 6px;
-    border-radius: 8px;
-    font-family: monospace;
-  }
-
-  .timeline-body {
-    flex: 1;
-    overflow-y: auto;
-    padding: 4px 0;
-  }
-
-  .empty-state {
-    padding: 20px 12px;
-    color: #4a5568;
-    font-size: 11px;
-    text-align: center;
-    line-height: 1.5;
-  }
-
-  .step-list {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-  }
-
-  .step-item {
-    border-left: 3px solid transparent;
-    transition: border-color 0.15s;
-  }
-
-  .step-item.highlighted {
-    border-left-color: #5b9bd5;
-  }
-
-  .step-btn {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    width: 100%;
-    padding: 6px 10px;
-    background: none;
-    border: none;
-    color: #b8c4d4;
-    font-size: 11px;
-    font-family: monospace;
-    cursor: pointer;
-    text-align: left;
-  }
-
-  .step-btn:hover {
-    background: #1e1e28;
-  }
-
-  .step-item.expanded .step-btn {
-    background: #1a1a24;
-  }
-
-  .step-index {
-    color: #4a5568;
-    font-size: 9px;
-    min-width: 16px;
-    text-align: right;
-  }
-
-  .step-fn {
-    flex: 1;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .step-chevron {
-    color: #4a5568;
-    font-size: 9px;
-    flex-shrink: 0;
-  }
-
-  /* Access badges */
+  /* Access badges — use semantic colors from theme */
   .badge {
     font-size: 9px;
     padding: 1px 5px;
@@ -244,84 +147,27 @@
   }
 
   .badge-public {
-    color: #5b9bd5;
-    background: rgba(91, 155, 213, 0.12);
+    color: var(--color-accent);
+    background: color-mix(in srgb, var(--color-accent) 12%, transparent);
   }
 
   .badge-internal {
-    color: #6b7a8d;
-    background: rgba(107, 122, 141, 0.12);
+    color: var(--color-text-muted);
+    background: color-mix(in srgb, var(--color-text-muted) 12%, transparent);
   }
 
   .badge-restricted {
-    color: #d4956b;
-    background: rgba(212, 149, 107, 0.12);
+    color: var(--color-orange);
+    background: color-mix(in srgb, var(--color-orange) 12%, transparent);
   }
 
   .badge-special {
-    color: #b085d6;
-    background: rgba(176, 133, 214, 0.12);
+    color: var(--color-purple);
+    background: color-mix(in srgb, var(--color-purple) 12%, transparent);
   }
 
-  /* Narrative panel */
-  .narrative-panel {
-    padding: 8px 12px 8px 28px;
-    border-top: 1px solid #1e1e28;
-    background: #18181e;
-  }
-
-  .narrative-loading {
-    color: #4a5568;
-    font-size: 10px;
-    font-style: italic;
-  }
-
-  .narrative-text {
-    color: #8a96a6;
-    font-size: 11px;
-    font-family: monospace;
-    margin: 0;
-    white-space: pre-wrap;
-    word-break: break-word;
-    line-height: 1.5;
-  }
-
-  /* Footer with Back */
-  .timeline-footer {
-    padding: 6px 10px;
-    border-top: 1px solid #252530;
-    flex-shrink: 0;
-  }
-
-  .back-btn {
-    width: 100%;
-    padding: 5px 0;
-    background: #1e1e28;
-    border: 1px solid #252530;
-    border-radius: 4px;
-    color: #6b7a8d;
-    font-size: 11px;
-    font-family: monospace;
-    cursor: pointer;
-    transition: color 0.15s, border-color 0.15s;
-  }
-
-  .back-btn:hover {
-    color: #b8c4d4;
-    border-color: #5b9bd5;
-  }
-
-  /* Scrollbar styling */
-  .timeline-body::-webkit-scrollbar {
-    width: 4px;
-  }
-
-  .timeline-body::-webkit-scrollbar-track {
-    background: transparent;
-  }
-
-  .timeline-body::-webkit-scrollbar-thumb {
-    background: #252530;
-    border-radius: 2px;
-  }
+  /* Scrollbar — pseudo-elements require scoped CSS */
+  .timeline-body::-webkit-scrollbar { width: 4px; }
+  .timeline-body::-webkit-scrollbar-track { background: transparent; }
+  .timeline-body::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 2px; }
 </style>

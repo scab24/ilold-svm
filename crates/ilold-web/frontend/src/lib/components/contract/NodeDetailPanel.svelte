@@ -32,15 +32,8 @@
     onexpandcfg,
   }: Props = $props();
 
-  // Palette constants matching the parent
-  const C = {
-    ok: '#5a9a6a',
-    danger: '#b05050',
-    textMuted: '#6b7a8d',
-  };
-
   function termColor(t: string): string {
-    return t === 'Return' ? C.ok : t === 'Revert' ? C.danger : C.textMuted;
+    return t === 'Return' ? 'var(--color-success)' : t === 'Revert' ? 'var(--color-danger)' : 'var(--color-text-muted)';
   }
 </script>
 
@@ -49,7 +42,7 @@
   x={Math.min(window.innerWidth - 320, window.innerWidth - 20)} y={60} width={Math.min(310, window.innerWidth - 40)}
   onclose={onclose}
 >
-  <div class="detail">
+  <div class="p-2">
     {#if selectedNode._type === 'function'}
       <div class="d-row"><span class="d-label">Type</span><span>{selectedNode.is_external ? 'External' : 'Internal'}</span></div>
       {#if !selectedNode.is_external}
@@ -211,10 +204,10 @@
             <div class="pd-item ext">This function has external calls</div>
           {/if}
         {:else}
-          <div class="d-hint" style="color:#484f58">No state dependencies with previous function</div>
+          <div class="d-hint" style="color:var(--color-text-dim)">No state dependencies with previous function</div>
         {/if}
       {:else}
-        <div class="d-hint" style="color:#484f58">No state dependencies in chain</div>
+        <div class="d-hint" style="color:var(--color-text-dim)">No state dependencies in chain</div>
       {/if}
     {:else if selectedNode._type === 'block'}
       {@const parentFunc = selectedNode._parentFunc || ''}
@@ -333,74 +326,74 @@
 </DraggablePanel>
 
 <style>
-  .detail { padding: 8px; }
-  .d-row { display: flex; justify-content: space-between; padding: 3px 0; font-size: 12px; color: #b8c4d4; }
-  .d-label { color: #6b7a8d; }
-  .d-hint { font-size: 11px; color: #5b9bd5; padding: 6px 0; font-style: italic; }
+  .d-row { display: flex; justify-content: space-between; padding: 3px 0; font-size: 12px; color: var(--color-text); }
+  .d-label { color: var(--color-text-muted); }
+  .d-hint { font-size: 11px; color: var(--color-accent); padding: 6px 0; font-style: italic; }
   .d-actions { padding: 6px 0; display: flex; flex-direction: column; gap: 4px; }
   .d-action-btn {
-    background: #1a1a22; border: 1px solid #252530; color: #8bb8e8;
+    background: var(--color-surface-alt); border: 1px solid var(--color-border); color: var(--color-accent-hover);
     padding: 6px 10px; border-radius: 4px; cursor: pointer;
     font-size: 11px; font-family: monospace; text-align: left;
   }
-  .d-action-btn:hover { border-color: #5b9bd5; background: #1e1e28; }
-  .d-section { font-size: 10px; color: #6b7a8d; text-transform: uppercase; letter-spacing: 0.5px; margin: 8px 0 4px; font-weight: 600; }
-  .d-chain-step { font-size: 11px; color: #8bb8e8; font-weight: 600; margin: 6px 0 2px; padding-top: 4px; border-top: 1px solid #2a2d38; }
-  .d-path-chain { font-size: 10px; color: #4a5568; padding: 4px 0; font-family: monospace; word-break: break-all; }
+  .d-action-btn:hover { border-color: var(--color-accent); background: var(--color-hover); }
+  .d-section { font-size: 10px; color: var(--color-text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin: 8px 0 4px; font-weight: 600; }
+  .d-chain-step { font-size: 11px; color: var(--color-accent-hover); font-weight: 600; margin: 6px 0 2px; padding-top: 4px; border-top: 1px solid var(--color-border-subtle); }
+  .d-path-chain { font-size: 10px; color: var(--color-text-dim); padding: 4px 0; font-family: monospace; word-break: break-all; }
 
-  .d-section-label { font-size: 10px; color: #4a5568; margin: 8px 0 4px; }
+  .d-section-label { font-size: 10px; color: var(--color-text-dim); margin: 8px 0 4px; }
 
   /* Narrative panel */
   .narrative { margin-top: 6px; }
-  .narr-label { font-size: 10px; color: #6b7a8d; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
-  .narr-sub { font-size: 9px; color: #4a5568; text-transform: uppercase; margin: 6px 0 2px; }
+  .narr-label { font-size: 10px; color: var(--color-text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+  .narr-sub { font-size: 9px; color: var(--color-text-dim); text-transform: uppercase; margin: 6px 0 2px; }
   .narr-condition {
     font-family: monospace; font-size: 11px;
     padding: 3px 8px; margin: 2px 0;
-    background: #c49a4a12; border-left: 2px solid #c49a4a;
-    color: #c49a4a; border-radius: 0 3px 3px 0;
+    background: color-mix(in srgb, var(--color-warning) 7%, transparent);
+    border-left: 2px solid var(--color-warning);
+    color: var(--color-warning); border-radius: 0 3px 3px 0;
   }
 
   /* Flow list */
   .flow-list { display: flex; flex-direction: column; gap: 0; }
-  .flow-arrow { color: #252530; font-size: 10px; padding-left: 6px; line-height: 1; }
+  .flow-arrow { color: var(--color-border); font-size: 10px; padding-left: 6px; line-height: 1; }
   .flow-step {
-    font-family: monospace; font-size: 11px; color: #b8c4d4;
+    font-family: monospace; font-size: 11px; color: var(--color-text);
     padding: 4px 8px; border-radius: 4px;
     display: flex; align-items: center; gap: 5px;
-    border-left: 2px solid #252530;
+    border-left: 2px solid var(--color-border);
   }
-  .flow-step.flow-entry { color: #8bb8e8; font-weight: 600; border-left-color: #5b9bd5; }
-  .flow-step.flow-return { color: #5a9a6a; border-left-color: #5a9a6a; }
-  .flow-step.flow-revert { color: #b05050; border-left-color: #b05050; }
-  .flow-step.flow-check { color: #c49a4a; border-left-color: #c49a4a; background: #c49a4a08; }
-  .flow-step.flow-call { color: #b8c4d4; border-left-color: #b05050; }
-  .flow-step.flow-write { color: #6b7a8d; border-left-color: #5b9bd5; }
-  .flow-step.flow-here { background: #5b9bd512; border-left-color: #5b9bd5; }
+  .flow-step.flow-entry { color: var(--color-accent-hover); font-weight: 600; border-left-color: var(--color-accent); }
+  .flow-step.flow-return { color: var(--color-success); border-left-color: var(--color-success); }
+  .flow-step.flow-revert { color: var(--color-danger); border-left-color: var(--color-danger); }
+  .flow-step.flow-check { color: var(--color-warning); border-left-color: var(--color-warning); background: color-mix(in srgb, var(--color-warning) 3%, transparent); }
+  .flow-step.flow-call { color: var(--color-text); border-left-color: var(--color-danger); }
+  .flow-step.flow-write { color: var(--color-text-muted); border-left-color: var(--color-accent); }
+  .flow-step.flow-here { background: color-mix(in srgb, var(--color-accent) 7%, transparent); border-left-color: var(--color-accent); }
   .flow-badge {
     font-size: 9px; width: 14px; height: 14px;
     display: inline-flex; align-items: center; justify-content: center;
     border-radius: 3px; flex-shrink: 0;
   }
-  .flow-badge.pass { background: #5a9a6a22; color: #5a9a6a; }
-  .flow-badge.fail { background: #b0505022; color: #b05050; }
-  .flow-badge.call { background: #b0505015; color: #b05050; }
-  .flow-badge.write { background: #5b9bd515; color: #5b9bd5; }
-  .flow-here-tag { color: #5b9bd5; font-size: 9px; margin-left: auto; }
+  .flow-badge.pass { background: color-mix(in srgb, var(--color-success) 13%, transparent); color: var(--color-success); }
+  .flow-badge.fail { background: color-mix(in srgb, var(--color-danger) 13%, transparent); color: var(--color-danger); }
+  .flow-badge.call { background: color-mix(in srgb, var(--color-danger) 8%, transparent); color: var(--color-danger); }
+  .flow-badge.write { background: color-mix(in srgb, var(--color-accent) 8%, transparent); color: var(--color-accent); }
+  .flow-here-tag { color: var(--color-accent); font-size: 9px; margin-left: auto; }
   .d-path { display: flex; align-items: center; gap: 4px; padding: 3px 4px; border-radius: 3px; font-size: 11px; color: inherit; background: transparent; border: 1px solid transparent; cursor: pointer; width: 100%; text-align: left; font: inherit; }
-  .d-path:hover { background: #121215; }
-  .pid { color: #4a5568; font-weight: 600; }
-  .pdepth { color: #4a5568; font-size: 10px; }
+  .d-path:hover { background: var(--color-dark); }
+  .pid { color: var(--color-text-dim); font-weight: 600; }
+  .pdepth { color: var(--color-text-dim); font-size: 10px; }
   .pb { font-size: 9px; padding: 1px 4px; border-radius: 6px; }
-  .pb.ext { background: #b0505018; color: #c07070; }
-  .d-path-selected { background: #1e2028; border-color: #5b9bd5; }
+  .pb.ext { background: color-mix(in srgb, var(--color-danger) 9%, transparent); color: var(--color-danger-light); }
+  .d-path-selected { background: var(--color-hover); border-color: var(--color-accent); }
 
   .pd-item {
     font-family: monospace; font-size: 11px;
     padding: 2px 6px; border-radius: 3px; margin-bottom: 2px;
   }
-  .pd-item.check { background: #c49a4a18; color: #c49a4a; }
-  .pd-item.ext { background: #b0505018; color: #c07070; }
-  .pd-item.wr { background: #5b9bd518; color: #8bb8e8; }
-  .pd-item.ev { background: #5a9a6a18; color: #7aba8a; }
+  .pd-item.check { background: color-mix(in srgb, var(--color-warning) 9%, transparent); color: var(--color-warning); }
+  .pd-item.ext { background: color-mix(in srgb, var(--color-danger) 9%, transparent); color: var(--color-danger-light); }
+  .pd-item.wr { background: color-mix(in srgb, var(--color-accent) 9%, transparent); color: var(--color-accent-hover); }
+  .pd-item.ev { background: color-mix(in srgb, var(--color-success) 9%, transparent); color: var(--color-success-light); }
 </style>

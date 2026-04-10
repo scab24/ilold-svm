@@ -9,7 +9,7 @@
 </script>
 
 <div
-  class="seq-node"
+  class="seq-node py-1 px-2.5 rounded-sm bg-surface-alt border-[1.5px] border-accent text-text font-mono text-[11px] min-w-[80px] text-center flex items-center gap-1.5"
   class:readonly={data.readOnly}
   class:has-conditions={hasConditions}
   class:has-shared={hasShared}
@@ -18,48 +18,30 @@
 >
   <span>{data.label}</span>
   {#if data.pathCount}
-    <span class="sn-paths">{data.pathCount}p</span>
+    <span class="text-[9px] text-text-dim">{data.pathCount}p</span>
   {/if}
 </div>
 <Handle type="target" position={Position.Top} />
 <Handle type="source" position={Position.Bottom} />
 
 <style>
-  .seq-node {
-    padding: 4px 10px;
-    border-radius: 4px;
-    background: #1a1a22;
-    border: 1.5px solid #5b9bd5;
-    color: #b8c4d4;
-    font-size: 11px;
-    font-family: monospace;
-    min-width: 80px;
-    text-align: center;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
   .seq-node.readonly {
-    border-color: #6b7a8d;
-    color: #6b7a8d;
+    border-color: var(--color-text-muted);
+    color: var(--color-text-muted);
   }
   .seq-node.has-conditions {
-    background: #2a2518;
-    border-color: #c49a4a;
+    background: var(--color-tint-warning);
+    border-color: var(--color-warning);
     border-width: 2px;
   }
   .seq-node.has-shared {
     border-style: dashed;
   }
   .seq-node.is-branch {
-    border-color: #5a9a6a;
+    border-color: var(--color-success);
   }
   .seq-node.dimmed {
     opacity: 0.25;
     pointer-events: none;
-  }
-  .sn-paths {
-    font-size: 9px;
-    color: #4a5568;
   }
 </style>

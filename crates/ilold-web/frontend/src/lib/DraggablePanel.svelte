@@ -66,17 +66,17 @@
 </script>
 
 <div
-  class="draggable-panel"
+  class="draggable-panel fixed border border-border rounded-[10px] z-50 flex flex-col backdrop-blur-[12px] max-h-[calc(100vh-20px)] overflow-hidden min-w-[180px]"
   bind:this={panelEl}
   style="left:{posX}px; top:{posY}px; width:{w}px; {h > 0 ? `height:${h}px;` : ''}"
 >
-  <div class="drag-header" onmousedown={onDragStart}>
-    <span class="drag-title">{title}</span>
+  <div class="flex items-center py-1.5 px-2.5 border-b border-border cursor-grab select-none gap-1.5 shrink-0 active:cursor-grabbing" onmousedown={onDragStart}>
+    <span class="text-xs font-semibold text-accent-hover flex-1 overflow-hidden text-ellipsis whitespace-nowrap">{title}</span>
     {#if onclose}
-      <button class="drag-close" onclick={onclose}>✕</button>
+      <button class="bg-transparent border-none text-text-dim cursor-pointer text-xs py-0.5 px-1.5 rounded-sm hover:bg-border hover:text-text" onclick={onclose}>✕</button>
     {/if}
   </div>
-  <div class="drag-body">
+  <div class="drag-body flex-1 overflow-y-auto pb-3.5">
     {@render children()}
   </div>
   <!-- Resize edges -->
@@ -87,59 +87,13 @@
 
 <style>
   .draggable-panel {
-    position: fixed;
-    background: #18181eee;
-    border: 1px solid #252530;
-    border-radius: 10px;
-    z-index: 50;
-    display: flex;
-    flex-direction: column;
-    box-shadow: 0 4px 24px #08080a66;
-    backdrop-filter: blur(12px);
-    max-height: calc(100vh - 20px);
-    overflow: hidden;
-    min-width: 180px;
+    background: color-mix(in srgb, var(--color-surface) 93%, transparent);
+    box-shadow: 0 4px 24px var(--color-shadow);
   }
-
-  .drag-header {
-    display: flex;
-    align-items: center;
-    padding: 6px 10px;
-    border-bottom: 1px solid #252530;
-    cursor: grab;
-    user-select: none;
-    gap: 6px;
-    flex-shrink: 0;
-  }
-  .drag-header:active { cursor: grabbing; }
-
-  .drag-title {
-    font-size: 12px;
-    font-weight: 600;
-    color: #8bb8e8;
-    flex: 1;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .drag-close {
-    background: none;
-    border: none;
-    color: #4a5568;
-    cursor: pointer;
-    font-size: 12px;
-    padding: 2px 6px;
-    border-radius: 3px;
-  }
-  .drag-close:hover { background: #252530; color: #b8c4d4; }
 
   .drag-body {
-    flex: 1;
-    overflow-y: auto;
     scrollbar-width: thin;
-    scrollbar-color: #333340 transparent;
-    padding-bottom: 14px;
+    scrollbar-color: var(--color-border) transparent;
   }
 
   /* Resize handles — edges and corner */
@@ -159,9 +113,9 @@
     content: '';
     position: absolute; bottom: 4px; right: 4px;
     width: 8px; height: 8px;
-    border-right: 2px solid #4a5568;
-    border-bottom: 2px solid #4a5568;
+    border-right: 2px solid var(--color-text-dim);
+    border-bottom: 2px solid var(--color-text-dim);
     opacity: 0.6;
   }
-  .resize-se:hover::after { opacity: 1; border-color: #8bb8e8; }
+  .resize-se:hover::after { opacity: 1; border-color: var(--color-accent-hover); }
 </style>

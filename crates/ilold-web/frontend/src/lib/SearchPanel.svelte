@@ -57,27 +57,27 @@
 
   function fieldColor(f: string): string {
     switch (f) {
-      case 'require': return '#c49a4a';
-      case 'external_call': return '#b05050';
-      case 'state_write': return '#5b9bd5';
-      case 'event': return '#5a9a6a';
-      case 'assembly': return '#8b7ec8';
-      default: return '#6b7a8d';
+      case 'require': return 'var(--color-warning)';
+      case 'external_call': return 'var(--color-danger)';
+      case 'state_write': return 'var(--color-accent)';
+      case 'event': return 'var(--color-success)';
+      case 'assembly': return 'var(--color-purple)';
+      default: return 'var(--color-text-muted)';
     }
   }
 
   function terminalColor(t: string): string {
-    return t === 'Return' ? '#5a9a6a' : t === 'Revert' ? '#b05050' : '#6b7a8d';
+    return t === 'Return' ? 'var(--color-success)' : t === 'Revert' ? 'var(--color-danger)' : 'var(--color-text-muted)';
   }
 
   function categoryColor(label: string): string {
     switch (label) {
-      case 'Functions': return '#8bb8e8';
-      case 'State Variables': return '#5b9bd5';
-      case 'Events': return '#c49a4a';
-      case 'External Calls': return '#b05050';
-      case 'Path Types': return '#6b7a8d';
-      default: return '#6b7a8d';
+      case 'Functions': return 'var(--color-accent-hover)';
+      case 'State Variables': return 'var(--color-accent)';
+      case 'Events': return 'var(--color-warning)';
+      case 'External Calls': return 'var(--color-danger)';
+      case 'Path Types': return 'var(--color-text-muted)';
+      default: return 'var(--color-text-muted)';
     }
   }
 </script>
@@ -88,11 +88,12 @@
     x={12} y={50} width={300}
     onclose={toggleSearch}
   >
-    <div class="search-input-wrap">
+    <div class="flex items-center p-1.5 gap-1 border-b border-border-subtle">
       {#if query}
-        <button class="back-btn" onclick={() => { query = ''; results = []; total = null; }}>←</button>
+        <button class="bg-transparent border-none text-text-muted cursor-pointer text-sm py-1 px-1.5 rounded-sm shrink-0 hover:bg-hover hover:text-text" onclick={() => { query = ''; results = []; total = null; }}>←</button>
       {/if}
       <input
+        class="search-input flex-1 py-1.5 px-2.5 bg-transparent border border-border-subtle rounded-md text-text text-xs font-[inherit] outline-none focus:border-accent placeholder:text-text-dim"
         bind:this={inputEl}
         type="text"
         placeholder="Search paths..."
@@ -101,20 +102,20 @@
         onkeydown={(e) => { if (e.key === 'Escape') { if (query) { query = ''; results = []; total = null; } else { toggleSearch(); } } }}
       />
       {#if searching}
-        <span class="status">...</span>
+        <span class="text-[10px] text-text-muted px-1">...</span>
       {:else if total !== null}
-        <span class="status">{total}</span>
+        <span class="text-[10px] text-text-muted px-1">{total}</span>
       {/if}
     </div>
 
-    <div class="panel-body">
+    <div class="flex-1 overflow-y-auto p-1">
       {#if !query && results.length === 0}
         {#if suggestions}
           {#each suggestions.categories as cat}
             {#if cat.items.length > 0}
-              <div class="suggestion-group">
-                <div class="suggestion-label" style="color:{categoryColor(cat.label)}">{cat.label}</div>
-                <div class="suggestion-items">
+              <div class="py-1.5 px-2">
+                <div class="text-[9px] uppercase tracking-wide mb-1 font-semibold" style="color:{categoryColor(cat.label)}">{cat.label}</div>
+                <div class="flex flex-wrap gap-0.5">
                   {#each cat.items as item}
                     <button class="pill" onclick={() => { query = item; doSearch(); }}>{item}</button>
                   {/each}
@@ -123,7 +124,7 @@
             {/if}
           {/each}
         {:else}
-          <div class="examples">
+          <div class="flex flex-wrap gap-1 p-2">
             {#each ['transfer', 'balances', 'revert', 'external', 'owner'] as ex}
               <button class="pill" onclick={() => { query = ex; doSearch(); }}>{ex}</button>
             {/each}
@@ -132,13 +133,13 @@
       {/if}
 
       {#each results.slice(0, 100) as r}
-        <button class="result" onclick={() => goToResult(r)}>
-          <div class="result-top">
-            <span class="func">{r.function}</span>
-            <span class="pid">#{r.path_id}</span>
+        <button class="block w-full py-1 px-2 bg-transparent border-none rounded-sm cursor-pointer text-left text-[inherit] font-[inherit] hover:bg-hover" onclick={() => goToResult(r)}>
+          <div class="flex items-center gap-1 text-[11px]">
+            <span class="text-text font-semibold font-mono text-[11px]">{r.function}</span>
+            <span class="text-text-dim text-[9px]">#{r.path_id}</span>
             <span style="color:{terminalColor(r.terminal)}">{r.terminal}</span>
           </div>
-          <div class="result-matches">
+          <div class="flex gap-0.5 mt-px flex-wrap">
             {#each r.matches.slice(0, 3) as m}
               <span class="match" style="color:{fieldColor(m.field)}">{m.value}</span>
             {/each}
@@ -147,108 +148,28 @@
       {/each}
 
       {#if total !== null && total > 100}
-        <div class="more">+{total - 100} more</div>
+        <div class="text-center p-3 text-[11px] text-text-dim">+{total - 100} more</div>
       {/if}
 
       {#if total === 0}
-        <div class="empty">No results for "{query}"</div>
+        <div class="text-center p-3 text-[11px] text-text-dim">No results for "{query}"</div>
       {/if}
     </div>
   </DraggablePanel>
 {/if}
 
 <style>
-  .back-btn {
-    background: none; border: none;
-    color: #6b7a8d; cursor: pointer;
-    font-size: 14px; padding: 4px 6px;
-    border-radius: 4px; flex-shrink: 0;
-  }
-  .back-btn:hover { background: #252830; color: #b8c4d4; }
-
-  .search-input-wrap {
-    display: flex; align-items: center;
-    padding: 6px; gap: 4px;
-    border-bottom: 1px solid #2a2d38;
-  }
-
-  .search-input-wrap input {
-    flex: 1;
-    padding: 6px 10px;
-    background: transparent;
-    border: 1px solid #2a2d38;
-    border-radius: 6px;
-    color: #b8c4d4;
-    font-size: 12px;
-    font-family: inherit;
-    outline: none;
-  }
-  .search-input-wrap input:focus { border-color: #5b9bd5; }
-  .search-input-wrap input::placeholder { color: #4a5568; }
-
-  .status { font-size: 10px; color: #6b7a8d; padding: 0 4px; }
-
-  .panel-body {
-    flex: 1;
-    overflow-y: auto;
-    padding: 4px;
-  }
-
-  .suggestion-group {
-    padding: 6px 8px;
-  }
-  .suggestion-label {
-    font-size: 9px;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    margin-bottom: 4px;
-    font-weight: 600;
-  }
-  .suggestion-items {
-    display: flex; flex-wrap: wrap; gap: 3px;
-  }
-  .examples {
-    display: flex; flex-wrap: wrap; gap: 4px; padding: 8px;
-  }
   .pill {
-    background: #1e2028; border: 1px solid #2a2d38;
-    color: #6b7a8d; padding: 3px 10px;
+    background: var(--color-hover); border: 1px solid var(--color-border-subtle);
+    color: var(--color-text-muted); padding: 3px 10px;
     border-radius: 12px; cursor: pointer;
     font-size: 11px; font-family: monospace;
   }
-  .pill:hover { border-color: #5b9bd5; color: #b8c4d4; }
+  .pill:hover { border-color: var(--color-accent); color: var(--color-text); }
 
-  .result {
-    display: block; width: 100%;
-    padding: 5px 8px;
-    background: transparent;
-    border: none;
-    border-radius: 4px;
-    cursor: pointer;
-    text-align: left;
-    color: inherit; font: inherit;
-  }
-  .result:hover { background: #252830; }
-
-  .result-top {
-    display: flex; align-items: center;
-    gap: 4px; font-size: 11px;
-  }
-  .func { color: #b8c4d4; font-weight: 600; font-family: monospace; font-size: 11px; }
-  .pid { color: #4a5568; font-size: 9px; }
-
-  .result-matches {
-    display: flex; gap: 3px; margin-top: 1px; flex-wrap: wrap;
-  }
   .match {
     font-size: 9px; font-family: monospace;
-    background: #181a2088; padding: 1px 4px;
-    border-radius: 3px;
-  }
-
-
-  .more, .empty {
-    text-align: center; padding: 12px;
-    font-size: 11px; color: #4a5568;
+    background: color-mix(in srgb, var(--color-surface) 50%, transparent);
+    padding: 1px 4px; border-radius: 3px;
   }
 </style>

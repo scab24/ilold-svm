@@ -54,45 +54,51 @@
   }
 </script>
 
-<div class="state-panel">
-  <div class="panel-header">
-    <span class="panel-title">State Variables</span>
-    <button class="refresh-btn" onclick={fetchState} disabled={loading} title="Refresh state">
+<div class="flex flex-col bg-surface border border-border rounded-md overflow-hidden h-full">
+  <!-- Header -->
+  <div class="flex items-center justify-between px-2.5 py-2 border-b border-border flex-shrink-0">
+    <span class="text-[10px] text-text-muted uppercase tracking-[0.5px] font-semibold">State Variables</span>
+    <button
+      class="bg-transparent border border-border text-text-muted cursor-pointer text-xs px-1.5 py-0.5 rounded-[3px] leading-none hover:text-accent-hover hover:border-accent disabled:opacity-40 disabled:cursor-default"
+      onclick={fetchState}
+      disabled={loading}
+      title="Refresh state"
+    >
       {loading ? '...' : '↻'}
     </button>
   </div>
 
-  <div class="panel-body">
+  <!-- Body -->
+  <div class="panel-body flex-1 overflow-y-auto p-1">
     {#if loading && stateVars.length === 0}
-      <div class="state-loading">Loading state...</div>
+      <div class="text-[11px] text-text-dim py-4 px-2 text-center italic">Loading state...</div>
     {:else if error && stateVars.length === 0}
-      <div class="state-error">{error}</div>
+      <div class="text-[11px] text-danger py-3 px-2 text-center">{error}</div>
     {:else if stateVars.length === 0}
-      <div class="state-empty">No state changes yet. Explore functions to see variable mutations.</div>
+      <div class="text-[11px] text-text-dim py-4 px-2 text-center italic">No state changes yet. Explore functions to see variable mutations.</div>
     {:else}
       {#each stateVars as v}
         <button
-          class="var-row"
-          class:var-expanded={expandedVar === v.variable}
+          class="flex items-center gap-1.5 w-full px-2 py-1.5 bg-transparent border-none border-b border-hover text-text text-[11px] font-mono cursor-pointer text-left rounded-none transition-[background] duration-100 hover:bg-hover {expandedVar === v.variable ? 'bg-surface-alt border-l-2 border-l-accent' : ''}"
           onclick={() => toggleTimeline(v.variable)}
         >
-          <span class="var-name">{v.variable}</span>
-          <span class="var-changes">
+          <span class="text-accent-hover font-semibold flex-shrink-0 max-w-[120px] overflow-hidden text-ellipsis whitespace-nowrap">{v.variable}</span>
+          <span class="flex-1 text-[10px] text-text-muted overflow-hidden text-ellipsis whitespace-nowrap">
             {#if v.changes?.length > 0}
               {v.changes[v.changes.length - 1]}
             {/if}
           </span>
-          <span class="var-chevron">{expandedVar === v.variable ? '▾' : '▸'}</span>
+          <span class="text-[9px] text-text-dim flex-shrink-0 w-2.5 text-center">{expandedVar === v.variable ? '▾' : '▸'}</span>
         </button>
 
         {#if expandedVar === v.variable}
-          <div class="timeline-section">
+          <div class="py-1 px-2 pb-2 pl-4 border-l-2 border-border ml-2 mb-1">
             {#if v.changes?.length > 0}
-              {#each v.changes as change}
-                <div class="tl-entry">{change}</div>
+              {#each v.changes as change, i}
+                <div class="font-mono text-[10px] text-text-muted py-[3px] {i < v.changes.length - 1 ? 'border-b border-hover' : ''}">{change}</div>
               {/each}
             {:else}
-              <div class="tl-empty">No changes recorded.</div>
+              <div class="text-[10px] text-text-dim py-1.5 italic">No changes recorded.</div>
             {/if}
           </div>
         {/if}
@@ -102,141 +108,8 @@
 </div>
 
 <style>
-  .state-panel {
-    display: flex;
-    flex-direction: column;
-    background: #18181e;
-    border: 1px solid #252530;
-    border-radius: 6px;
-    overflow: hidden;
-    height: 100%;
-  }
-
-  .panel-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 8px 10px;
-    border-bottom: 1px solid #252530;
-    flex-shrink: 0;
-  }
-
-  .panel-title {
-    font-size: 10px;
-    color: #6b7a8d;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    font-weight: 600;
-  }
-
-  .refresh-btn {
-    background: none;
-    border: 1px solid #252530;
-    color: #6b7a8d;
-    cursor: pointer;
-    font-size: 12px;
-    padding: 2px 6px;
-    border-radius: 3px;
-    line-height: 1;
-  }
-  .refresh-btn:hover { color: #8bb8e8; border-color: #5b9bd5; }
-  .refresh-btn:disabled { opacity: 0.4; cursor: default; }
-
-  .panel-body {
-    flex: 1;
-    overflow-y: auto;
-    padding: 4px;
-  }
+  /* Scrollbar — pseudo-elements require scoped CSS */
   .panel-body::-webkit-scrollbar { width: 4px; }
   .panel-body::-webkit-scrollbar-track { background: transparent; }
-  .panel-body::-webkit-scrollbar-thumb { background: #252530; border-radius: 2px; }
-
-  /* Empty / loading / error states */
-  .state-loading,
-  .state-empty {
-    font-size: 11px;
-    color: #4a5568;
-    padding: 16px 8px;
-    text-align: center;
-    font-style: italic;
-  }
-
-  .state-error {
-    font-size: 11px;
-    color: #b05050;
-    padding: 12px 8px;
-    text-align: center;
-  }
-
-  /* Variable row */
-  .var-row {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    width: 100%;
-    padding: 6px 8px;
-    background: none;
-    border: none;
-    border-bottom: 1px solid #1e1e28;
-    color: #b8c4d4;
-    font-size: 11px;
-    font-family: monospace;
-    cursor: pointer;
-    text-align: left;
-    border-radius: 0;
-    transition: background 0.1s;
-  }
-  .var-row:hover { background: #1e1e28; }
-  .var-row.var-expanded { background: #1a1a24; border-left: 2px solid #5b9bd5; }
-
-  .var-name {
-    color: #8bb8e8;
-    font-weight: 600;
-    flex-shrink: 0;
-    max-width: 120px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .var-changes {
-    flex: 1;
-    font-size: 10px;
-    color: #8b95a5;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .var-chevron {
-    font-size: 9px;
-    color: #4a5568;
-    flex-shrink: 0;
-    width: 10px;
-    text-align: center;
-  }
-
-  /* Timeline expansion */
-  .timeline-section {
-    padding: 4px 8px 8px 16px;
-    border-left: 2px solid #252530;
-    margin-left: 8px;
-    margin-bottom: 4px;
-  }
-
-  .tl-empty {
-    font-size: 10px;
-    color: #4a5568;
-    padding: 6px 0;
-    font-style: italic;
-  }
-
-  .tl-entry {
-    font-family: monospace;
-    font-size: 10px;
-    color: #8b95a5;
-    padding: 3px 0;
-    border-bottom: 1px solid #1e1e28;
-  }
-  .tl-entry:last-child { border-bottom: none; }
+  .panel-body::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 2px; }
 </style>

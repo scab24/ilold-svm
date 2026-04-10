@@ -13,43 +13,40 @@
   );
 </script>
 
-<div class="block-node {typeClass}" class:dimmed={data._dimmed}>
+<div
+  class="block-node py-1 px-3 rounded-sm bg-hover border border-border font-mono text-[10px] min-w-[80px] text-center"
+  class:entry={typeClass === 'entry'}
+  class:return={typeClass === 'return'}
+  class:revert={typeClass === 'revert'}
+  class:loop={typeClass === 'loop'}
+  class:dimmed={data._dimmed}
+>
   <span>{data.label}</span>
 </div>
 <Handle type="target" position={Position.Top} />
 <Handle type="source" position={Position.Bottom} />
 
 <style>
-  .block-node {
-    padding: 4px 12px;
-    border-radius: 4px;
-    background: #1e1e28;
-    border: 1px solid #252530;
-    color: #8b95a5;
-    font-size: 10px;
-    font-family: monospace;
-    min-width: 80px;
-    text-align: center;
-  }
+  .block-node { color: var(--color-text-muted); }
   .block-node.entry {
-    background: #1a2a3a;
-    border-color: #3a6b9f;
-    color: #8bb8e8;
+    background: var(--color-tint-accent);
+    border-color: var(--color-accent-dark);
+    color: var(--color-accent-hover);
   }
   .block-node.return {
-    background: #1a2a1a;
-    border-color: #5a9a6a;
-    color: #7aba8a;
+    background: var(--color-tint-success);
+    border-color: var(--color-success);
+    color: var(--color-success-light);
   }
   .block-node.revert {
-    background: #2a1a1a;
-    border-color: #b05050;
-    color: #c07070;
+    background: var(--color-tint-danger);
+    border-color: var(--color-danger);
+    color: var(--color-danger-light);
   }
   .block-node.loop {
-    background: #2a2518;
-    border-color: #c49a4a;
-    color: #c49a4a;
+    background: var(--color-tint-warning);
+    border-color: var(--color-warning);
+    color: var(--color-warning);
     border-radius: 50%;
     padding: 8px;
   }
