@@ -11,7 +11,7 @@
     mode: 'cfg' | 'sequences';
     seqAnalysis: any;
     contract: { name: string; functions?: any[] };
-    cyInstance: any;
+    lookupBlock: (blockId: string) => { statements: string[]; node_type: string } | null;
     onclose: () => void;
     onpathselect: (funcName: string, path: any) => void;
     onexpandcfg: (funcName: string, nodeId?: string) => void;
@@ -26,7 +26,7 @@
     mode,
     seqAnalysis,
     contract,
-    cyInstance,
+    lookupBlock,
     onclose,
     onpathselect,
     onexpandcfg,
@@ -98,9 +98,9 @@
             <div class="narr-label" style="margin-top:8px">Execution flow</div>
             <div class="flow-list">
               {#each selectedPath.nodes as step, i}
-                {@const cyNode = cyInstance?.getElementById(`cfg:${pFunc}:b${step.block_id}`)}
-                {@const stmts = cyNode?.data('statements') || []}
-                {@const kind = cyNode?.data('node_type') || ''}
+                {@const blockData = lookupBlock(`cfg:${pFunc}:b${step.block_id}`)}
+                {@const stmts = blockData?.statements || []}
+                {@const kind = blockData?.node_type || ''}
                 {@const isLast = i === selectedPath.nodes.length - 1}
                 {@const branchKind = typeof step.branch_taken === 'string' ? step.branch_taken : step.branch_taken?.kind || ''}
                 {#if kind === 'Entry'}
@@ -258,9 +258,9 @@
             <div class="narr-label" style="margin-top:8px">Execution flow</div>
             <div class="flow-list">
               {#each routeToHere as step, i}
-                {@const cyNode = cyInstance?.getElementById(`cfg:${parentFunc}:b${step.block_id}`)}
-                {@const stmts = cyNode?.data('statements') || []}
-                {@const kind = cyNode?.data('node_type') || ''}
+                {@const blockData = lookupBlock(`cfg:${parentFunc}:b${step.block_id}`)}
+                {@const stmts = blockData?.statements || []}
+                {@const kind = blockData?.node_type || ''}
                 {@const isHere = i === routeToHere.length - 1}
                 {@const branchKind = typeof step.branch_taken === 'string' ? step.branch_taken : step.branch_taken?.kind || ''}
                 {#if kind === 'Entry'}

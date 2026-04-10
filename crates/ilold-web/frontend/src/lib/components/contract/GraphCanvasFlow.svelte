@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { SvelteFlow, Background, Controls, type NodeTypes } from '@xyflow/svelte';
+  import { SvelteFlow, SvelteFlowProvider, Background, Controls, useSvelteFlow, type NodeTypes } from '@xyflow/svelte';
   import type { Node, Edge } from '@xyflow/svelte';
   import '@xyflow/svelte/dist/style.css';
 
@@ -16,12 +16,13 @@
 
   // ── Props — event delegation to parent ──────────────────────
   interface Props {
-    onnodetap?: (node: Node<GraphNodeData>) => void;
+    onnodetap?: (node: Node<GraphNodeData>, event: MouseEvent) => void;
     onbackgroundtap?: () => void;
     oncontextmenu?: (event: MouseEvent, node: Node<GraphNodeData>) => void;
+    onready?: (api: { fitView: (opts?: any) => Promise<boolean> }) => void;
   }
 
-  let { onnodetap, onbackgroundtap, oncontextmenu }: Props = $props();
+  let { onnodetap, onbackgroundtap, oncontextmenu, onready }: Props = $props();
 
   // ── Custom node type registry ─────────────────────────────
   const nodeTypes: NodeTypes = {
@@ -70,21 +71,27 @@
 </script>
 
 <div class="graph-canvas-flow">
-  <SvelteFlow
-    bind:nodes={flowNodes}
-    bind:edges={flowEdges}
-    {nodeTypes}
-    onnodeclick={({ node }) => onnodetap?.(node as Node<GraphNodeData>)}
-    onpaneclick={() => onbackgroundtap?.()}
-    onnodecontextmenu={({ event, node }) => oncontextmenu?.(event, node as Node<GraphNodeData>)}
-    fitView
-    minZoom={0.1}
-    maxZoom={4}
-    colorMode="dark"
-  >
-    <Background />
-    <Controls />
-  </SvelteFlow>
+  <SvelteFlowProvider>
+    <SvelteFlow
+      bind:nodes={flowNodes}
+      bind:edges={flowEdges}
+      {nodeTypes}
+      onnodeclick={({ event, node }) => onnodetap?.(node as Node<GraphNodeData>, event as MouseEvent)}
+      onpaneclick={() => onbackgroundtap?.()}
+      onnodecontextmenu={({ event, node }) => oncontextmenu?.(event, node as Node<GraphNodeData>)}
+      oninit={() => {
+        const { fitView } = useSvelteFlow();
+        onready?.({ fitView });
+      }}
+      fitView
+      minZoom={0.1}
+      maxZoom={4}
+      colorMode="dark"
+    >
+      <Background />
+      <Controls />
+    </SvelteFlow>
+  </SvelteFlowProvider>
 </div>
 
 <style>
