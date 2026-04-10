@@ -9,8 +9,6 @@
   import {
     getNodes,
     getEdges,
-    setNodes,
-    setEdges,
     type GraphNodeData,
   } from '$lib/stores/graph.svelte';
 
@@ -33,40 +31,24 @@
 
   // ── Reactive bridge: graph store ↔ SvelteFlow ──────────────
   //
-  // SvelteFlow uses bind:nodes/bind:edges (Svelte 5 $bindable).
-  // The graph store is the source of truth for external mutations
-  // (addNode, removeNode, setNodes, etc.).
-  //
-  // Direction 1 — Store → SvelteFlow: $derived reads from store,
-  //   but bind: requires a writable variable, not $derived.
-  //   So we use $state + $effect to sync store → local.
-  //
-  // Direction 2 — SvelteFlow → Store: bind: writes to local.
-  //   We sync back to store in $effect, using reference equality
-  //   to break cycles (store set → triggers store→local effect →
-  //   sets same reference → local→store effect sees same ref → no-op).
+  // The graph store ($state in graph.svelte.ts) is the source of truth.
+  // SvelteFlow needs bind:nodes/bind:edges for internal mutations (drag/select).
+  // We sync store → local via $effect. Local drag changes are visual-only
+  // (not persisted back to store — acceptable for now).
 
-  let flowNodes = $state<Node[]>(getNodes());
-  let flowEdges = $state<Edge[]>(getEdges());
+  let flowNodes = $state<Node[]>([]);
+  let flowEdges = $state<Edge[]>([]);
 
-  // Store → local (external mutations like addNode/setNodes)
+  // Store → local: when store changes (addNode, setNodes, etc.), sync to local
   $effect(() => {
-    const latest = getNodes();
-    if (latest !== flowNodes) flowNodes = latest;
+    const storeNodes = getNodes();
+    // Always sync — Svelte 5 $effect tracks the $state read inside getNodes()
+    flowNodes = storeNodes as Node[];
   });
 
   $effect(() => {
-    const latest = getEdges();
-    if (latest !== flowEdges) flowEdges = latest;
-  });
-
-  // Local → store (SvelteFlow internal mutations like drag/select)
-  $effect(() => {
-    if (flowNodes !== getNodes()) setNodes(flowNodes as Node<GraphNodeData>[]);
-  });
-
-  $effect(() => {
-    if (flowEdges !== getEdges()) setEdges(flowEdges);
+    const storeEdges = getEdges();
+    flowEdges = storeEdges;
   });
 </script>
 

@@ -45,7 +45,7 @@
 
   let callgraphRaw: CytoscapeGraph | null = $state(null);
   let flowApi: { fitView: (opts?: any) => Promise<boolean> } | null = $state(null);
-  let cfgCache: Record<string, CytoscapeGraph> = $state({});
+  let cfgCache: Record<string, CytoscapeGraph> = {};
 
   /** Merge an opacity value into an edge's style string */
   function edgeStyle(base: string | undefined, opacity: number): string {
@@ -66,6 +66,46 @@
     setEdges(getEdges().map(e => {
       if (e.data?._dimmed) {
         return { ...e, style: edgeStyle(e.style, 1), data: { ...e.data, _dimmed: false } };
+      }
+      return e;
+    }));
+  }
+
+  /** Remove non-branch descendants of a seq node, plus orphaned branches */
+  function collapseNonBranchDescendants(nodeId: string) {
+    const allDesc = findDescendants(nodeId);
+    const toRemove = new Set<string>();
+    for (const id of allDesc) {
+      const n = findNode(id);
+      if (n && n.data._type === 'seq-next' && !(n.data as any)._isBranch) {
+        const subDesc = findDescendants(id);
+        for (const sid of subDesc) toRemove.add(sid);
+        toRemove.add(id);
+      }
+    }
+    if (toRemove.size > 0) {
+      // Also collect branches whose parent is being removed (they'd become orphans)
+      for (const id of allDesc) {
+        const n = findNode(id);
+        if (n && (n.data as any)._isBranch && toRemove.has((n.data as any)._seqParent)) {
+          toRemove.add(id);
+        }
+      }
+      removeNodesById(toRemove);
+    }
+  }
+
+  /** Dim all function nodes (except excludeId) and call edges to 0.1 opacity */
+  function dimFunctionLayer(excludeId?: string) {
+    setNodes(getNodes().map(n => {
+      if (n.data._type === 'function' && n.id !== excludeId) {
+        return { ...n, data: { ...n.data, _dimmed: true } as GraphNodeData };
+      }
+      return n;
+    }));
+    setEdges(getEdges().map(e => {
+      if (e.data?._type === 'call') {
+        return { ...e, style: edgeStyle(e.style, 0.1), data: { ...e.data, _dimmed: true } };
       }
       return e;
     }));
@@ -100,40 +140,39 @@
     let stale = false;
 
     (async () => {
-      if (!canvasFuncs.has(nav.func)) {
-        addFuncToCanvas(nav.func);
-        await tick();
-      }
+      try {
+        if (!canvasFuncs.has(nav.func)) {
+          addFuncToCanvas(nav.func);
+          await tick();
+        }
+        if (stale || !contract) return;
 
-      if (!funcPaths[nav.func]) {
-        try {
+        if (!funcPaths[nav.func]) {
           funcPaths[nav.func] = await getPaths(contract.name, nav.func);
           funcPaths = { ...funcPaths };
-        } catch { return; }
-      }
-
-      if (stale) return;
-
-      if (!expandedFuncs.has(nav.func)) {
-        await toggleFuncExpand(nav.func);
-      }
-
-      if (stale) return;
-
-      const funcNode = getNodes().find(
-        n => n.data._type === 'function' && n.data.label === nav.func
-      );
-      if (funcNode) {
-        selectedNode = { ...funcNode.data, id: funcNode.id };
-        const path = funcPaths[nav.func]?.paths?.find((p: any) => p.id === nav.pathId);
-        if (path) highlightPath(nav.func, path);
-        if (flowApi) {
-          await tick();
-          flowApi.fitView({ nodes: [{ id: funcNode.id }], padding: 0.5, duration: 400 });
         }
-      }
+        if (stale || !contract) return;
 
-      if (!stale) setSearchNavigate(null);
+        if (!expandedFuncs.has(nav.func)) {
+          await toggleFuncExpand(nav.func);
+        }
+        if (stale) return;
+
+        const funcNode = getNodes().find(
+          n => n.data._type === 'function' && n.data.label === nav.func
+        );
+        if (funcNode) {
+          selectedNode = { ...funcNode.data, id: funcNode.id };
+          const path = funcPaths[nav.func]?.paths?.find((p: any) => p.id === nav.pathId);
+          if (path) highlightPath(nav.func, path);
+          if (flowApi) {
+            await tick();
+            flowApi.fitView({ nodes: [{ id: funcNode.id }], padding: 0.5, duration: 400 });
+          }
+        }
+      } finally {
+        if (!stale) setSearchNavigate(null);
+      }
     })();
 
     return () => { stale = true; };
@@ -195,6 +234,7 @@
     for (const k of seqExpanded.keys()) {
       if (!findNode(k)) seqExpanded.delete(k);
     }
+    seqExpanded = new Map(seqExpanded);
   }
 
   function removeFuncFromCanvas(funcName: string) {
@@ -237,7 +277,9 @@
     canvasFuncs.delete(funcName);
     canvasFuncs = new Set(canvasFuncs);
     expandedFuncs.delete(funcName);
+    expandedFuncs = new Set(expandedFuncs);
     seqExpanded.delete(nodeId);
+    seqExpanded = new Map(seqExpanded);
   }
 
   // --- Event handlers ---
@@ -297,7 +339,7 @@
     if (d._type === 'function' && !d.is_external) {
       handleFunctionTap(d.label, node.id, event?.shiftKey ?? false, event);
     } else if (d._type === 'seq-next') {
-      handleSeqNodeTap((d as any)._funcName || d.label, node.id, event?.shiftKey ?? false, !!(d as any)._isBranch, (d as any)._seqParent);
+      handleSeqNodeTap((d as any)._funcName || d.label, node.id, event?.shiftKey ?? false, !!(d as any)._isBranch, (d as any)._seqParent, event);
     }
     handleNodeTap(node);
   }
@@ -320,9 +362,34 @@
     }
   }
 
-  async function handleSeqNodeTap(funcName: string, nodeId: string, shiftKey: boolean, isBranch: boolean, seqParent: string) {
-    // B3-3: full sequence expansion logic
-    console.warn('handleSeqNodeTap: sequences deferred to B3-3');
+  async function handleSeqNodeTap(funcName: string, nodeId: string, shiftKey: boolean, isBranch: boolean, seqParent: string, event?: MouseEvent) {
+    if (shiftKey && event) {
+      branchMenu = {
+        x: event.clientX,
+        y: event.clientY,
+        parentNodeId: nodeId,
+        parentFuncName: funcName,
+      };
+      return;
+    }
+
+    // Remove auto-expanded siblings at same level first (collapse sibling trees)
+    if (seqParent) {
+      const siblings = getNodes().filter(
+        n => n.data._type === 'seq-next'
+          && (n.data as any)._seqParent === seqParent
+          && n.id !== nodeId
+      );
+      for (const sib of siblings) {
+        if (seqExpanded.has(sib.id)) {
+          collapseNonBranchDescendants(sib.id);
+          seqExpanded.delete(sib.id);
+        }
+      }
+      seqExpanded = new Map(seqExpanded);
+    }
+
+    await toggleSeqExpand(funcName, nodeId);
   }
 
   async function toggleFuncExpand(funcName: string, anchorNodeId?: string) {
@@ -446,31 +513,159 @@
     }, 350);
 
     // 7. Dim function nodes + call edges
-    setNodes(getNodes().map(n => {
-      if (n.data._type === 'function') {
-        const dimmed = n.id !== parentId;
-        return { ...n, data: { ...n.data, _dimmed: dimmed } as GraphNodeData };
-      }
-      return n;
-    }));
-    setEdges(getEdges().map(e => {
-      if (e.data?._type === 'call') {
-        return { ...e, style: edgeStyle(e.style, 0.1), data: { ...e.data, _dimmed: true } };
-      }
-      return e;
-    }));
+    dimFunctionLayer(parentId);
 
     expandedFuncs.add(funcName);
     expandedFuncs = new Set(expandedFuncs);
   }
 
   function addBranch(parentNodeId: string, parentFuncName: string, branchFuncName: string) {
-    console.warn(`[B3-3] addBranch — not yet ported`);
+    if (!seqTree) return;
+
+    const func = seqTree.functions.find((f: any) => f.name === branchFuncName);
+    const transition = seqAnalysis?.transitions?.find(
+      t => t.from === parentFuncName && t.to === branchFuncName
+    ) ?? null;
+
+    // Count existing children to offset position
+    const existingChildren = getNodes().filter(
+      n => n.data._type === 'seq-next' && (n.data as any)._seqParent === parentNodeId
+    );
+    const parentNode = findNode(parentNodeId);
+    const parentPos = parentNode?.position ?? { x: 300, y: 200 };
+    const isLR = seqDirection === 'LR';
+
+    const offsetIdx = existingChildren.length;
+    const nodeId = `seq-branch:${parentNodeId}→${branchFuncName}:${offsetIdx}`;
+
+    const position = isLR
+      ? { x: parentPos.x + 180, y: parentPos.y + offsetIdx * 50 }
+      : { x: parentPos.x + offsetIdx * 160, y: parentPos.y + 60 };
+
+    addNode({
+      id: nodeId,
+      type: 'sequence',
+      position,
+      data: {
+        _type: 'seq-next',
+        label: branchFuncName,
+        _funcName: branchFuncName,
+        _seqParent: parentNodeId,
+        _isBranch: true,
+        readOnly: func?.read_only ?? false,
+        pathCount: func?.path_count,
+        _transition: transition,
+      },
+    } as Node<GraphNodeData>);
+
+    addEdge({
+      id: `seq-edge:branch:${parentNodeId}→${branchFuncName}:${offsetIdx}`,
+      source: parentNodeId,
+      target: nodeId,
+      type: 'default',
+      data: { _type: 'seq-edge' },
+      style: dashedEdgeStyle('#5a9a6a'),
+    });
+
     branchMenu = null;
   }
 
   async function toggleSeqExpand(funcName: string, parentNodeId: string) {
-    console.warn(`[B3-3] toggleSeqExpand("${funcName}") — not yet ported`);
+    // ── COLLAPSE ──
+    if (seqExpanded.has(parentNodeId)) {
+      collapseNonBranchDescendants(parentNodeId);
+      seqExpanded.delete(parentNodeId);
+      seqExpanded = new Map(seqExpanded);
+
+      // If no seq-next nodes remain, un-dim everything
+      const anySeq = getNodes().some(n => n.data._type === 'seq-next');
+      if (!anySeq) resetAllDimmed();
+      return;
+    }
+
+    // ── EXPAND ──
+    if (!seqTree || !seqTree.functions) return;
+    const parentNode = findNode(parentNodeId);
+    const parentPos = parentNode?.position ?? { x: 300, y: 200 };
+
+    const seqFunctions: Array<{ name: string; visibility: string; read_only: boolean; path_count: number }> = seqTree.functions;
+
+    const newNodes: Node<GraphNodeData>[] = [];
+    const newEdges: Edge[] = [];
+
+    for (const func of seqFunctions) {
+      const targetName = func.name;
+      const nodeId = `seq:${parentNodeId}→${targetName}`;
+
+      // Look up transition from seqAnalysis
+      const transition = seqAnalysis?.transitions?.find(
+        t => t.from === funcName && t.to === targetName
+      ) ?? null;
+
+      newNodes.push({
+        id: nodeId,
+        type: 'sequence',
+        position: { ...parentPos },
+        data: {
+          _type: 'seq-next',
+          label: targetName,
+          _funcName: targetName,
+          _seqParent: parentNodeId,
+          _isBranch: false,
+          readOnly: func.read_only,
+          pathCount: func.path_count,
+          _transition: transition,
+        },
+      } as Node<GraphNodeData>);
+
+      newEdges.push({
+        id: `seq-edge:${parentNodeId}→${targetName}`,
+        source: parentNodeId,
+        target: nodeId,
+        type: 'default',
+        data: { _type: 'seq-edge' },
+        style: transition?.shared_state?.length
+          ? dashedEdgeStyle('#c49a4a')
+          : undefined,
+      });
+    }
+
+    // Run dagre layout on the seq subset
+    const isLR = seqDirection === 'LR';
+    const layoutNodes = runDagreLayout(newNodes, newEdges, {
+      rankDir: seqDirection,
+      nodeSep: 25,
+      rankSep: 40,
+    });
+
+    // Offset below (TB) or beside (LR) parent
+    let minX = Infinity, minY = Infinity, maxX = -Infinity;
+    for (const n of layoutNodes) {
+      if (n.position.x < minX) minX = n.position.x;
+      if (n.position.x > maxX) maxX = n.position.x;
+      if (n.position.y < minY) minY = n.position.y;
+    }
+    const centerX = (minX + maxX) / 2;
+    const offsetX = isLR ? parentPos.x + 180 - minX : parentPos.x - centerX;
+    const offsetY = isLR ? parentPos.y - minY : parentPos.y + 60 - minY;
+
+    for (const n of layoutNodes) {
+      n.position = { x: n.position.x + offsetX, y: n.position.y + offsetY };
+    }
+
+    // Merge layout positions back
+    const posMap = new Map(layoutNodes.map(n => [n.id, n.position]));
+    for (const n of newNodes) {
+      const pos = posMap.get(n.id);
+      if (pos) n.position = pos;
+    }
+
+    addNodes(newNodes);
+    addEdges(newEdges);
+    dimFunctionLayer();
+
+    seqExpanded.set(parentNodeId, true);
+    seqExpanded = new Map(seqExpanded);
   }
 
   function switchMode(newMode: 'cfg' | 'sequences') {

@@ -14,6 +14,7 @@
   class:has-conditions={hasConditions}
   class:has-shared={hasShared}
   class:is-branch={data._isBranch}
+  class:dimmed={data._dimmed}
 >
   <span>{data.label}</span>
   {#if data.pathCount}
@@ -52,6 +53,10 @@
   }
   .seq-node.is-branch {
     border-color: #5a9a6a;
+  }
+  .seq-node.dimmed {
+    opacity: 0.25;
+    pointer-events: none;
   }
   .sn-paths {
     font-size: 9px;

@@ -32,6 +32,7 @@ export interface SequenceNodeData {
   readOnly?: boolean;
   _transition?: any;
   _chainTransitions?: any[];
+  _dimmed?: boolean;
 }
 
 export type GraphNodeData = FunctionNodeData | BlockNodeData | SequenceNodeData;
