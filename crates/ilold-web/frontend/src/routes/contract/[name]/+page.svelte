@@ -183,6 +183,10 @@
     const nodeData = callgraphRaw.nodes.find(n => n.data.label === funcName);
     if (!nodeData) return;
 
+    // Look up enrichment data from ContractDetail
+    const allFuncs = [...(contract?.functions ?? []), ...(contract?.inherited_functions ?? [])];
+    const funcDetail = allFuncs.find((f: any) => f.name === funcName);
+
     const count = canvasFuncs.size;
     const x = 300 + (count % 3 - 1) * 200;
     const y = 200 + Math.floor(count / 3) * 100;
@@ -196,6 +200,10 @@
         label: nodeData.data.label,
         is_external: nodeData.data.is_external ?? false,
         contractName: nodeData.data.contract,
+        visibility: funcDetail?.visibility,
+        mutability: funcDetail?.mutability,
+        path_count: funcDetail?.path_count,
+        modifiers: funcDetail?.modifiers,
       },
     } as Node<GraphNodeData>);
 
@@ -216,6 +224,11 @@
             target: e.data.target,
             type: 'default',
             data: { _type: 'call', kind: e.data.kind },
+            ...(e.data.call_count > 1 ? {
+              label: `\u00D7${e.data.call_count}`,
+              labelStyle: 'fill: var(--color-text-muted); font-size: 10px',
+              labelBgStyle: 'fill: var(--color-bg-surface)',
+            } : {}),
           });
         }
       }

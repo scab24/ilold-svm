@@ -9,6 +9,11 @@ export interface FunctionNodeData {
   is_external: boolean;
   contractName?: string;
   _dimmed?: boolean;
+  // Enrichment fields (from ContractDetail.functions)
+  visibility?: string;
+  mutability?: string;
+  path_count?: number;
+  modifiers?: string[];
 }
 
 export interface BlockNodeData {

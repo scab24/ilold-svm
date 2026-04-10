@@ -11,6 +11,14 @@
     : data.node_type === 'LoopCondition' ? 'loop'
     : 'default'
   );
+
+  let isGeneric = $derived(typeClass === 'default');
+
+  let stmtCount = $derived(data.statements?.length ?? 0);
+  let hasExternal = $derived(data.statements?.some(s => s.includes('\u2192') || s.includes('call')) ?? false);
+  let hasStateWrite = $derived(data.statements?.some(s => /(?<![><!])=(?!=)/.test(s)) ?? false);
+
+  let showBadges = $derived(isGeneric && stmtCount > 0);
 </script>
 
 <div
@@ -22,6 +30,17 @@
   class:dimmed={data._dimmed}
 >
   <span>{data.label}</span>
+  {#if showBadges}
+    <div class="flex items-center justify-center gap-1 mt-0.5">
+      <span class="text-[8px] text-text-dim">{stmtCount} stmts</span>
+      {#if hasExternal}
+        <span class="text-[8px] px-0.5 rounded bg-danger/20 text-danger-light">ext</span>
+      {/if}
+      {#if hasStateWrite}
+        <span class="text-[8px] px-0.5 rounded bg-accent-dark/30 text-accent-hover">write</span>
+      {/if}
+    </div>
+  {/if}
 </div>
 <Handle type="target" position={Position.Top} />
 <Handle type="source" position={Position.Bottom} />

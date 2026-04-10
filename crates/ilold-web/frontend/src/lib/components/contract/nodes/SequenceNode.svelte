@@ -4,21 +4,49 @@
 
   let { data }: { data: SequenceNodeData } = $props();
 
-  let hasConditions = $derived((data._transition?.conditions?.length ?? 0) > 0);
+  let hasConditions = $derived((data._transition?.conditions_affected?.length ?? 0) > 0);
   let hasShared = $derived((data._transition?.shared_state?.length ?? 0) > 0);
+  let sharedVars: string[] = $derived(data._transition?.shared_state ?? []);
+  let visibleVars = $derived(sharedVars.slice(0, 2));
+  let overflowCount = $derived(Math.max(0, sharedVars.length - 2));
+
+  let hasIndicators = $derived(
+    hasConditions || data._isBranch || data.readOnly || hasShared
+  );
 </script>
 
 <div
-  class="seq-node py-1 px-2.5 rounded-sm bg-surface-alt border-[1.5px] border-accent text-text font-mono text-[11px] min-w-[80px] text-center flex items-center gap-1.5"
+  class="seq-node py-1 px-2.5 rounded-sm bg-surface-alt border-[1.5px] border-accent text-text font-mono text-[11px] min-w-[80px] text-center flex flex-col items-center gap-0.5"
   class:readonly={data.readOnly}
   class:has-conditions={hasConditions}
   class:has-shared={hasShared}
   class:is-branch={data._isBranch}
   class:dimmed={data._dimmed}
 >
-  <span>{data.label}</span>
-  {#if data.pathCount}
-    <span class="text-[9px] text-text-dim">{data.pathCount}p</span>
+  <div class="flex items-center gap-1.5">
+    {#if data._isBranch}
+      <span class="text-[10px] text-success" title="Branch">&#x2441;</span>
+    {/if}
+    {#if hasConditions}
+      <span class="text-[10px] text-warning" title="Conditions affected">&#x26A0;</span>
+    {/if}
+    {#if data.readOnly}
+      <span class="text-[9px] text-text-muted" title="Read-only">&#x25CE;</span>
+    {/if}
+    <span>{data.label}</span>
+    {#if data.pathCount}
+      <span class="text-[9px] text-text-dim">{data.pathCount}p</span>
+    {/if}
+  </div>
+  {#if hasShared && visibleVars.length > 0}
+    <div class="flex items-center gap-0.5 flex-wrap justify-center">
+      {#each visibleVars as v}
+        <span class="text-[8px] bg-accent-dark/30 text-accent-hover px-1 rounded">{v}</span>
+      {/each}
+      {#if overflowCount > 0}
+        <span class="text-[8px] text-text-dim">+{overflowCount}</span>
+      {/if}
+    </div>
   {/if}
 </div>
 <Handle type="target" position={Position.Top} />
