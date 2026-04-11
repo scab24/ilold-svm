@@ -56,113 +56,6 @@
     return stored?.position ?? null;
   }
 
-  /** Re-layout and re-orient all expanded seq subtrees (used when seqDirection changes) */
-  function reorientAllSeqSubtrees() {
-    // Find all root functions that have seq-next children
-    const roots = new Set<string>();
-    for (const n of getNodes()) {
-      if (n.data._type === 'seq-next') {
-        const root = findSeqRootFunction(n.id);
-        if (root) roots.add(root.id);
-      }
-    }
-    if (roots.size === 0) return;
-
-    const sh = seqDirection === 'LR' ? 'r' : 'b';
-    const th = seqDirection === 'LR' ? 'l' : 't';
-    const NODE_W = 220;
-    const NODE_H = 80;
-    const SIBLING_GAP = 30;
-    const LEVEL_GAP = 120;
-    const isLR = seqDirection === 'LR';
-
-    const posMap = new Map<string, { x: number; y: number }>();
-
-    for (const rootId of roots) {
-      const root = findNode(rootId);
-      if (!root) continue;
-      const rootPos = liveNodePosition(rootId) ?? root.position;
-
-      // Collect subtree
-      const subtreeIds = new Set<string>([rootId]);
-      let added = true;
-      while (added) {
-        added = false;
-        for (const n of getNodes()) {
-          if (n.data._type === 'seq-next' && !subtreeIds.has(n.id)) {
-            const sp = (n.data as any)._seqParent as string;
-            if (sp && subtreeIds.has(sp)) {
-              subtreeIds.add(n.id);
-              added = true;
-            }
-          }
-        }
-      }
-
-      // Build children map
-      const childrenMap = new Map<string, string[]>();
-      for (const e of getEdges()) {
-        if (e.data?._type === 'seq-edge' && subtreeIds.has(e.source) && subtreeIds.has(e.target)) {
-          const arr = childrenMap.get(e.source) ?? [];
-          arr.push(e.target);
-          childrenMap.set(e.source, arr);
-        }
-      }
-
-      // BFS levels
-      const levels = new Map<string, number>();
-      levels.set(rootId, 0);
-      const queue = [rootId];
-      let maxLevel = 0;
-      while (queue.length > 0) {
-        const id = queue.shift()!;
-        const lvl = levels.get(id)!;
-        for (const kid of childrenMap.get(id) ?? []) {
-          if (!levels.has(kid)) {
-            levels.set(kid, lvl + 1);
-            maxLevel = Math.max(maxLevel, lvl + 1);
-            queue.push(kid);
-          }
-        }
-      }
-
-      const byLevel: string[][] = Array.from({ length: maxLevel + 1 }, () => []);
-      for (const [id, lvl] of levels) byLevel[lvl].push(id);
-
-      for (let lvl = 1; lvl <= maxLevel; lvl++) {
-        const ids = byLevel[lvl];
-        const count = ids.length;
-        if (isLR) {
-          const totalH = count * NODE_H + (count - 1) * SIBLING_GAP;
-          const startY = rootPos.y + NODE_H / 2 - totalH / 2;
-          const x = rootPos.x + lvl * (NODE_W + LEVEL_GAP);
-          ids.forEach((id, i) => posMap.set(id, { x, y: startY + i * (NODE_H + SIBLING_GAP) }));
-        } else {
-          const totalW = count * NODE_W + (count - 1) * SIBLING_GAP;
-          const startX = rootPos.x + NODE_W / 2 - totalW / 2;
-          const y = rootPos.y + lvl * (NODE_H + LEVEL_GAP);
-          ids.forEach((id, i) => posMap.set(id, { x: startX + i * (NODE_W + SIBLING_GAP), y }));
-        }
-      }
-    }
-
-    // Apply new positions
-    setNodes(getNodes().map(n => {
-      if (n.data._type === 'seq-next' && posMap.has(n.id)) {
-        return { ...n, position: posMap.get(n.id)! };
-      }
-      return n;
-    }));
-
-    // Update handle orientation on all seq edges
-    setEdges(getEdges().map(e => {
-      if (e.data?._type === 'seq-edge') {
-        return { ...e, sourceHandle: sh, targetHandle: th };
-      }
-      return e;
-    }));
-  }
-
   /** Walk up _seqParent chain until we find the root function node */
   function findSeqRootFunction(nodeId: string): Node<GraphNodeData> | null {
     const visited = new Set<string>();
@@ -175,6 +68,134 @@
       current = findNode(parentId);
     }
     return null;
+  }
+
+  // BFS tree layout constants for seq subtrees (shared by relayoutSeqTree)
+  const SEQ_NODE_W = 220;
+  const SEQ_NODE_H = 80;
+  const SEQ_SIBLING_GAP = 30; // gap between siblings at the same level
+  const SEQ_LEVEL_GAP = 120;  // gap between parent and children rank
+
+  /**
+   * Re-layout a single seq subtree rooted at `rootId` (a function node).
+   * - Anchors the root to its live (drag-aware) position so user drags are preserved.
+   * - BFS from root via seq-edges; siblings are distributed perpendicular to seqDirection.
+   * - Updates positions of all seq-next nodes in the subtree.
+   * - Updates sourceHandle/targetHandle on all seq-edges in the subtree to match seqDirection.
+   *
+   * Callers MUST add any new nodes/edges to the store BEFORE invoking this helper,
+   * so the BFS walk includes them. Placeholder positions on new nodes are fine.
+   */
+  function relayoutSeqTree(rootId: string) {
+    const root = findNode(rootId);
+    if (!root) return;
+    const rootPos = liveNodePosition(rootId) ?? root.position;
+
+    // 1. Collect the full seq subtree (root + all transitively-linked seq-next nodes)
+    const subtreeIds = new Set<string>([rootId]);
+    let added = true;
+    while (added) {
+      added = false;
+      for (const n of getNodes()) {
+        if (n.data._type === 'seq-next' && !subtreeIds.has(n.id)) {
+          const sp = (n.data as any)._seqParent as string;
+          if (sp && subtreeIds.has(sp)) {
+            subtreeIds.add(n.id);
+            added = true;
+          }
+        }
+      }
+    }
+
+    // 2. Build children index from seq-edges restricted to the subtree
+    const childrenMap = new Map<string, string[]>();
+    const subtreeEdgeIds = new Set<string>();
+    for (const e of getEdges()) {
+      if (e.data?._type === 'seq-edge' && subtreeIds.has(e.source) && subtreeIds.has(e.target)) {
+        const arr = childrenMap.get(e.source) ?? [];
+        arr.push(e.target);
+        childrenMap.set(e.source, arr);
+        subtreeEdgeIds.add(e.id);
+      }
+    }
+
+    // 3. BFS from root, assigning levels
+    const levels = new Map<string, number>();
+    levels.set(rootId, 0);
+    const queue = [rootId];
+    let maxLevel = 0;
+    while (queue.length > 0) {
+      const id = queue.shift()!;
+      const lvl = levels.get(id)!;
+      for (const kid of childrenMap.get(id) ?? []) {
+        if (!levels.has(kid)) {
+          levels.set(kid, lvl + 1);
+          maxLevel = Math.max(maxLevel, lvl + 1);
+          queue.push(kid);
+        }
+      }
+    }
+
+    // 4. Group nodes by level and compute positions anchored at rootPos
+    const byLevel: string[][] = Array.from({ length: maxLevel + 1 }, () => []);
+    for (const [id, lvl] of levels) byLevel[lvl].push(id);
+
+    const isLR = seqDirection === 'LR';
+    const posMap = new Map<string, { x: number; y: number }>();
+    for (let lvl = 1; lvl <= maxLevel; lvl++) {
+      const ids = byLevel[lvl];
+      const count = ids.length;
+      if (isLR) {
+        // Children to the right, stacked vertically at same X
+        const totalH = count * SEQ_NODE_H + (count - 1) * SEQ_SIBLING_GAP;
+        const startY = rootPos.y + SEQ_NODE_H / 2 - totalH / 2;
+        const x = rootPos.x + lvl * (SEQ_NODE_W + SEQ_LEVEL_GAP);
+        ids.forEach((id, i) => {
+          posMap.set(id, { x, y: startY + i * (SEQ_NODE_H + SEQ_SIBLING_GAP) });
+        });
+      } else {
+        // Children below, in a horizontal row at same Y
+        const totalW = count * SEQ_NODE_W + (count - 1) * SEQ_SIBLING_GAP;
+        const startX = rootPos.x + SEQ_NODE_W / 2 - totalW / 2;
+        const y = rootPos.y + lvl * (SEQ_NODE_H + SEQ_LEVEL_GAP);
+        ids.forEach((id, i) => {
+          posMap.set(id, { x: startX + i * (SEQ_NODE_W + SEQ_SIBLING_GAP), y });
+        });
+      }
+    }
+
+    // 5. Apply positions to seq-next nodes in this subtree
+    setNodes(getNodes().map(n => {
+      if (n.data._type === 'seq-next' && posMap.has(n.id)) {
+        return { ...n, position: posMap.get(n.id)! };
+      }
+      return n;
+    }));
+
+    // 6. Update handle orientation on seq-edges in this subtree to match seqDirection
+    const sh = isLR ? 'r' : 'b';
+    const th = isLR ? 'l' : 't';
+    setEdges(getEdges().map(e => {
+      if (subtreeEdgeIds.has(e.id)) {
+        return { ...e, sourceHandle: sh, targetHandle: th };
+      }
+      return e;
+    }));
+  }
+
+  /** Re-layout and re-orient all expanded seq subtrees (used when seqDirection changes) */
+  function reorientAllSeqSubtrees() {
+    // Find all root functions that have seq-next children
+    const roots = new Set<string>();
+    for (const n of getNodes()) {
+      if (n.data._type === 'seq-next') {
+        const root = findSeqRootFunction(n.id);
+        if (root) roots.add(root.id);
+      }
+    }
+    for (const rootId of roots) {
+      relayoutSeqTree(rootId);
+    }
   }
 
   /** Merge an opacity value into an edge's style string */
@@ -517,8 +538,12 @@
       return;
     }
 
-    // Remove auto-expanded siblings at same level (collapse sibling trees)
-    if (seqParent) {
+    // Remove auto-expanded siblings at same level (collapse sibling trees).
+    // Only runs when the tapped node is a NORMAL seq-next (not a manual branch):
+    // tapping a branch is additive and must never collapse alternative paths —
+    // only an auto-expanded seq-next "commits" to one sibling like the old
+    // Cytoscape behavior.
+    if (seqParent && !isBranch) {
       const siblings = getNodes().filter(
         n => n.data._type === 'seq-next'
           && (n.data as any)._seqParent === seqParent
@@ -656,25 +681,18 @@
       t => t.from === parentFuncName && t.to === branchFuncName
     ) ?? null;
 
-    // Count existing children to offset position
-    const existingChildren = getNodes().filter(
+    // Unique suffix based on current child count (stable id for repeated branches)
+    const existingChildCount = getNodes().filter(
       n => n.data._type === 'seq-next' && (n.data as any)._seqParent === parentNodeId
-    );
-    const parentNode = findNode(parentNodeId);
-    const parentPos = parentNode?.position ?? { x: 300, y: 200 };
-    const isLR = seqDirection === 'LR';
+    ).length;
+    const nodeId = `seq-branch:${parentNodeId}→${branchFuncName}:${existingChildCount}`;
 
-    const offsetIdx = existingChildren.length;
-    const nodeId = `seq-branch:${parentNodeId}→${branchFuncName}:${offsetIdx}`;
-
-    const position = isLR
-      ? { x: parentPos.x + 180, y: parentPos.y + offsetIdx * 50 }
-      : { x: parentPos.x + offsetIdx * 160, y: parentPos.y + 60 };
-
+    // Add node at a placeholder position — relayoutSeqTree will assign the real one
+    // from the shared BFS so siblings (including pre-existing children) don't overlap.
     addNode({
       id: nodeId,
       type: 'sequence',
-      position,
+      position: { x: 0, y: 0 },
       data: {
         _type: 'seq-next',
         label: branchFuncName,
@@ -688,7 +706,7 @@
     } as Node<GraphNodeData>);
 
     addEdge({
-      id: `seq-edge:branch:${parentNodeId}→${branchFuncName}:${offsetIdx}`,
+      id: `seq-edge:branch:${parentNodeId}→${branchFuncName}:${existingChildCount}`,
       source: parentNodeId,
       sourceHandle: seqDirection === 'LR' ? 'r' : 'b',
       target: nodeId,
@@ -697,6 +715,11 @@
       data: { _type: 'seq-edge' },
       style: dashedEdgeStyle('var(--color-success)'),
     });
+
+    // Re-layout the whole seq tree so the new branch integrates with existing children
+    // instead of stacking on top of them via a hardcoded offset.
+    const rootFunc = findSeqRootFunction(parentNodeId);
+    if (rootFunc) relayoutSeqTree(rootFunc.id);
 
     branchMenu = null;
   }
@@ -720,7 +743,6 @@
     // Find the root function node for this seq subtree (walk up _seqParent chain)
     const rootFunc = findSeqRootFunction(parentNodeId);
     if (!rootFunc) return;
-    const rootPos = liveNodePosition(rootFunc.id) ?? rootFunc.position;
 
     const seqFunctions: Array<{ name: string; visibility: string; read_only: boolean; path_count: number }> = seqTree.functions;
 
@@ -732,7 +754,8 @@
       : seqFunctions;
     const targets = validTargets.length > 0 ? validTargets : seqFunctions;
 
-    // Build new seq-next children
+    // Build new seq-next children with placeholder positions — relayoutSeqTree
+    // will assign final positions from the shared BFS walk.
     const newNodes: Node<GraphNodeData>[] = [];
     const newEdges: Edge[] = [];
     for (const func of targets) {
@@ -772,126 +795,11 @@
       });
     }
 
-    // Collect ALL nodes in this seq subtree (root function + descendants + new)
-    const subtreeIds = new Set<string>([rootFunc.id]);
-    let added = true;
-    while (added) {
-      added = false;
-      for (const n of getNodes()) {
-        if (n.data._type === 'seq-next' && !subtreeIds.has(n.id)) {
-          const sp = (n.data as any)._seqParent as string;
-          if (sp && subtreeIds.has(sp)) {
-            subtreeIds.add(n.id);
-            added = true;
-          }
-        }
-      }
-    }
-    for (const n of newNodes) subtreeIds.add(n.id);
-
-    // Build dagre input: all subtree nodes + edges
-    const layoutNodes: Node<GraphNodeData>[] = [];
-    for (const n of getNodes()) {
-      if (subtreeIds.has(n.id)) layoutNodes.push(n);
-    }
-    for (const n of newNodes) layoutNodes.push(n);
-
-    const layoutEdges: Edge[] = [];
-    for (const e of getEdges()) {
-      if (e.data?._type === 'seq-edge' && subtreeIds.has(e.source) && subtreeIds.has(e.target)) {
-        layoutEdges.push(e);
-      }
-    }
-    for (const e of newEdges) layoutEdges.push(e);
-
-    // Manual BFS tree layout — predictable and aligned
-    // TB: parent at top, children in horizontal row below at same Y, equally spaced
-    // LR: parent at left, children in vertical column right at same X, equally spaced
-    const isLR = seqDirection === 'LR';
-    const NODE_W = 220;
-    const NODE_H = 80;
-    const SIBLING_GAP = 30; // gap between siblings
-    const LEVEL_GAP = 120;  // gap between parent and children rank
-
-    // Build children index from edges in the layout subset
-    const childrenMap = new Map<string, string[]>();
-    for (const e of layoutEdges) {
-      const arr = childrenMap.get(e.source) ?? [];
-      arr.push(e.target);
-      childrenMap.set(e.source, arr);
-    }
-
-    // BFS from root, assigning levels
-    const levels = new Map<string, number>();
-    levels.set(rootFunc.id, 0);
-    const queue = [rootFunc.id];
-    let maxLevel = 0;
-    while (queue.length > 0) {
-      const id = queue.shift()!;
-      const lvl = levels.get(id)!;
-      const kids = childrenMap.get(id) ?? [];
-      for (const kid of kids) {
-        if (!levels.has(kid)) {
-          levels.set(kid, lvl + 1);
-          maxLevel = Math.max(maxLevel, lvl + 1);
-          queue.push(kid);
-        }
-      }
-    }
-
-    // Group nodes by level
-    const byLevel: string[][] = Array.from({ length: maxLevel + 1 }, () => []);
-    for (const [id, lvl] of levels) byLevel[lvl].push(id);
-
-    // Compute positions per level, anchoring root at rootPos
-    const posMap = new Map<string, { x: number; y: number }>();
-    for (let lvl = 1; lvl <= maxLevel; lvl++) {
-      const ids = byLevel[lvl];
-      const count = ids.length;
-      if (isLR) {
-        // Children to the right, stacked vertically at same X
-        const totalH = count * NODE_H + (count - 1) * SIBLING_GAP;
-        const startY = rootPos.y + NODE_H / 2 - totalH / 2;
-        const x = rootPos.x + lvl * (NODE_W + LEVEL_GAP);
-        ids.forEach((id, i) => {
-          posMap.set(id, { x, y: startY + i * (NODE_H + SIBLING_GAP) });
-        });
-      } else {
-        // Children below, in horizontal row at same Y
-        const totalW = count * NODE_W + (count - 1) * SIBLING_GAP;
-        const startX = rootPos.x + NODE_W / 2 - totalW / 2;
-        const y = rootPos.y + lvl * (NODE_H + LEVEL_GAP);
-        ids.forEach((id, i) => {
-          posMap.set(id, { x: startX + i * (NODE_W + SIBLING_GAP), y });
-        });
-      }
-    }
-
-    // Apply positions to existing seq-next nodes (re-layout)
-    setNodes(getNodes().map(n => {
-      if (n.data._type === 'seq-next' && posMap.has(n.id)) {
-        return { ...n, position: posMap.get(n.id)! };
-      }
-      return n;
-    }));
-
-    // Apply positions to new nodes and add them
-    for (const n of newNodes) {
-      const pos = posMap.get(n.id);
-      if (pos) n.position = pos;
-    }
+    // Commit new nodes/edges to the store first, then let the shared helper
+    // re-run BFS over the whole subtree (root + existing + new) coherently.
     addNodes(newNodes);
     addEdges(newEdges);
-
-    // Update existing seq-edges to use the correct handles for current direction
-    const sh = seqDirection === 'LR' ? 'r' : 'b';
-    const th = seqDirection === 'LR' ? 'l' : 't';
-    setEdges(getEdges().map(e => {
-      if (e.data?._type === 'seq-edge') {
-        return { ...e, sourceHandle: sh, targetHandle: th };
-      }
-      return e;
-    }));
+    relayoutSeqTree(rootFunc.id);
 
     dimFunctionLayer(rootFunc.id);
 

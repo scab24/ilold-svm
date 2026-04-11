@@ -14,6 +14,14 @@
   } = $props();
 
   let sidebarOpen = $state(true);
+
+  // Auditors only care about entry points — public + external functions.
+  // Internal/private functions aren't callable from outside so they're noise here.
+  const entryPoints = $derived(
+    contract.functions.filter(
+      (f) => f.visibility === 'Public' || f.visibility === 'External',
+    ),
+  );
 </script>
 
 <div class="flex flex-col shrink-0 bg-surface border-r border-border transition-[width] duration-200 {sidebarOpen ? 'w-[180px]' : 'w-8'}">
@@ -28,7 +36,7 @@
   </div>
   {#if sidebarOpen}
     <div class="flex-1 overflow-y-auto p-1">
-      {#each contract.functions as func}
+      {#each entryPoints as func}
         {@const onCanvas = canvasFuncs.has(func.name)}
         <button
           class="flex items-center gap-1 w-full px-1.5 py-[5px] bg-transparent border-none text-text-muted text-[11px] font-mono cursor-pointer rounded-sm text-left hover:bg-hover hover:text-text {onCanvas ? 'text-accent-hover' : ''}"

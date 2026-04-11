@@ -67,7 +67,13 @@
   }
 </script>
 
-<div class="graph-canvas-flow">
+<!--
+  oncontextmenu on the wrapper suppresses the NATIVE browser context menu
+  for the whole canvas (pane + nodes + controls). Without this, right-clicking
+  a node would fire onnodecontextmenu AND the browser's native menu, which
+  immediately dismisses our custom ContextMenu popover.
+-->
+<div class="graph-canvas-flow" oncontextmenu={(e) => e.preventDefault()}>
   <SvelteFlowProvider>
     <SvelteFlow
       bind:nodes={flowNodes}
@@ -75,7 +81,12 @@
       {nodeTypes}
       onnodeclick={({ event, node }) => onnodetap?.(node as Node<GraphNodeData>, event as MouseEvent)}
       onpaneclick={() => onbackgroundtap?.()}
-      onnodecontextmenu={({ event, node }) => oncontextmenu?.(event, node as Node<GraphNodeData>)}
+      onnodecontextmenu={({ event, node }) => {
+        // Belt-and-suspenders: preventDefault on the MouseEvent itself in case
+        // a future wrapper refactor drops the container-level handler above.
+        (event as MouseEvent).preventDefault();
+        oncontextmenu?.(event as MouseEvent, node as Node<GraphNodeData>);
+      }}
       oninit={() => {
         const { fitView } = useSvelteFlow();
         onready?.({ fitView });
