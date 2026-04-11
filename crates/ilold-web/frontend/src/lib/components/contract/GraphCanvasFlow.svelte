@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { SvelteFlow, SvelteFlowProvider, Background, Controls, useSvelteFlow, type NodeTypes } from '@xyflow/svelte';
   import type { Node, Edge } from '@xyflow/svelte';
   import '@xyflow/svelte/dist/style.css';
@@ -29,27 +30,41 @@
     sequence: SequenceNode,
   } as unknown as NodeTypes;
 
-  // ── Reactive bridge: graph store ↔ SvelteFlow ──────────────
+  // ── Reactive bridge: graph store → SvelteFlow ──────────────
+  // The graph store is the source of truth for graph STRUCTURE (nodes/edges existing).
+  // SvelteFlow's bind:nodes mutates flowNodes locally for drag/select POSITIONS.
   //
-  // The graph store ($state in graph.svelte.ts) is the source of truth.
-  // SvelteFlow needs bind:nodes/bind:edges for internal mutations (drag/select).
-  // We sync store → local via $effect. Local drag changes are visual-only
-  // (not persisted back to store — acceptable for now).
+  // When the store changes (e.g. addNodes for CFG expand), we MERGE:
+  //   - For existing nodes: keep the live drag position from flowNodes
+  //   - For new nodes: use the store position
+  // This preserves drag state across structural mutations.
 
   let flowNodes = $state<Node[]>([]);
   let flowEdges = $state<Edge[]>([]);
 
-  // Store → local: when store changes (addNode, setNodes, etc.), sync to local
   $effect(() => {
     const storeNodes = getNodes();
-    // Always sync — Svelte 5 $effect tracks the $state read inside getNodes()
-    flowNodes = storeNodes as Node[];
+    // Read flowNodes WITHOUT tracking — we only react to store changes, not local
+    const liveByID = new Map(untrack(() => flowNodes).map(n => [n.id, n]));
+    flowNodes = storeNodes.map(sn => {
+      const live = liveByID.get(sn.id);
+      // If node existed and has been dragged, preserve its visual position
+      if (live?.position) {
+        return { ...sn, position: live.position } as Node;
+      }
+      return sn as Node;
+    });
   });
 
   $effect(() => {
     const storeEdges = getEdges();
     flowEdges = storeEdges;
   });
+
+  /** Read the live (drag-aware) position of a node from SvelteFlow's local state */
+  export function getLiveNode(id: string): Node | undefined {
+    return flowNodes.find(n => n.id === id);
+  }
 </script>
 
 <div class="graph-canvas-flow">
@@ -65,7 +80,6 @@
         const { fitView } = useSvelteFlow();
         onready?.({ fitView });
       }}
-      fitView
       minZoom={0.1}
       maxZoom={4}
       colorMode="dark"
@@ -80,9 +94,6 @@
   .graph-canvas-flow {
     width: 100%;
     height: 100%;
-  }
-  :global(.svelte-flow .svelte-flow__node.expanding) {
-    transition: transform 0.3s ease-out;
   }
   :global(.svelte-flow .svelte-flow__edge-text) {
     font-size: 11px;

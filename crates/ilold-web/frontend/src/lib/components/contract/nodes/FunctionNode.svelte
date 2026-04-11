@@ -58,8 +58,10 @@
     </div>
   {/if}
 </div>
-<Handle type="target" position={Position.Top} />
-<Handle type="source" position={Position.Bottom} />
+<Handle type="target" id="t" position={Position.Top} />
+<Handle type="source" id="b" position={Position.Bottom} />
+<Handle type="target" id="l" position={Position.Left} />
+<Handle type="source" id="r" position={Position.Right} />
 
 <style>
   .function-node.external {

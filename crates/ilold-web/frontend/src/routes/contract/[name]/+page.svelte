@@ -45,7 +45,137 @@
 
   let callgraphRaw: CytoscapeGraph | null = $state(null);
   let flowApi: { fitView: (opts?: any) => Promise<boolean> } | null = $state(null);
+  let graphCanvas: GraphCanvasFlow;
   let cfgCache: Record<string, CytoscapeGraph> = {};
+
+  /** Get the live (drag-aware) position of a node, falling back to store position */
+  function liveNodePosition(nodeId: string): { x: number; y: number } | null {
+    const live = graphCanvas?.getLiveNode?.(nodeId);
+    if (live?.position) return live.position;
+    const stored = findNode(nodeId);
+    return stored?.position ?? null;
+  }
+
+  /** Re-layout and re-orient all expanded seq subtrees (used when seqDirection changes) */
+  function reorientAllSeqSubtrees() {
+    // Find all root functions that have seq-next children
+    const roots = new Set<string>();
+    for (const n of getNodes()) {
+      if (n.data._type === 'seq-next') {
+        const root = findSeqRootFunction(n.id);
+        if (root) roots.add(root.id);
+      }
+    }
+    if (roots.size === 0) return;
+
+    const sh = seqDirection === 'LR' ? 'r' : 'b';
+    const th = seqDirection === 'LR' ? 'l' : 't';
+    const NODE_W = 220;
+    const NODE_H = 80;
+    const SIBLING_GAP = 30;
+    const LEVEL_GAP = 120;
+    const isLR = seqDirection === 'LR';
+
+    const posMap = new Map<string, { x: number; y: number }>();
+
+    for (const rootId of roots) {
+      const root = findNode(rootId);
+      if (!root) continue;
+      const rootPos = liveNodePosition(rootId) ?? root.position;
+
+      // Collect subtree
+      const subtreeIds = new Set<string>([rootId]);
+      let added = true;
+      while (added) {
+        added = false;
+        for (const n of getNodes()) {
+          if (n.data._type === 'seq-next' && !subtreeIds.has(n.id)) {
+            const sp = (n.data as any)._seqParent as string;
+            if (sp && subtreeIds.has(sp)) {
+              subtreeIds.add(n.id);
+              added = true;
+            }
+          }
+        }
+      }
+
+      // Build children map
+      const childrenMap = new Map<string, string[]>();
+      for (const e of getEdges()) {
+        if (e.data?._type === 'seq-edge' && subtreeIds.has(e.source) && subtreeIds.has(e.target)) {
+          const arr = childrenMap.get(e.source) ?? [];
+          arr.push(e.target);
+          childrenMap.set(e.source, arr);
+        }
+      }
+
+      // BFS levels
+      const levels = new Map<string, number>();
+      levels.set(rootId, 0);
+      const queue = [rootId];
+      let maxLevel = 0;
+      while (queue.length > 0) {
+        const id = queue.shift()!;
+        const lvl = levels.get(id)!;
+        for (const kid of childrenMap.get(id) ?? []) {
+          if (!levels.has(kid)) {
+            levels.set(kid, lvl + 1);
+            maxLevel = Math.max(maxLevel, lvl + 1);
+            queue.push(kid);
+          }
+        }
+      }
+
+      const byLevel: string[][] = Array.from({ length: maxLevel + 1 }, () => []);
+      for (const [id, lvl] of levels) byLevel[lvl].push(id);
+
+      for (let lvl = 1; lvl <= maxLevel; lvl++) {
+        const ids = byLevel[lvl];
+        const count = ids.length;
+        if (isLR) {
+          const totalH = count * NODE_H + (count - 1) * SIBLING_GAP;
+          const startY = rootPos.y + NODE_H / 2 - totalH / 2;
+          const x = rootPos.x + lvl * (NODE_W + LEVEL_GAP);
+          ids.forEach((id, i) => posMap.set(id, { x, y: startY + i * (NODE_H + SIBLING_GAP) }));
+        } else {
+          const totalW = count * NODE_W + (count - 1) * SIBLING_GAP;
+          const startX = rootPos.x + NODE_W / 2 - totalW / 2;
+          const y = rootPos.y + lvl * (NODE_H + LEVEL_GAP);
+          ids.forEach((id, i) => posMap.set(id, { x: startX + i * (NODE_W + SIBLING_GAP), y }));
+        }
+      }
+    }
+
+    // Apply new positions
+    setNodes(getNodes().map(n => {
+      if (n.data._type === 'seq-next' && posMap.has(n.id)) {
+        return { ...n, position: posMap.get(n.id)! };
+      }
+      return n;
+    }));
+
+    // Update handle orientation on all seq edges
+    setEdges(getEdges().map(e => {
+      if (e.data?._type === 'seq-edge') {
+        return { ...e, sourceHandle: sh, targetHandle: th };
+      }
+      return e;
+    }));
+  }
+
+  /** Walk up _seqParent chain until we find the root function node */
+  function findSeqRootFunction(nodeId: string): Node<GraphNodeData> | null {
+    const visited = new Set<string>();
+    let current = findNode(nodeId);
+    while (current && !visited.has(current.id)) {
+      visited.add(current.id);
+      if (current.data._type === 'function') return current;
+      const parentId = (current.data as any)._seqParent;
+      if (!parentId) return null;
+      current = findNode(parentId);
+    }
+    return null;
+  }
 
   /** Merge an opacity value into an edge's style string */
   function edgeStyle(base: string | undefined, opacity: number): string {
@@ -222,7 +352,7 @@
             id: e.data.id,
             source: e.data.source,
             target: e.data.target,
-            type: 'default',
+            type: 'smoothstep',
             data: { _type: 'call', kind: e.data.kind },
             ...(e.data.call_count > 1 ? {
               label: `\u00D7${e.data.call_count}`,
@@ -347,14 +477,15 @@
     branchMenu = null;
   }
 
-  function handleNodeClick(node: Node<GraphNodeData>, event?: MouseEvent) {
+  async function handleNodeClick(node: Node<GraphNodeData>, event?: MouseEvent) {
+    // Selection first (sync), then expand/collapse (async)
+    handleNodeTap(node);
     const d = node.data;
     if (d._type === 'function' && !d.is_external) {
-      handleFunctionTap(d.label, node.id, event?.shiftKey ?? false, event);
+      await handleFunctionTap(d.label, node.id, event?.shiftKey ?? false, event);
     } else if (d._type === 'seq-next') {
-      handleSeqNodeTap((d as any)._funcName || d.label, node.id, event?.shiftKey ?? false, !!(d as any)._isBranch, (d as any)._seqParent, event);
+      await handleSeqNodeTap((d as any)._funcName || d.label, node.id, event?.shiftKey ?? false, !!(d as any)._isBranch, (d as any)._seqParent, event);
     }
-    handleNodeTap(node);
   }
 
   async function handleFunctionTap(funcName: string, nodeId: string, shiftKey: boolean, event?: MouseEvent) {
@@ -386,19 +517,24 @@
       return;
     }
 
-    // Remove auto-expanded siblings at same level first (collapse sibling trees)
+    // Remove auto-expanded siblings at same level (collapse sibling trees)
     if (seqParent) {
       const siblings = getNodes().filter(
         n => n.data._type === 'seq-next'
           && (n.data as any)._seqParent === seqParent
           && n.id !== nodeId
+          && !(n.data as any)._isBranch  // keep manual branches
       );
+      const toRemove = new Set<string>();
       for (const sib of siblings) {
-        if (seqExpanded.has(sib.id)) {
-          collapseNonBranchDescendants(sib.id);
-          seqExpanded.delete(sib.id);
-        }
+        // Remove the sibling's descendants
+        const desc = findDescendants(sib.id);
+        for (const id of desc) toRemove.add(id);
+        // Remove the sibling itself
+        toRemove.add(sib.id);
+        seqExpanded.delete(sib.id);
       }
+      if (toRemove.size > 0) removeNodesById(toRemove);
       seqExpanded = new Map(seqExpanded);
     }
 
@@ -430,8 +566,7 @@
       cfgCache[funcName] = await getCfg(contract.name, funcName);
     }
     const cfg = cfgCache[funcName];
-    const parentNode = findNode(parentId);
-    const parentPos = parentNode?.position ?? { x: 300, y: 200 };
+    const parentPos = liveNodePosition(parentId) ?? { x: 300, y: 200 };
 
     // 1. Build Svelte Flow nodes (initially at parent position for animation)
     const cfgNodes: Node<GraphNodeData>[] = cfg.nodes.map(n => ({
@@ -452,7 +587,7 @@
       id: `cfg-edge:${funcName}:${i}`,
       source: `cfg:${funcName}:${e.data.source}`,
       target: `cfg:${funcName}:${e.data.target}`,
-      type: 'default',
+      type: 'smoothstep',
       data: {
         _type: 'cfg-edge',
         _parentFunc: funcName,
@@ -471,7 +606,7 @@
         id: `cfg-link:${funcName}`,
         source: parentId,
         target: `cfg:${funcName}:${entryNode.data.id}`,
-        type: 'default',
+        type: 'smoothstep',
         data: { _type: 'cfg-edge', _parentFunc: funcName, kind: 'expand' },
         style: dashedEdgeStyle('var(--color-accent-dark)'),
       });
@@ -479,7 +614,7 @@
 
     // 4. Run dagre on CFG subset to get positions
     const layoutNodes = runDagreLayout(cfgNodes, cfgEdges, {
-      rankDir: 'TB', nodeSep: 30, rankSep: 45,
+      rankDir: 'TB', nodeSep: 40, rankSep: 60, nodeWidth: 180,
     });
 
     // 5. Offset all positions below the parent function node
@@ -498,34 +633,15 @@
       finalPositions.set(n.id, { x: n.position.x + offsetX, y: n.position.y + offsetY });
     }
 
-    // Add nodes at PARENT position (CSS transition will animate to final)
+    // Add nodes at their final dagre-computed positions (no animation, predictable)
+    for (const n of cfgNodes) {
+      const final = finalPositions.get(n.id);
+      if (final) n.position = final;
+    }
     addNodes(cfgNodes);
     addEdges(cfgEdges);
 
-    // 6. After a tick, add expanding class + update positions
-    await tick();
-
-    // Add expanding class for animation
-    for (const n of cfgNodes) {
-      const el = document.querySelector(`[data-id="${n.id}"]`);
-      el?.classList.add('expanding');
-    }
-
-    await tick();
-    setNodes(getNodes().map(n => {
-      const final = finalPositions.get(n.id);
-      return final ? { ...n, position: final } : n;
-    }));
-
-    // Remove expanding class after animation completes
-    setTimeout(() => {
-      for (const n of cfgNodes) {
-        const el = document.querySelector(`[data-id="${n.id}"]`);
-        el?.classList.remove('expanding');
-      }
-    }, 350);
-
-    // 7. Dim function nodes + call edges
+    // Dim function nodes + call edges
     dimFunctionLayer(parentId);
 
     expandedFuncs.add(funcName);
@@ -574,7 +690,9 @@
     addEdge({
       id: `seq-edge:branch:${parentNodeId}→${branchFuncName}:${offsetIdx}`,
       source: parentNodeId,
+      sourceHandle: seqDirection === 'LR' ? 'r' : 'b',
       target: nodeId,
+      targetHandle: seqDirection === 'LR' ? 'l' : 't',
       type: 'default',
       data: { _type: 'seq-edge' },
       style: dashedEdgeStyle('var(--color-success)'),
@@ -598,19 +716,28 @@
 
     // ── EXPAND ──
     if (!seqTree || !seqTree.functions) return;
-    const parentNode = findNode(parentNodeId);
-    const parentPos = parentNode?.position ?? { x: 300, y: 200 };
+
+    // Find the root function node for this seq subtree (walk up _seqParent chain)
+    const rootFunc = findSeqRootFunction(parentNodeId);
+    if (!rootFunc) return;
+    const rootPos = liveNodePosition(rootFunc.id) ?? rootFunc.position;
 
     const seqFunctions: Array<{ name: string; visibility: string; read_only: boolean; path_count: number }> = seqTree.functions;
 
+    // Filter to only functions with valid transitions from the parent
+    const validTargets = seqAnalysis?.transitions
+      ? seqFunctions.filter(func =>
+          seqAnalysis!.transitions.some(t => t.from === funcName && t.to === func.name)
+        )
+      : seqFunctions;
+    const targets = validTargets.length > 0 ? validTargets : seqFunctions;
+
+    // Build new seq-next children
     const newNodes: Node<GraphNodeData>[] = [];
     const newEdges: Edge[] = [];
-
-    for (const func of seqFunctions) {
+    for (const func of targets) {
       const targetName = func.name;
       const nodeId = `seq:${parentNodeId}→${targetName}`;
-
-      // Look up transition from seqAnalysis
       const transition = seqAnalysis?.transitions?.find(
         t => t.from === funcName && t.to === targetName
       ) ?? null;
@@ -618,7 +745,7 @@
       newNodes.push({
         id: nodeId,
         type: 'sequence',
-        position: { ...parentPos },
+        position: { x: 0, y: 0 },
         data: {
           _type: 'seq-next',
           label: targetName,
@@ -634,7 +761,9 @@
       newEdges.push({
         id: `seq-edge:${parentNodeId}→${targetName}`,
         source: parentNodeId,
+        sourceHandle: seqDirection === 'LR' ? 'r' : 'b',
         target: nodeId,
+        targetHandle: seqDirection === 'LR' ? 'l' : 't',
         type: 'default',
         data: { _type: 'seq-edge' },
         style: transition?.shared_state?.length
@@ -643,39 +772,128 @@
       });
     }
 
-    // Run dagre layout on the seq subset
+    // Collect ALL nodes in this seq subtree (root function + descendants + new)
+    const subtreeIds = new Set<string>([rootFunc.id]);
+    let added = true;
+    while (added) {
+      added = false;
+      for (const n of getNodes()) {
+        if (n.data._type === 'seq-next' && !subtreeIds.has(n.id)) {
+          const sp = (n.data as any)._seqParent as string;
+          if (sp && subtreeIds.has(sp)) {
+            subtreeIds.add(n.id);
+            added = true;
+          }
+        }
+      }
+    }
+    for (const n of newNodes) subtreeIds.add(n.id);
+
+    // Build dagre input: all subtree nodes + edges
+    const layoutNodes: Node<GraphNodeData>[] = [];
+    for (const n of getNodes()) {
+      if (subtreeIds.has(n.id)) layoutNodes.push(n);
+    }
+    for (const n of newNodes) layoutNodes.push(n);
+
+    const layoutEdges: Edge[] = [];
+    for (const e of getEdges()) {
+      if (e.data?._type === 'seq-edge' && subtreeIds.has(e.source) && subtreeIds.has(e.target)) {
+        layoutEdges.push(e);
+      }
+    }
+    for (const e of newEdges) layoutEdges.push(e);
+
+    // Manual BFS tree layout — predictable and aligned
+    // TB: parent at top, children in horizontal row below at same Y, equally spaced
+    // LR: parent at left, children in vertical column right at same X, equally spaced
     const isLR = seqDirection === 'LR';
-    const layoutNodes = runDagreLayout(newNodes, newEdges, {
-      rankDir: seqDirection,
-      nodeSep: 25,
-      rankSep: 40,
-    });
+    const NODE_W = 220;
+    const NODE_H = 80;
+    const SIBLING_GAP = 30; // gap between siblings
+    const LEVEL_GAP = 120;  // gap between parent and children rank
 
-    // Offset below (TB) or beside (LR) parent
-    let minX = Infinity, minY = Infinity, maxX = -Infinity;
-    for (const n of layoutNodes) {
-      if (n.position.x < minX) minX = n.position.x;
-      if (n.position.x > maxX) maxX = n.position.x;
-      if (n.position.y < minY) minY = n.position.y;
-    }
-    const centerX = (minX + maxX) / 2;
-    const offsetX = isLR ? parentPos.x + 180 - minX : parentPos.x - centerX;
-    const offsetY = isLR ? parentPos.y - minY : parentPos.y + 60 - minY;
-
-    for (const n of layoutNodes) {
-      n.position = { x: n.position.x + offsetX, y: n.position.y + offsetY };
+    // Build children index from edges in the layout subset
+    const childrenMap = new Map<string, string[]>();
+    for (const e of layoutEdges) {
+      const arr = childrenMap.get(e.source) ?? [];
+      arr.push(e.target);
+      childrenMap.set(e.source, arr);
     }
 
-    // Merge layout positions back
-    const posMap = new Map(layoutNodes.map(n => [n.id, n.position]));
+    // BFS from root, assigning levels
+    const levels = new Map<string, number>();
+    levels.set(rootFunc.id, 0);
+    const queue = [rootFunc.id];
+    let maxLevel = 0;
+    while (queue.length > 0) {
+      const id = queue.shift()!;
+      const lvl = levels.get(id)!;
+      const kids = childrenMap.get(id) ?? [];
+      for (const kid of kids) {
+        if (!levels.has(kid)) {
+          levels.set(kid, lvl + 1);
+          maxLevel = Math.max(maxLevel, lvl + 1);
+          queue.push(kid);
+        }
+      }
+    }
+
+    // Group nodes by level
+    const byLevel: string[][] = Array.from({ length: maxLevel + 1 }, () => []);
+    for (const [id, lvl] of levels) byLevel[lvl].push(id);
+
+    // Compute positions per level, anchoring root at rootPos
+    const posMap = new Map<string, { x: number; y: number }>();
+    for (let lvl = 1; lvl <= maxLevel; lvl++) {
+      const ids = byLevel[lvl];
+      const count = ids.length;
+      if (isLR) {
+        // Children to the right, stacked vertically at same X
+        const totalH = count * NODE_H + (count - 1) * SIBLING_GAP;
+        const startY = rootPos.y + NODE_H / 2 - totalH / 2;
+        const x = rootPos.x + lvl * (NODE_W + LEVEL_GAP);
+        ids.forEach((id, i) => {
+          posMap.set(id, { x, y: startY + i * (NODE_H + SIBLING_GAP) });
+        });
+      } else {
+        // Children below, in horizontal row at same Y
+        const totalW = count * NODE_W + (count - 1) * SIBLING_GAP;
+        const startX = rootPos.x + NODE_W / 2 - totalW / 2;
+        const y = rootPos.y + lvl * (NODE_H + LEVEL_GAP);
+        ids.forEach((id, i) => {
+          posMap.set(id, { x: startX + i * (NODE_W + SIBLING_GAP), y });
+        });
+      }
+    }
+
+    // Apply positions to existing seq-next nodes (re-layout)
+    setNodes(getNodes().map(n => {
+      if (n.data._type === 'seq-next' && posMap.has(n.id)) {
+        return { ...n, position: posMap.get(n.id)! };
+      }
+      return n;
+    }));
+
+    // Apply positions to new nodes and add them
     for (const n of newNodes) {
       const pos = posMap.get(n.id);
       if (pos) n.position = pos;
     }
-
     addNodes(newNodes);
     addEdges(newEdges);
-    dimFunctionLayer();
+
+    // Update existing seq-edges to use the correct handles for current direction
+    const sh = seqDirection === 'LR' ? 'r' : 'b';
+    const th = seqDirection === 'LR' ? 'l' : 't';
+    setEdges(getEdges().map(e => {
+      if (e.data?._type === 'seq-edge') {
+        return { ...e, sourceHandle: sh, targetHandle: th };
+      }
+      return e;
+    }));
+
+    dimFunctionLayer(rootFunc.id);
 
     seqExpanded.set(parentNodeId, true);
     seqExpanded = new Map(seqExpanded);
@@ -748,7 +966,7 @@
       onmodechange={switchMode}
       onsearch={toggleSearch}
       oncenter={() => flowApi?.fitView({ padding: 0.1 })}
-      onseqdirection={(dir) => { seqDirection = dir; }}
+      onseqdirection={(dir) => { seqDirection = dir; reorientAllSeqSubtrees(); }}
     />
     <div class="flex-1 flex overflow-hidden h-full">
       {#if contract}
@@ -756,6 +974,7 @@
       {/if}
 
       <GraphCanvasFlow
+        bind:this={graphCanvas}
         onnodetap={(node, event) => handleNodeClick(node, event)}
         onbackgroundtap={handleBackgroundTap}
         oncontextmenu={handleContextMenu}

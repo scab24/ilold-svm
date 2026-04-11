@@ -9,10 +9,6 @@
   let sharedVars: string[] = $derived(data._transition?.shared_state ?? []);
   let visibleVars = $derived(sharedVars.slice(0, 2));
   let overflowCount = $derived(Math.max(0, sharedVars.length - 2));
-
-  let hasIndicators = $derived(
-    hasConditions || data._isBranch || data.readOnly || hasShared
-  );
 </script>
 
 <div
@@ -37,6 +33,9 @@
     {#if data.pathCount}
       <span class="text-[9px] text-text-dim">{data.pathCount}p</span>
     {/if}
+    {#if !data._isBranch}
+      <span class="text-[8px] text-text-dim ml-auto">&#x25B6;</span>
+    {/if}
   </div>
   {#if hasShared && visibleVars.length > 0}
     <div class="flex items-center gap-0.5 flex-wrap justify-center">
@@ -49,8 +48,10 @@
     </div>
   {/if}
 </div>
-<Handle type="target" position={Position.Top} />
-<Handle type="source" position={Position.Bottom} />
+<Handle type="target" id="t" position={Position.Top} />
+<Handle type="source" id="b" position={Position.Bottom} />
+<Handle type="target" id="l" position={Position.Left} />
+<Handle type="source" id="r" position={Position.Right} />
 
 <style>
   .seq-node.readonly {
