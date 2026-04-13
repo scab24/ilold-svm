@@ -21,6 +21,7 @@
     type GraphNodeData,
   } from '$lib/stores/graph.svelte';
   import { runDagreLayout } from '$lib/utils/graph-helpers';
+  import { MarkerType } from '@xyflow/svelte';
   import type { Node, Edge } from '@xyflow/svelte';
 
   let contract: ContractDetail | null = $state(null);
@@ -265,6 +266,102 @@
   /** Merge stroke-dasharray + stroke into edge style string */
   function dashedEdgeStyle(stroke: string): string {
     return `stroke-dasharray: 5 3; stroke: ${stroke}`;
+  }
+
+  /** Extract condition text from Debug-format kind string */
+  function extractCondition(kind: string): string | undefined {
+    const match = kind.match(/condition:\s*"([^"]+)"/);
+    return match?.[1];
+  }
+
+  /** Extract catch kind from CatchClause Debug-format string */
+  function extractCatchKind(kind: string): string | undefined {
+    const match = kind.match(/kind:\s*"([^"]+)"/);
+    return match?.[1];
+  }
+
+  /** Truncate label to ~30 chars */
+  function truncateLabel(text: string, max = 30): string {
+    return text.length > max ? text.slice(0, max - 1) + '…' : text;
+  }
+
+  /** Compute edge visual props from CFG edge kind */
+  function cfgEdgeStyle(kind: string): {
+    color: string;
+    label?: string;
+    animated: boolean;
+    sourceHandle: string;
+    targetHandle: string;
+  } {
+    if (kind.startsWith('ConditionalTrue')) {
+      const cond = extractCondition(kind);
+      return {
+        color: 'var(--color-success)',
+        label: cond ? truncateLabel(cond) : '✓',
+        animated: false,
+        sourceHandle: 'b',
+        targetHandle: 't',
+      };
+    }
+    if (kind.startsWith('ConditionalFalse')) {
+      const cond = extractCondition(kind);
+      return {
+        color: 'var(--color-warning)',
+        label: cond ? truncateLabel(cond) : '✗',
+        animated: false,
+        sourceHandle: 'b',
+        targetHandle: 't',
+      };
+    }
+    if (kind === 'LoopBack') {
+      return {
+        color: 'var(--color-accent)',
+        animated: true,
+        sourceHandle: 'r',
+        targetHandle: 'r',
+      };
+    }
+    if (kind === 'LoopExit') {
+      return {
+        color: 'var(--color-text-muted)',
+        animated: false,
+        sourceHandle: 'b',
+        targetHandle: 't',
+      };
+    }
+    if (kind === 'ExternalCallSuccess') {
+      return {
+        color: 'var(--color-success-light)',
+        animated: false,
+        sourceHandle: 'b',
+        targetHandle: 't',
+      };
+    }
+    if (kind === 'ExternalCallFailure') {
+      return {
+        color: 'var(--color-danger)',
+        animated: false,
+        sourceHandle: 'b',
+        targetHandle: 't',
+      };
+    }
+    if (kind.startsWith('CatchClause')) {
+      const catchKind = extractCatchKind(kind);
+      return {
+        color: 'var(--color-danger-light)',
+        label: catchKind ? truncateLabel(catchKind) : undefined,
+        animated: false,
+        sourceHandle: 'b',
+        targetHandle: 't',
+      };
+    }
+    // Unconditional / fallback
+    return {
+      color: 'var(--color-text-dim)',
+      animated: false,
+      sourceHandle: 'b',
+      targetHandle: 't',
+    };
   }
 
   onMount(async () => {
@@ -607,22 +704,29 @@
       },
     }));
 
-    // 2. Build edges
-    const cfgEdges: Edge[] = cfg.edges.map((e, i) => ({
-      id: `cfg-edge:${funcName}:${i}`,
-      source: `cfg:${funcName}:${e.data.source}`,
-      target: `cfg:${funcName}:${e.data.target}`,
-      type: 'smoothstep',
-      data: {
-        _type: 'cfg-edge',
-        _parentFunc: funcName,
-        kind: e.data.kind,
-      },
-      label: e.data.kind.includes('ConditionalTrue') ? '✓'
-           : e.data.kind.includes('ConditionalFalse') ? '✗'
-           : undefined,
-      animated: e.data.kind.includes('LoopBack'),
-    }));
+    // 2. Build edges with color-coded styles, arrows, and explicit handles
+    const cfgEdges: Edge[] = cfg.edges.map((e, i) => {
+      const es = cfgEdgeStyle(e.data.kind);
+      return {
+        id: `cfg-edge:${funcName}:${i}`,
+        source: `cfg:${funcName}:${e.data.source}`,
+        target: `cfg:${funcName}:${e.data.target}`,
+        sourceHandle: es.sourceHandle,
+        targetHandle: es.targetHandle,
+        type: 'smoothstep',
+        data: {
+          _type: 'cfg-edge',
+          _parentFunc: funcName,
+          kind: e.data.kind,
+        },
+        label: es.label,
+        labelBgStyle: es.label ? { fill: 'var(--color-surface)', fillOpacity: 0.85 } : undefined,
+        labelBgPadding: es.label ? [4, 6] as [number, number] : undefined,
+        style: `stroke: ${es.color}`,
+        animated: es.animated,
+        markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: es.color },
+      };
+    });
 
     // 3. Link edge: function node → CFG entry block
     const entryNode = cfg.nodes.find(n => n.data.node_type === 'Entry');
@@ -631,9 +735,12 @@
         id: `cfg-link:${funcName}`,
         source: parentId,
         target: `cfg:${funcName}:${entryNode.data.id}`,
+        sourceHandle: 'b',
+        targetHandle: 't',
         type: 'smoothstep',
         data: { _type: 'cfg-edge', _parentFunc: funcName, kind: 'expand' },
         style: dashedEdgeStyle('var(--color-accent-dark)'),
+        markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: 'var(--color-accent-dark)' },
       });
     }
 
