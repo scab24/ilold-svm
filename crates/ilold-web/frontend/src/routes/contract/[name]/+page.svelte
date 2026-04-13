@@ -3,6 +3,7 @@
   import { onMount, tick } from 'svelte';
   import { getContract, getCallGraph, getCfg, getPaths, getSequences, getSequenceAnalysis, type ContractDetail, type CytoscapeGraph, type SequenceAnalysis } from '$lib/api/rest';
   import { toggleSearch, setSearchContext, getSearchNavigate, setSearchNavigate } from '$lib/stores/search.svelte';
+  import { getSteps, getHighlightedFunction } from '$lib/stores/session.svelte';
   import Legend from '$lib/components/contract/Legend.svelte';
   import FunctionSidebar from '$lib/components/contract/FunctionSidebar.svelte';
   import FloatingToolbar from '$lib/components/contract/FloatingToolbar.svelte';
@@ -43,6 +44,11 @@
   let contextMenu: { x: number; y: number; nodeId: string; funcName: string; nodeType: string } | null = $state(null);
 
   let canvasFuncs: Set<string> = $state(new Set()); // functions currently on canvas
+
+  // Session → canvas auto-paint state
+  let sessionVisCount = $state(0);
+  const sessionSteps = $derived(getSteps());
+  const sessionHighlight = $derived(getHighlightedFunction());
 
   let callgraphRaw: CytoscapeGraph | null = $state(null);
   let flowApi: { fitView: (opts?: any) => Promise<boolean> } | null = $state(null);
@@ -364,6 +370,81 @@
     };
   }
 
+  // ── Session → canvas auto-paint ─────────────────────────────
+  // When the auditor types `c deposit` in a terminal, the session store updates
+  // via WebSocket. This effect reacts and auto-adds the function to the canvas.
+  $effect(() => {
+    const steps = sessionSteps;
+    if (!contract || !callgraphRaw) return;
+
+    if (steps.length > sessionVisCount) {
+      // Each step gets its OWN node — tree layout, not circular.
+      // deposit_0 → withdraw_1 → deposit_2 (separate nodes even for same function)
+      const allFuncs = [...(contract?.functions ?? []), ...(contract?.inherited_functions ?? [])];
+
+      for (let i = sessionVisCount; i < steps.length; i++) {
+        const funcName = steps[i].function;
+        const funcDetail = allFuncs.find((f: any) => f.name === funcName);
+        const nodeId = `session:step:${i}`;
+
+        addNode({
+          id: nodeId,
+          type: 'function',
+          position: { x: 200 + i * 280, y: 300 },
+          data: {
+            _type: 'function',
+            _sessionStep: true,
+            label: funcName,
+            is_external: false,
+            contractName: contract.name,
+            visibility: funcDetail?.visibility,
+            mutability: funcDetail?.mutability,
+            path_count: funcDetail?.path_count,
+            modifiers: funcDetail?.modifiers,
+          },
+        } as Node<GraphNodeData>);
+
+        // Edge from previous step → this step (left to right)
+        if (i > 0) {
+          addEdge({
+            id: `session-path:${i - 1}→${i}`,
+            source: `session:step:${i - 1}`,
+            target: nodeId,
+            sourceHandle: 'r',
+            targetHandle: 'l',
+            type: 'smoothstep',
+            style: `stroke: var(--color-accent); stroke-width: 2`,
+            markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color: 'var(--color-accent)' },
+            label: `${i}`,
+            labelBgStyle: { fill: 'var(--color-surface)', fillOpacity: 0.85 },
+            labelBgPadding: [3, 5] as [number, number],
+            data: { _type: 'session-path', stepIndex: i },
+          });
+        }
+      }
+      sessionVisCount = steps.length;
+    } else if (steps.length < sessionVisCount) {
+      // Back or clear: remove step nodes + edges from the end
+      const toRemove = new Set<string>();
+      for (let i = sessionVisCount - 1; i >= steps.length; i--) {
+        toRemove.add(`session:step:${i}`);
+      }
+      if (toRemove.size > 0) removeNodesById(toRemove);
+      // removeNodesById already cleans edges whose source/target is a removed node
+      sessionVisCount = steps.length;
+    }
+  });
+
+  // Highlight the function node when the session broadcasts session_highlight
+  $effect(() => {
+    const funcName = sessionHighlight;
+    if (!funcName) return;
+    const node = getNodes().find(
+      n => n.data._type === 'function' && n.data.label === funcName
+    );
+    if (node) selectedNode = node;
+  });
+
   onMount(async () => {
     const contractName = page.params.name;
     if (!contractName) return;
@@ -436,13 +517,15 @@
     const funcDetail = allFuncs.find((f: any) => f.name === funcName);
 
     const count = canvasFuncs.size;
-    const x = 300 + (count % 3 - 1) * 200;
-    const y = 200 + Math.floor(count / 3) * 100;
+    const position = {
+      x: 300 + (count % 3 - 1) * 200,
+      y: 200 + Math.floor(count / 3) * 100,
+    };
 
     addNode({
       id: nodeData.data.id,
       type: 'function',
-      position: { x, y },
+      position,
       data: {
         _type: 'function',
         label: nodeData.data.label,
