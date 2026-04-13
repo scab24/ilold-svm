@@ -14,12 +14,6 @@
   const MAX_WIDTH = 900;
   let draggingWidth = $state(false);
 
-  // Resizable terminal height (drag handle between panels and terminal)
-  let terminalHeight = $state(280);
-  const MIN_TERM_H = 120;
-  const MAX_TERM_H = 600;
-  let draggingHeight = $state(false);
-
   function onWidthDragStart(e: MouseEvent) {
     e.preventDefault();
     draggingWidth = true;
@@ -34,28 +28,6 @@
     }
     function onUp() {
       draggingWidth = false;
-      document.body.style.userSelect = '';
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
-    }
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
-  }
-
-  function onHeightDragStart(e: MouseEvent) {
-    e.preventDefault();
-    draggingHeight = true;
-    document.body.style.userSelect = 'none';
-    const startY = e.clientY;
-    const startH = terminalHeight;
-
-    function onMove(ev: MouseEvent) {
-      // Drag up = taller terminal
-      const delta = startY - ev.clientY;
-      terminalHeight = Math.min(MAX_TERM_H, Math.max(MIN_TERM_H, startH + delta));
-    }
-    function onUp() {
-      draggingHeight = false;
       document.body.style.userSelect = '';
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
@@ -109,17 +81,8 @@
         <StatePanel {contract} />
       {/if}
     </div>
-
-    <!-- Terminal height drag handle -->
-    <div
-      class="h-1 cursor-row-resize border-t-2 border-border shrink-0 {draggingHeight ? 'bg-accent-dark' : 'hover:bg-surface-alt'}"
-      onmousedown={onHeightDragStart}
-      role="separator"
-      aria-orientation="horizontal"
-    ></div>
-
-    <div class="flex flex-col overflow-hidden shrink-0" style:height="{terminalHeight}px">
-      <EmbeddedTerminal />
-    </div>
   </div>
+
+  <!-- Floating terminal (positions itself fixed, outside sidebar flow) -->
+  <EmbeddedTerminal />
 </div>
