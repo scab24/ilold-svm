@@ -56,6 +56,9 @@ enum Commands {
         port: u16,
         #[arg(long, default_value = "3")]
         max_seq_depth: usize,
+        /// Attach to a running server instead of starting one locally
+        #[arg(long)]
+        attach: Option<String>,
     },
 }
 
@@ -77,12 +80,17 @@ async fn main() -> Result<()> {
             }
             ilold_web::serve(paths, port, max_seq_depth).await
         }
-        Commands::Explore { path, port, max_seq_depth } => {
-            let paths = collect_sol_files(&path)?;
-            if paths.is_empty() {
-                anyhow::bail!("No .sol files found at {}", path.display());
+        Commands::Explore { path, port, max_seq_depth, attach } => {
+            if attach.is_some() {
+                // --attach mode: no local analysis needed, connect to remote server
+                explore::run(Vec::new(), port, max_seq_depth, attach).await
+            } else {
+                let paths = collect_sol_files(&path)?;
+                if paths.is_empty() {
+                    anyhow::bail!("No .sol files found at {}", path.display());
+                }
+                explore::run(paths, port, max_seq_depth, attach).await
             }
-            explore::run(paths, port, max_seq_depth).await
         }
     }
 }

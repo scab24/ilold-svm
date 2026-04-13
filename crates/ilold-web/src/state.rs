@@ -34,6 +34,8 @@ pub struct AppState {
     pub annotations: RwLock<Vec<Annotation>>,
     pub session: RwLock<Option<ExplorationSession>>,
     pub session_tx: broadcast::Sender<CanvasPatch>,
+    pub port: u16,
+    pub contract_path: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,7 +69,7 @@ pub enum AnnotationStatus {
 }
 
 impl AppState {
-    pub fn from_paths(paths: &[PathBuf], max_seq_depth: usize) -> anyhow::Result<Self> {
+    pub fn from_paths(paths: &[PathBuf], max_seq_depth: usize, port: u16, contract_path: PathBuf) -> anyhow::Result<Self> {
         let parser = SolarParser;
         let mut project = parser.parse(paths)?;
         project.rebuild_index();
@@ -133,6 +135,8 @@ impl AppState {
             annotations: RwLock::new(Vec::new()),
             session: RwLock::new(None),
             session_tx,
+            port,
+            contract_path,
         })
     }
 }
