@@ -326,42 +326,64 @@
 </DraggablePanel>
 
 <style>
-  .d-row { display: flex; justify-content: space-between; padding: 3px 0; font-size: 12px; color: var(--color-text); }
-  .d-label { color: var(--color-text-muted); }
-  .d-hint { font-size: 11px; color: var(--color-accent); padding: 6px 0; font-style: italic; }
-  .d-actions { padding: 6px 0; display: flex; flex-direction: column; gap: 4px; }
-  .d-action-btn {
-    background: var(--color-surface-alt); border: 1px solid var(--color-border); color: var(--color-accent-hover);
-    padding: 6px 10px; border-radius: 4px; cursor: pointer;
-    font-size: 11px; font-family: monospace; text-align: left;
+  .d-row {
+    display: flex; justify-content: space-between; padding: 4px 0; font-size: 12px; color: var(--color-text);
+    font-family: 'JetBrains Mono', monospace;
   }
-  .d-action-btn:hover { border-color: var(--color-accent); background: var(--color-hover); }
-  .d-section { font-size: 10px; color: var(--color-text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin: 8px 0 4px; font-weight: 600; }
-  .d-chain-step { font-size: 11px; color: var(--color-accent-hover); font-weight: 600; margin: 6px 0 2px; padding-top: 4px; border-top: 1px solid var(--color-border-subtle); }
-  .d-path-chain { font-size: 10px; color: var(--color-text-dim); padding: 4px 0; font-family: monospace; word-break: break-all; }
+  .d-label { color: var(--color-text-muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; }
+  .d-hint { font-size: 11px; color: var(--color-accent); padding: 6px 0; font-style: italic; }
+  .d-actions { padding: 6px 0; display: flex; flex-direction: column; gap: 5px; }
+  .d-action-btn {
+    background: color-mix(in srgb, var(--color-accent) 8%, transparent);
+    border: 1px solid color-mix(in srgb, var(--color-border) 50%, transparent);
+    color: var(--color-accent-hover);
+    padding: 7px 12px; border-radius: 8px; cursor: pointer;
+    font-size: 11px; font-family: 'JetBrains Mono', monospace; text-align: left;
+    transition: border-color 150ms, background 150ms;
+  }
+  .d-action-btn:hover {
+    border-color: var(--color-accent);
+    background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  }
+  .d-section {
+    font-size: 10px; color: var(--color-text-muted); text-transform: uppercase;
+    letter-spacing: 0.08em; margin: 10px 0 5px; font-weight: 600;
+  }
+  .d-chain-step {
+    font-size: 11px; color: var(--color-accent-hover); font-weight: 600; margin: 6px 0 2px;
+    padding-top: 5px; border-top: 1px solid color-mix(in srgb, var(--color-border) 30%, transparent);
+  }
+  .d-path-chain {
+    font-size: 10px; color: var(--color-text-dim); padding: 4px 0;
+    font-family: 'JetBrains Mono', monospace; word-break: break-all;
+  }
 
   .d-section-label { font-size: 10px; color: var(--color-text-dim); margin: 8px 0 4px; }
 
   /* Narrative panel */
-  .narrative { margin-top: 6px; }
-  .narr-label { font-size: 10px; color: var(--color-text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
-  .narr-sub { font-size: 9px; color: var(--color-text-dim); text-transform: uppercase; margin: 6px 0 2px; }
+  .narrative { margin-top: 8px; }
+  .narr-label {
+    font-size: 10px; color: var(--color-text-muted); font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 5px;
+  }
+  .narr-sub { font-size: 9px; color: var(--color-text-dim); text-transform: uppercase; letter-spacing: 0.05em; margin: 8px 0 3px; }
   .narr-condition {
-    font-family: monospace; font-size: 11px;
-    padding: 3px 8px; margin: 2px 0;
+    font-family: 'JetBrains Mono', monospace; font-size: 11px;
+    padding: 4px 10px; margin: 3px 0;
     background: color-mix(in srgb, var(--color-warning) 7%, transparent);
     border-left: 2px solid var(--color-warning);
-    color: var(--color-warning); border-radius: 0 3px 3px 0;
+    color: var(--color-warning); border-radius: 0 6px 6px 0;
   }
 
   /* Flow list */
   .flow-list { display: flex; flex-direction: column; gap: 0; }
   .flow-arrow { color: var(--color-border); font-size: 10px; padding-left: 6px; line-height: 1; }
   .flow-step {
-    font-family: monospace; font-size: 11px; color: var(--color-text);
-    padding: 4px 8px; border-radius: 4px;
+    font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--color-text);
+    padding: 5px 10px; border-radius: 6px;
     display: flex; align-items: center; gap: 5px;
     border-left: 2px solid var(--color-border);
+    transition: background 150ms;
   }
   .flow-step.flow-entry { color: var(--color-accent-hover); font-weight: 600; border-left-color: var(--color-accent); }
   .flow-step.flow-return { color: var(--color-success); border-left-color: var(--color-success); }
@@ -371,26 +393,35 @@
   .flow-step.flow-write { color: var(--color-text-muted); border-left-color: var(--color-accent); }
   .flow-step.flow-here { background: color-mix(in srgb, var(--color-accent) 7%, transparent); border-left-color: var(--color-accent); }
   .flow-badge {
-    font-size: 9px; width: 14px; height: 14px;
+    font-size: 9px; width: 16px; height: 16px;
     display: inline-flex; align-items: center; justify-content: center;
-    border-radius: 3px; flex-shrink: 0;
+    border-radius: 4px; flex-shrink: 0;
   }
   .flow-badge.pass { background: color-mix(in srgb, var(--color-success) 13%, transparent); color: var(--color-success); }
   .flow-badge.fail { background: color-mix(in srgb, var(--color-danger) 13%, transparent); color: var(--color-danger); }
   .flow-badge.call { background: color-mix(in srgb, var(--color-danger) 8%, transparent); color: var(--color-danger); }
   .flow-badge.write { background: color-mix(in srgb, var(--color-accent) 8%, transparent); color: var(--color-accent); }
   .flow-here-tag { color: var(--color-accent); font-size: 9px; margin-left: auto; }
-  .d-path { display: flex; align-items: center; gap: 4px; padding: 3px 4px; border-radius: 3px; font-size: 11px; color: inherit; background: transparent; border: 1px solid transparent; cursor: pointer; width: 100%; text-align: left; font: inherit; }
-  .d-path:hover { background: var(--color-dark); }
-  .pid { color: var(--color-text-dim); font-weight: 600; }
+  .d-path {
+    display: flex; align-items: center; gap: 5px; padding: 4px 6px;
+    border-radius: 6px; font-size: 11px; color: inherit;
+    background: transparent; border: 1px solid transparent; cursor: pointer;
+    width: 100%; text-align: left; font: inherit;
+    transition: background 150ms, border-color 150ms;
+  }
+  .d-path:hover { background: color-mix(in srgb, var(--color-accent) 5%, transparent); }
+  .pid { color: var(--color-text-dim); font-weight: 600; font-family: 'JetBrains Mono', monospace; }
   .pdepth { color: var(--color-text-dim); font-size: 10px; }
-  .pb { font-size: 9px; padding: 1px 4px; border-radius: 6px; }
+  .pb { font-size: 9px; padding: 2px 6px; border-radius: 8px; }
   .pb.ext { background: color-mix(in srgb, var(--color-danger) 9%, transparent); color: var(--color-danger-light); }
-  .d-path-selected { background: var(--color-hover); border-color: var(--color-accent); }
+  .d-path-selected {
+    background: color-mix(in srgb, var(--color-accent) 8%, transparent);
+    border-color: color-mix(in srgb, var(--color-accent) 50%, transparent);
+  }
 
   .pd-item {
-    font-family: monospace; font-size: 11px;
-    padding: 2px 6px; border-radius: 3px; margin-bottom: 2px;
+    font-family: 'JetBrains Mono', monospace; font-size: 11px;
+    padding: 3px 8px; border-radius: 6px; margin-bottom: 3px;
   }
   .pd-item.check { background: color-mix(in srgb, var(--color-warning) 9%, transparent); color: var(--color-warning); }
   .pd-item.ext { background: color-mix(in srgb, var(--color-danger) 9%, transparent); color: var(--color-danger-light); }

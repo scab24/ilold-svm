@@ -76,28 +76,47 @@
   }
 </script>
 
-<div class="flex flex-col bg-dark max-h-full h-full overflow-hidden">
-  <!-- Header -->
-  <div class="flex items-center justify-between px-2.5 py-2 border-b border-border flex-shrink-0">
-    <span class="text-[10px] text-text-muted uppercase tracking-[0.5px] font-semibold">Session Timeline</span>
-    <span class="text-[10px] text-text-dim bg-hover px-1.5 py-px rounded-lg font-mono">{steps.length}</span>
+<div class="flex flex-col max-h-full h-full overflow-hidden" style="background: transparent;">
+  <!-- Header — glass effect -->
+  <div
+    class="flex items-center justify-between px-3 py-2.5 flex-shrink-0"
+    style="
+      border-bottom: 1px solid color-mix(in srgb, var(--color-border) 40%, transparent);
+      background: linear-gradient(180deg, rgba(30, 30, 40, 0.85) 0%, rgba(24, 24, 30, 0.9) 100%);
+      backdrop-filter: blur(16px) saturate(1.8);
+      -webkit-backdrop-filter: blur(16px) saturate(1.8);
+    "
+  >
+    <span class="text-[10px] text-text-muted uppercase tracking-wider font-semibold">Session Timeline</span>
+    <span
+      class="text-[10px] text-text-dim font-mono px-2 py-0.5"
+      style="border-radius: 8px; background: color-mix(in srgb, var(--color-border) 30%, transparent);"
+    >{steps.length}</span>
   </div>
 
   <!-- Body -->
-  <div class="timeline-body flex-1 overflow-y-auto py-1" bind:this={scrollContainer}>
+  <div class="timeline-body flex-1 overflow-y-auto py-1.5" bind:this={scrollContainer}>
     {#if steps.length === 0}
-      <div class="py-5 px-3 text-text-dim text-[11px] text-center leading-relaxed">No steps yet. Use the command bar to call a function.</div>
+      <div class="py-8 px-4 text-text-dim text-[11px] text-center leading-relaxed" style="font-style: italic;">
+        No steps yet. Use the command bar to call a function.
+      </div>
     {:else}
-      <ol class="list-none m-0 p-0">
+      <ol class="list-none m-0 p-0 px-1">
         {#each steps as step (step.step_index)}
           {@const badge = accessBadge(step.access)}
           {@const isHighlighted = highlighted === step.function}
           {@const isExpanded = expandedStep === step.step_index}
           <li
-            class="border-l-3 transition-[border-color] duration-150 {isHighlighted ? 'border-l-accent' : 'border-l-transparent'}"
+            class="mb-0.5 transition-all duration-150"
+            style="
+              border-radius: 8px;
+              border-left: 3px solid {isHighlighted ? 'var(--color-accent)' : 'transparent'};
+              background: {isExpanded ? 'color-mix(in srgb, var(--color-accent) 5%, transparent)' : 'transparent'};
+            "
           >
             <button
-              class="flex items-center gap-1.5 w-full px-2.5 py-1.5 bg-transparent border-none text-text text-[11px] font-mono cursor-pointer text-left hover:bg-hover {isExpanded ? 'bg-surface-alt' : ''}"
+              class="flex items-center gap-1.5 w-full px-2.5 py-2 bg-transparent border-none text-text text-[11px] font-mono cursor-pointer text-left transition-colors duration-150 hover:text-accent-hover"
+              style="border-radius: 8px;"
               onclick={() => toggleNarrative(step.step_index)}
             >
               <span class="text-text-dim text-[9px] min-w-[16px] text-right">{step.step_index}</span>
@@ -107,7 +126,14 @@
             </button>
 
             {#if isExpanded}
-              <div class="py-2 pr-3 pl-7 border-t border-hover bg-surface">
+              <div
+                class="py-2 pr-3 pl-7"
+                style="
+                  border-top: 1px solid color-mix(in srgb, var(--color-border) 25%, transparent);
+                  background: color-mix(in srgb, var(--color-surface) 40%, transparent);
+                  border-radius: 0 0 8px 8px;
+                "
+              >
                 {#if loadingNarrative}
                   <span class="text-text-dim text-[10px] italic">Loading...</span>
                 {:else}
@@ -123,9 +149,15 @@
 
   <!-- Footer -->
   {#if steps.length > 0}
-    <div class="px-2.5 py-1.5 border-t border-border flex-shrink-0">
+    <div class="px-2.5 py-2 flex-shrink-0" style="border-top: 1px solid color-mix(in srgb, var(--color-border) 40%, transparent);">
       <button
-        class="w-full py-[5px] bg-hover border border-border rounded-[4px] text-text-muted text-[11px] font-mono cursor-pointer transition-[color,border-color] duration-150 hover:text-text hover:border-accent"
+        class="w-full py-1.5 border text-text-muted text-[11px] font-mono cursor-pointer transition-colors duration-150 hover:text-text hover:border-accent"
+        style="
+          border-radius: 8px;
+          border-color: color-mix(in srgb, var(--color-border) 50%, transparent);
+          background: color-mix(in srgb, var(--color-surface) 30%, transparent);
+          backdrop-filter: blur(8px);
+        "
         onclick={goBack}
         disabled={backBusy}
       >
@@ -136,11 +168,11 @@
 </div>
 
 <style>
-  /* Access badges — use semantic colors from theme */
+  /* Access badges — refined pill style */
   .badge {
     font-size: 9px;
-    padding: 1px 5px;
-    border-radius: 3px;
+    padding: 2px 6px;
+    border-radius: 8px;
     font-family: system-ui, sans-serif;
     flex-shrink: 0;
     text-transform: lowercase;

@@ -3,6 +3,7 @@
   import { Terminal } from '@xterm/xterm';
   import { FitAddon } from '@xterm/addon-fit';
   import '@xterm/xterm/css/xterm.css';
+  import { isTerminalVisible, hideTerminal } from '$lib/stores/terminal.svelte';
 
   let terminalEl: HTMLDivElement;
   let terminal: Terminal;
@@ -14,9 +15,16 @@
   let minimized = $state(false);
   let maximized = $state(false);
   let connected = $state(false);
-  let visible = $state(false);
+  let fadeIn = $state(false);
   let termCols = $state(0);
   let termRows = $state(0);
+
+  // Re-fit terminal when toggled visible from store
+  $effect(() => {
+    if (isTerminalVisible() && fitAddon) {
+      requestAnimationFrame(() => fitAddon?.fit());
+    }
+  });
 
   // Stored dimensions for maximize/restore toggle
   let prevPosX = 0;
@@ -95,9 +103,7 @@
   }
 
   function closePanel() {
-    ws?.close();
-    terminal?.dispose();
-    visible = false;
+    hideTerminal();
   }
 
   function toggleMaximize() {
@@ -149,7 +155,7 @@
     posY = window.innerHeight - panelHeight - 16;
 
     // Trigger fade-in
-    requestAnimationFrame(() => { visible = true; });
+    requestAnimationFrame(() => { fadeIn = true; });
 
     window.addEventListener('resize', clampToViewport);
 
@@ -268,8 +274,9 @@
 <!-- Outer container: premium floating panel -->
 <div
   class="fixed z-50 flex flex-col overflow-hidden"
-  class:opacity-0={!visible}
-  class:opacity-100={visible}
+  class:opacity-0={!fadeIn}
+  class:opacity-100={fadeIn}
+  class:hidden={!isTerminalVisible()}
   style="
     left: {posX}px;
     top: {posY}px;

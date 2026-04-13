@@ -66,14 +66,43 @@
 </script>
 
 <div
-  class="draggable-panel fixed border border-border rounded-[10px] z-50 flex flex-col backdrop-blur-[12px] max-h-[calc(100vh-20px)] overflow-hidden min-w-[180px]"
+  class="draggable-panel fixed z-50 flex flex-col max-h-[calc(100vh-20px)] overflow-hidden min-w-[180px]"
   bind:this={panelEl}
-  style="left:{posX}px; top:{posY}px; width:{w}px; {h > 0 ? `height:${h}px;` : ''}"
+  style="
+    left:{posX}px;
+    top:{posY}px;
+    width:{w}px;
+    {h > 0 ? `height:${h}px;` : ''}
+    border-radius: 12px;
+    border: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+    background: linear-gradient(180deg, rgba(30, 30, 40, 0.92) 0%, rgba(20, 20, 28, 0.96) 100%);
+    backdrop-filter: blur(16px) saturate(1.8);
+    -webkit-backdrop-filter: blur(16px) saturate(1.8);
+    box-shadow:
+      0 25px 50px -12px rgba(0, 0, 0, 0.5),
+      0 12px 24px -8px rgba(0, 0, 0, 0.3),
+      0 0 0 1px rgba(91, 155, 213, 0.05),
+      0 0 60px -20px rgba(91, 155, 213, 0.06);
+  "
 >
-  <div class="flex items-center py-1.5 px-2.5 border-b border-border cursor-grab select-none gap-1.5 shrink-0 active:cursor-grabbing" onmousedown={onDragStart}>
-    <span class="text-xs font-semibold text-accent-hover flex-1 overflow-hidden text-ellipsis whitespace-nowrap">{title}</span>
+  <!-- Title bar — glass header -->
+  <div
+    class="flex items-center py-2 px-3 cursor-grab select-none gap-1.5 shrink-0 active:cursor-grabbing"
+    style="
+      border-bottom: 1px solid color-mix(in srgb, var(--color-border) 40%, transparent);
+      background: linear-gradient(180deg, rgba(30, 30, 40, 0.85) 0%, rgba(24, 24, 30, 0.9) 100%);
+      backdrop-filter: blur(16px) saturate(1.8);
+      -webkit-backdrop-filter: blur(16px) saturate(1.8);
+    "
+    onmousedown={onDragStart}
+  >
+    <span class="text-[11px] font-semibold text-accent-hover flex-1 overflow-hidden text-ellipsis whitespace-nowrap tracking-wide uppercase">{title}</span>
     {#if onclose}
-      <button class="bg-transparent border-none text-text-dim cursor-pointer text-xs py-0.5 px-1.5 rounded-sm hover:bg-border hover:text-text" onclick={onclose}>✕</button>
+      <button
+        class="bg-transparent border-none text-text-dim cursor-pointer text-xs py-0.5 px-1.5 transition-colors duration-150 hover:text-text"
+        style="border-radius: 6px;"
+        onclick={onclose}
+      >✕</button>
     {/if}
   </div>
   <div class="drag-body flex-1 overflow-y-auto pb-3.5">
@@ -86,11 +115,6 @@
 </div>
 
 <style>
-  .draggable-panel {
-    background: color-mix(in srgb, var(--color-surface) 93%, transparent);
-    box-shadow: 0 4px 24px var(--color-shadow);
-  }
-
   .drag-body {
     scrollbar-width: thin;
     scrollbar-color: var(--color-border) transparent;
@@ -107,7 +131,7 @@
   }
   .resize-se {
     position: absolute; bottom: 0; right: 0; width: 18px; height: 18px;
-    cursor: nwse-resize; border-radius: 0 0 10px 0;
+    cursor: nwse-resize; border-radius: 0 0 12px 0;
   }
   .resize-se::after {
     content: '';

@@ -38,8 +38,12 @@
 </script>
 
 <div
-  class="flex flex-col flex-shrink-0 bg-dark border-l border-border relative h-full"
-  style:width={open ? `${sidebarWidth}px` : '28px'}
+  class="flex flex-col flex-shrink-0 relative h-full"
+  style="
+    width: {open ? `${sidebarWidth}px` : '28px'};
+    background: linear-gradient(180deg, rgba(20, 20, 28, 0.95) 0%, rgba(16, 16, 22, 0.98) 100%);
+    border-left: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+  "
 >
   <!-- Sidebar width drag handle (left edge) -->
   {#if open}
@@ -52,22 +56,39 @@
   {/if}
 
   <button
-    class="absolute left-1 top-2 bg-surface border border-border border-r-0 rounded-l-[4px] text-text-muted cursor-pointer px-[3px] py-1 text-[10px] z-5 hover:text-accent-hover"
+    class="absolute left-1 top-2 border cursor-pointer px-[3px] py-1 text-[10px] z-5 text-text-muted transition-colors duration-150 hover:text-accent-hover"
+    style="
+      border-radius: 6px;
+      border-color: color-mix(in srgb, var(--color-border) 40%, transparent);
+      background: rgba(30, 30, 40, 0.8);
+      backdrop-filter: blur(8px);
+    "
     onclick={() => open = !open}
   >
     {open ? '▸' : '◂'}
   </button>
 
   <div class="flex flex-col flex-1 min-h-0" class:hidden={!open}>
-    <div class="flex border-b border-border px-1 mb-1">
+    <!-- Tab header — glass effect -->
+    <div
+      class="flex px-1.5 mb-0"
+      style="
+        border-bottom: 1px solid color-mix(in srgb, var(--color-border) 40%, transparent);
+        background: linear-gradient(180deg, rgba(30, 30, 40, 0.85) 0%, rgba(24, 24, 30, 0.9) 100%);
+        backdrop-filter: blur(16px) saturate(1.8);
+        -webkit-backdrop-filter: blur(16px) saturate(1.8);
+      "
+    >
       <button
-        class="flex-1 py-1.5 bg-transparent border-none border-b-2 text-[10px] font-semibold uppercase tracking-[0.5px] cursor-pointer {activeTab === 'timeline' ? 'text-accent border-b-accent' : 'text-text-muted border-b-transparent hover:text-text'}"
+        class="flex-1 py-2 bg-transparent border-none text-[10px] font-semibold uppercase tracking-wider cursor-pointer transition-colors duration-150 {activeTab === 'timeline' ? 'text-accent' : 'text-text-muted hover:text-text'}"
+        style="border-bottom: 2px solid {activeTab === 'timeline' ? 'var(--color-accent)' : 'transparent'};"
         onclick={() => activeTab = 'timeline'}
       >
         Timeline
       </button>
       <button
-        class="flex-1 py-1.5 bg-transparent border-none border-b-2 text-[10px] font-semibold uppercase tracking-[0.5px] cursor-pointer {activeTab === 'state' ? 'text-accent border-b-accent' : 'text-text-muted border-b-transparent hover:text-text'}"
+        class="flex-1 py-2 bg-transparent border-none text-[10px] font-semibold uppercase tracking-wider cursor-pointer transition-colors duration-150 {activeTab === 'state' ? 'text-accent' : 'text-text-muted hover:text-text'}"
+        style="border-bottom: 2px solid {activeTab === 'state' ? 'var(--color-accent)' : 'transparent'};"
         onclick={() => activeTab = 'state'}
       >
         State
