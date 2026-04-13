@@ -77,7 +77,7 @@
   /**
    * Keyboard shortcuts for mode switching.
    * Excludes edits inside text inputs / textareas / contenteditable — the
-   * CommandBar in +page.svelte uses a text input and must own its keystrokes.
+   * EmbeddedTerminal captures keystrokes via xterm.js and does not interfere.
    */
   function handleKeydown(e: KeyboardEvent) {
     const t = e.target;

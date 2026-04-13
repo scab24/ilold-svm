@@ -1,5 +1,5 @@
 <script lang="ts">
-  import CommandBar from './CommandBar.svelte';
+  import EmbeddedTerminal from './EmbeddedTerminal.svelte';
   import SessionTimeline from './SessionTimeline.svelte';
   import StatePanel from './StatePanel.svelte';
 
@@ -7,15 +7,80 @@
 
   let open = $state(true);
   let activeTab: 'timeline' | 'state' = $state('timeline');
+
+  // Resizable sidebar width (drag handle on left edge)
+  let sidebarWidth = $state(480);
+  const MIN_WIDTH = 320;
+  const MAX_WIDTH = 900;
+  let draggingWidth = $state(false);
+
+  // Resizable terminal height (drag handle between panels and terminal)
+  let terminalHeight = $state(280);
+  const MIN_TERM_H = 120;
+  const MAX_TERM_H = 600;
+  let draggingHeight = $state(false);
+
+  function onWidthDragStart(e: MouseEvent) {
+    e.preventDefault();
+    draggingWidth = true;
+    document.body.style.userSelect = 'none';
+    const startX = e.clientX;
+    const startW = sidebarWidth;
+
+    function onMove(ev: MouseEvent) {
+      // Sidebar grows to the left, so drag left = wider
+      const delta = startX - ev.clientX;
+      sidebarWidth = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, startW + delta));
+    }
+    function onUp() {
+      draggingWidth = false;
+      document.body.style.userSelect = '';
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    }
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  }
+
+  function onHeightDragStart(e: MouseEvent) {
+    e.preventDefault();
+    draggingHeight = true;
+    document.body.style.userSelect = 'none';
+    const startY = e.clientY;
+    const startH = terminalHeight;
+
+    function onMove(ev: MouseEvent) {
+      // Drag up = taller terminal
+      const delta = startY - ev.clientY;
+      terminalHeight = Math.min(MAX_TERM_H, Math.max(MIN_TERM_H, startH + delta));
+    }
+    function onUp() {
+      draggingHeight = false;
+      document.body.style.userSelect = '';
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    }
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  }
 </script>
 
 <div
   class="flex flex-col flex-shrink-0 bg-dark border-l border-border relative h-full"
-  class:w-[360px]={open}
-  class:w-[28px]={!open}
+  style:width={open ? `${sidebarWidth}px` : '28px'}
 >
+  <!-- Sidebar width drag handle (left edge) -->
+  {#if open}
+    <div
+      class="absolute left-0 top-0 bottom-0 w-1 cursor-col-resize z-10 {draggingWidth ? 'bg-accent-dark' : 'hover:bg-surface-alt'}"
+      onmousedown={onWidthDragStart}
+      role="separator"
+      aria-orientation="vertical"
+    ></div>
+  {/if}
+
   <button
-    class="absolute -left-px top-2 bg-surface border border-border border-r-0 rounded-l-[4px] text-text-muted cursor-pointer px-[3px] py-1 text-[10px] z-5 hover:text-accent-hover"
+    class="absolute left-1 top-2 bg-surface border border-border border-r-0 rounded-l-[4px] text-text-muted cursor-pointer px-[3px] py-1 text-[10px] z-5 hover:text-accent-hover"
     onclick={() => open = !open}
   >
     {open ? '▸' : '◂'}
@@ -45,8 +110,16 @@
       {/if}
     </div>
 
-    <div class="border-t-2 border-border max-h-[40%] flex flex-col overflow-hidden">
-      <CommandBar {contract} />
+    <!-- Terminal height drag handle -->
+    <div
+      class="h-1 cursor-row-resize border-t-2 border-border shrink-0 {draggingHeight ? 'bg-accent-dark' : 'hover:bg-surface-alt'}"
+      onmousedown={onHeightDragStart}
+      role="separator"
+      aria-orientation="horizontal"
+    ></div>
+
+    <div class="flex flex-col overflow-hidden shrink-0" style:height="{terminalHeight}px">
+      <EmbeddedTerminal />
     </div>
   </div>
 </div>

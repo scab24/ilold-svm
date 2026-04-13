@@ -28,9 +28,11 @@ pub async fn run(paths: Vec<PathBuf>, port: u16, max_seq_depth: usize, attach: O
         let project_info: serde_json::Value = resp.json().await?;
 
         let contracts_arr = project_info["contracts"].as_array();
+        // Pick the LAST contract (not interface/library) — in Solidity the main
+        // contract is always at the end of the file, after imports and dependencies.
         let contract_name = contracts_arr
-            .and_then(|arr| arr.iter().find(|c| c["kind"].as_str() == Some("Contract")))
-            .or_else(|| contracts_arr.and_then(|arr| arr.first()))
+            .and_then(|arr| arr.iter().rev().find(|c| c["kind"].as_str() == Some("Contract")))
+            .or_else(|| contracts_arr.and_then(|arr| arr.last()))
             .and_then(|c| c["name"].as_str())
             .unwrap_or("unknown")
             .to_string();
