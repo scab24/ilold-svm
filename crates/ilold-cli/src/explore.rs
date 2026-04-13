@@ -160,7 +160,25 @@ fn repl_loop(
         steps: Vec::new(),
     };
 
+    // Initial prompt sync in --attach mode: pick up steps from other terminals
+    if state.is_none() {
+        if let Some(server_steps) = sync_steps(&handle, &client, &base_url, &contract) {
+            steps = server_steps;
+            prompt.steps = steps.clone();
+        }
+    }
+
     loop {
+        // Sync prompt from server in --attach mode (catches changes from other terminals)
+        if state.is_none() {
+            if let Some(server_steps) = sync_steps(&handle, &client, &base_url, &contract) {
+                if server_steps != steps {
+                    steps = server_steps;
+                    prompt.steps = steps.clone();
+                }
+            }
+        }
+
         match editor.read_line(&prompt) {
             Ok(Signal::Success(line)) => {
                 let line = line.trim();
@@ -741,6 +759,23 @@ fn handle_input(
             println!("  Unknown command: {}. Type {} for help.", c_danger(cmd.as_str()), c_accent("?"));
             InputResult::Continue
         }
+    }
+}
+
+/// Fetch current session steps from the server (for --attach prompt sync).
+fn sync_steps(
+    handle: &tokio::runtime::Handle,
+    client: &reqwest::Client,
+    base_url: &str,
+    contract: &str,
+) -> Option<Vec<String>> {
+    let body = serde_json::json!({
+        "contract": contract,
+        "command": "Session"
+    });
+    match send_command(handle, client, base_url, &body) {
+        Ok(CommandResult::SessionView { steps, .. }) => Some(steps),
+        _ => None,
     }
 }
 
