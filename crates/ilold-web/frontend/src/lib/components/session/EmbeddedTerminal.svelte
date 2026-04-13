@@ -12,6 +12,17 @@
 
   // Floating panel state
   let minimized = $state(false);
+  let maximized = $state(false);
+  let connected = $state(false);
+  let visible = $state(false);
+  let termCols = $state(0);
+  let termRows = $state(0);
+
+  // Stored dimensions for maximize/restore toggle
+  let prevPosX = 0;
+  let prevPosY = 0;
+  let prevWidth = 600;
+  let prevHeight = 300;
 
   // Position — set properly in onMount; defaults are SSR-safe placeholders
   let posX = $state(0);
@@ -22,7 +33,7 @@
   let panelHeight = $state(300);
   const MIN_W = 400;
   const MIN_H = 200;
-  const TITLE_BAR_H = 32;
+  const TITLE_BAR_H = 36;
 
   // Drag state
   let dragging = $state(false);
@@ -83,6 +94,50 @@
     }
   }
 
+  function closePanel() {
+    ws?.close();
+    terminal?.dispose();
+    visible = false;
+  }
+
+  function toggleMaximize() {
+    if (maximized) {
+      posX = prevPosX;
+      posY = prevPosY;
+      panelWidth = prevWidth;
+      panelHeight = prevHeight;
+      maximized = false;
+    } else {
+      prevPosX = posX;
+      prevPosY = posY;
+      prevWidth = panelWidth;
+      prevHeight = panelHeight;
+      posX = 16;
+      posY = 16;
+      panelWidth = window.innerWidth - 32;
+      panelHeight = window.innerHeight - 32;
+      maximized = true;
+    }
+    requestAnimationFrame(() => fitAddon?.fit());
+  }
+
+  // Font size control
+  let fontSize = $state(13);
+  const MIN_FONT = 9;
+  const MAX_FONT = 22;
+
+  function changeFontSize(delta: number) {
+    fontSize = Math.min(MAX_FONT, Math.max(MIN_FONT, fontSize + delta));
+    if (terminal) {
+      terminal.options.fontSize = fontSize;
+      requestAnimationFrame(() => fitAddon?.fit());
+    }
+  }
+
+  function clearTerminal() {
+    terminal?.clear();
+  }
+
   function clampToViewport() {
     posX = Math.max(0, Math.min(posX, window.innerWidth - panelWidth));
     posY = Math.max(0, Math.min(posY, window.innerHeight - (minimized ? TITLE_BAR_H : panelHeight)));
@@ -93,18 +148,41 @@
     posX = window.innerWidth - panelWidth - 16;
     posY = window.innerHeight - panelHeight - 16;
 
+    // Trigger fade-in
+    requestAnimationFrame(() => { visible = true; });
+
     window.addEventListener('resize', clampToViewport);
 
     terminal = new Terminal({
       cursorBlink: true,
-      fontSize: 11,
-      fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', var(--font-mono), ui-monospace, monospace",
-      lineHeight: 1.15,
+      fontSize,
+      fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'SF Mono', 'Menlo', ui-monospace, monospace",
+      lineHeight: 1.2,
+      cursorStyle: 'bar',
+      cursorWidth: 2,
       theme: {
         background: '#0d1117',
-        foreground: '#c9d1d9',
+        foreground: '#e6edf3',
         cursor: '#58a6ff',
+        cursorAccent: '#0d1117',
         selectionBackground: '#264f78',
+        selectionForeground: '#ffffff',
+        black: '#484f58',
+        red: '#ff7b72',
+        green: '#3fb950',
+        yellow: '#d29922',
+        blue: '#58a6ff',
+        magenta: '#bc8cff',
+        cyan: '#39c5cf',
+        white: '#b1bac4',
+        brightBlack: '#6e7681',
+        brightRed: '#ffa198',
+        brightGreen: '#56d364',
+        brightYellow: '#e3b341',
+        brightBlue: '#79c0ff',
+        brightMagenta: '#d2a8ff',
+        brightCyan: '#56d4dd',
+        brightWhite: '#f0f6fc',
       },
     });
 
@@ -120,8 +198,11 @@
     ws.binaryType = 'arraybuffer';
 
     ws.onopen = () => {
+      connected = true;
       // Send initial size so the PTY starts with correct dimensions
       const { cols, rows } = terminal;
+      termCols = cols;
+      termRows = rows;
       ws!.send(JSON.stringify({ type: 'resize', cols, rows }));
     };
 
@@ -134,6 +215,7 @@
     };
 
     ws.onclose = () => {
+      connected = false;
       terminal.write('\r\n\x1b[90m[Disconnected]\x1b[0m\r\n');
     };
 
@@ -146,9 +228,28 @@
 
     // Resize → notify PTY
     terminal.onResize(({ cols, rows }) => {
+      termCols = cols;
+      termRows = rows;
       if (ws?.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'resize', cols, rows }));
       }
+    });
+
+    // Ctrl+=/- for font size (standard terminal shortcuts)
+    // Filter to keydown only — handler fires on both keydown and keyup
+    terminal.attachCustomKeyEventHandler((e: KeyboardEvent) => {
+      if (e.type !== 'keydown') return true;
+      if ((e.ctrlKey || e.metaKey) && (e.key === '=' || e.key === '+')) {
+        e.preventDefault();
+        changeFontSize(1);
+        return false;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === '-') {
+        e.preventDefault();
+        changeFontSize(-1);
+        return false;
+      }
+      return true;
     });
 
     // Auto-fit when container resizes
@@ -164,45 +265,170 @@
   });
 </script>
 
+<!-- Outer container: premium floating panel -->
 <div
-  class="fixed z-50 flex flex-col rounded-lg border border-border shadow-xl overflow-hidden"
-  style="left: {posX}px; top: {posY}px; width: {panelWidth}px; height: {minimized ? TITLE_BAR_H : panelHeight}px;"
+  class="fixed z-50 flex flex-col overflow-hidden"
+  class:opacity-0={!visible}
+  class:opacity-100={visible}
+  style="
+    left: {posX}px;
+    top: {posY}px;
+    width: {panelWidth}px;
+    height: {minimized ? TITLE_BAR_H : panelHeight}px;
+    border-radius: 12px;
+    border: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+    box-shadow:
+      0 25px 50px -12px rgba(0, 0, 0, 0.5),
+      0 12px 24px -8px rgba(0, 0, 0, 0.3),
+      0 0 0 1px rgba(91, 155, 213, 0.05),
+      0 0 80px -20px rgba(91, 155, 213, 0.08);
+    transition: height 200ms cubic-bezier(0.4, 0, 0.2, 1), opacity 300ms ease-out;
+  "
 >
-  <!-- Title bar (drag handle) -->
+  <!-- Title bar (drag handle) — glass effect -->
   <div
-    class="flex items-center justify-between px-3 h-8 shrink-0 bg-surface border-b border-border select-none {dragging ? 'cursor-grabbing' : 'cursor-grab'}"
+    class="flex items-center justify-between px-3 shrink-0 select-none {dragging ? 'cursor-grabbing' : 'cursor-grab'}"
+    style="
+      height: {TITLE_BAR_H}px;
+      background: linear-gradient(180deg, rgba(30, 30, 40, 0.85) 0%, rgba(24, 24, 30, 0.9) 100%);
+      backdrop-filter: blur(16px) saturate(1.8);
+      -webkit-backdrop-filter: blur(16px) saturate(1.8);
+      border-bottom: 1px solid color-mix(in srgb, var(--color-border) 40%, transparent);
+    "
     onmousedown={onDragStart}
     role="toolbar"
   >
-    <span class="text-[11px] font-semibold text-text-muted tracking-wide uppercase">Terminal</span>
-    <div class="flex items-center gap-1">
-      <button
-        class="bg-transparent border-none text-text-muted hover:text-accent-hover cursor-pointer text-xs px-1.5 py-0.5 rounded hover:bg-surface-alt"
-        onclick={toggleMinimize}
-        title={minimized ? 'Restore' : 'Minimize'}
-      >
-        {minimized ? '▲' : '▼'}
-      </button>
+    <!-- Left: traffic light buttons -->
+    <div class="flex items-center gap-2">
+      <div class="flex items-center gap-1.5">
+        <!-- Close (red) -->
+        <button
+          class="w-3 h-3 rounded-full border-none cursor-pointer transition-all duration-150 hover:brightness-125"
+          style="background: var(--color-danger);"
+          title="Close"
+          aria-label="Close terminal"
+          onmousedown={(e: MouseEvent) => e.stopPropagation()}
+          onclick={() => closePanel()}
+        ></button>
+        <!-- Minimize (yellow/warning) -->
+        <button
+          class="w-3 h-3 rounded-full border-none cursor-pointer transition-all duration-150 hover:brightness-125"
+          style="background: var(--color-warning);"
+          title={minimized ? 'Restore' : 'Minimize'}
+          aria-label={minimized ? 'Restore terminal' : 'Minimize terminal'}
+          onmousedown={(e: MouseEvent) => e.stopPropagation()}
+          onclick={() => toggleMinimize()}
+        ></button>
+        <!-- Maximize (green/success) -->
+        <button
+          class="w-3 h-3 rounded-full border-none cursor-pointer transition-all duration-150 hover:brightness-125"
+          style="background: var(--color-success);"
+          title={maximized ? 'Restore' : 'Maximize'}
+          aria-label={maximized ? 'Restore terminal size' : 'Maximize terminal'}
+          onmousedown={(e: MouseEvent) => e.stopPropagation()}
+          onclick={() => toggleMaximize()}
+        ></button>
+      </div>
+
+      <!-- Connection status dot -->
+      <div class="flex items-center gap-1.5 ml-3">
+        <span
+          class="w-1.5 h-1.5 rounded-full inline-block"
+          style="background: {connected ? 'var(--color-success-light)' : 'var(--color-danger-light)'}; box-shadow: 0 0 6px {connected ? 'var(--color-success)' : 'var(--color-danger)'};"
+        ></span>
+        <span class="text-[10px] text-text-dim tracking-wide">
+          {connected ? 'connected' : 'disconnected'}
+        </span>
+      </div>
     </div>
+
+    <!-- Center: title -->
+    <span
+      class="text-[11px] font-semibold tracking-wider uppercase absolute left-1/2 -translate-x-1/2"
+      style="color: var(--color-text-muted);"
+    >Terminal</span>
+
+    <!-- Right: spacer for symmetry -->
+    <div class="w-16"></div>
   </div>
 
-  <!-- Terminal body (use hidden instead of {#if} to preserve xterm DOM) -->
-  <div class="flex-1 min-h-0 bg-[#0d1117]" class:hidden={minimized}>
+  <!-- Terminal body -->
+  <div
+    class="flex-1 min-h-0 relative"
+    class:hidden={minimized}
+    style="
+      background: rgba(13, 17, 23, 0.97);
+    "
+  >
+    <!-- Inner shadow overlay for depth -->
+    <div
+      class="absolute inset-x-0 top-0 h-4 z-10 pointer-events-none"
+      style="background: linear-gradient(180deg, rgba(0, 0, 0, 0.25) 0%, transparent 100%);"
+    ></div>
     <div bind:this={terminalEl} class="h-full w-full" />
   </div>
 
-  <!-- Resize handle (bottom-right corner) -->
+  <!-- Status bar (bottom) -->
   {#if !minimized}
     <div
-      class="absolute bottom-0 right-0 w-4 h-4 cursor-nwse-resize z-10"
+      class="flex items-center justify-between px-3 shrink-0 select-none"
+      style="
+        height: 22px;
+        background: rgba(24, 24, 30, 0.9);
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+        border-top: 1px solid color-mix(in srgb, var(--color-border) 30%, transparent);
+      "
+    >
+      <div class="flex items-center gap-3">
+        <span class="text-[10px] text-text-dim font-mono tracking-wide">
+          {termCols}×{termRows}
+        </span>
+        <span
+          class="w-1 h-1 rounded-full inline-block"
+          style="background: {connected ? 'var(--color-success)' : 'var(--color-danger)'};"
+        ></span>
+      </div>
+      <div class="flex items-center gap-2">
+        <!-- Font size controls -->
+        <div class="flex items-center gap-0.5">
+          <button
+            class="bg-transparent border-none text-text-dim hover:text-accent-hover cursor-pointer text-[11px] w-5 h-5 flex items-center justify-center rounded transition-colors duration-150"
+            onclick={() => changeFontSize(-1)}
+            title="Decrease font size"
+            aria-label="Decrease font size"
+          >−</button>
+          <span class="text-[10px] text-text-dim font-mono min-w-[24px] text-center">{fontSize}px</span>
+          <button
+            class="bg-transparent border-none text-text-dim hover:text-accent-hover cursor-pointer text-[11px] w-5 h-5 flex items-center justify-center rounded transition-colors duration-150"
+            onclick={() => changeFontSize(1)}
+            title="Increase font size"
+            aria-label="Increase font size"
+          >+</button>
+        </div>
+        <button
+          class="bg-transparent border-none text-text-dim hover:text-text-muted cursor-pointer text-[10px] px-1.5 py-0 rounded tracking-wide transition-colors duration-150"
+          onclick={clearTerminal}
+          title="Clear terminal"
+        >
+          clear
+        </button>
+      </div>
+    </div>
+  {/if}
+
+  <!-- Resize handle (bottom-right corner) — diagonal grip pattern -->
+  {#if !minimized}
+    <div
+      class="absolute bottom-0 right-0 w-5 h-5 cursor-nwse-resize z-10"
       onmousedown={onResizeStart}
       role="separator"
       aria-label="Resize terminal"
     >
-      <svg class="w-3 h-3 text-text-muted absolute bottom-0.5 right-0.5" viewBox="0 0 12 12" fill="currentColor">
-        <circle cx="10" cy="10" r="1.5" />
-        <circle cx="6" cy="10" r="1.5" />
-        <circle cx="10" cy="6" r="1.5" />
+      <svg class="absolute bottom-1 right-1 opacity-30 hover:opacity-60 transition-opacity duration-150" width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="var(--color-text-muted)" stroke-width="1">
+        <line x1="9" y1="1" x2="1" y2="9" />
+        <line x1="9" y1="4" x2="4" y2="9" />
+        <line x1="9" y1="7" x2="7" y2="9" />
       </svg>
     </div>
   {/if}
