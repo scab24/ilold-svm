@@ -142,6 +142,7 @@ fn repl_loop(
     let completer = std::sync::Arc::new(std::sync::Mutex::new(IloldCompleter {
         functions: functions.clone(),
         contracts: contract_names.clone(),
+        scenarios: vec!["main".to_string()],
     }));
 
     let mut editor = Reedline::create()
@@ -153,11 +154,12 @@ fn repl_loop(
 
     let client = reqwest::Client::new();
     let mut steps: Vec<String> = Vec::new();
-    let mut scenario_name: Option<String> = None;
+    let mut scenario_name: String = "main".into();
 
     let mut prompt = IloldPrompt {
         contract: contract.clone(),
         steps: Vec::new(),
+        scenario: scenario_name.clone(),
     };
 
     // Initial prompt sync in --attach mode: pick up steps from other terminals
@@ -186,16 +188,18 @@ fn repl_loop(
 
                 match handle_input(
                     line, &handle, &client, &base_url, &contract,
-                    &mut steps, &mut scenario_name, &state,
+                    &mut steps, &mut scenario_name, &completer, &state,
                 ) {
                     InputResult::Continue => {}
                     InputResult::Quit => break,
                     InputResult::UpdatePrompt => {
                         prompt.steps = steps.clone();
+                        prompt.scenario = scenario_name.clone();
                     }
                     InputResult::SwitchContract(new_name) => {
                         contract = new_name.clone();
                         steps.clear();
+                        scenario_name = "main".into();
                         if let Some(ref state) = state {
                             // Local mode: use AppState directly
                             if let Some(c) = state.project.contracts.iter().find(|c| c.name == new_name) {
@@ -219,6 +223,10 @@ fn repl_loop(
                         }
                         prompt.contract = contract.clone();
                         prompt.steps = Vec::new();
+                        prompt.scenario = scenario_name.clone();
+                        if let Ok(mut comp) = completer.lock() {
+                            comp.scenarios = vec!["main".to_string()];
+                        }
                     }
                 }
             }
@@ -253,7 +261,8 @@ fn handle_input(
     base_url: &str,
     contract: &str,
     steps: &mut Vec<String>,
-    scenario_name: &mut Option<String>,
+    scenario_name: &mut String,
+    completer: &std::sync::Arc<std::sync::Mutex<IloldCompleter>>,
     state: &Option<std::sync::Arc<ilold_web::state::AppState>>,
 ) -> InputResult {
     // Allow shortcuts like `st0`, `st1`, `step2` without requiring a space.
@@ -277,15 +286,71 @@ fn handle_input(
             println!("  API running at {base_url}/api/");
             InputResult::Continue
         }
-        "sc" | "scenario" => {
-            if arg.is_empty() {
-                match scenario_name {
-                    Some(name) => println!("  Current scenario: {}", c_accent(name)),
-                    None => println!("  No scenario set. Usage: scenario <name>"),
+        "sc" | "scen" | "scenario" => {
+            let sub_parts: Vec<&str> = arg.splitn(2, ' ').collect();
+            let sub = sub_parts.first().copied().unwrap_or("").trim();
+            let name_arg = sub_parts.get(1).map(|s| s.trim()).unwrap_or("");
+
+            use ilold_core::exploration::commands::ScenarioAction;
+            let action: Option<ScenarioAction> = match sub {
+                "new" if !name_arg.is_empty() => Some(ScenarioAction::New { name: name_arg.to_string() }),
+                "list" | "ls" => Some(ScenarioAction::List),
+                "switch" if !name_arg.is_empty() => Some(ScenarioAction::Switch { name: name_arg.to_string() }),
+                "fork" if !name_arg.is_empty() => Some(ScenarioAction::Fork { name: name_arg.to_string() }),
+                "delete" | "rm" if !name_arg.is_empty() => Some(ScenarioAction::Delete { name: name_arg.to_string() }),
+                _ => None,
+            };
+
+            let Some(action) = action else {
+                println!("  Usage: scenario new|list|switch|fork|delete <name>");
+                return InputResult::Continue;
+            };
+
+            let body = serde_json::json!({
+                "contract": contract,
+                "command": { "Scenario": { "sub": action } }
+            });
+            match send_command(handle, client, base_url, &body) {
+                Ok(result) => {
+                    // Update local trackers before printing.
+                    let mut did_update_scenario = false;
+                    match &result {
+                        CommandResult::ScenarioCreated { name } => {
+                            if let Ok(mut comp) = completer.lock() {
+                                if !comp.scenarios.iter().any(|s| s == name) {
+                                    comp.scenarios.push(name.clone());
+                                }
+                            }
+                        }
+                        CommandResult::ScenarioForked { to, .. } => {
+                            if let Ok(mut comp) = completer.lock() {
+                                if !comp.scenarios.iter().any(|s| s == to) {
+                                    comp.scenarios.push(to.clone());
+                                }
+                            }
+                        }
+                        CommandResult::ScenarioSwitched { from, to } if from != to => {
+                            *scenario_name = to.clone();
+                            did_update_scenario = true;
+                        }
+                        CommandResult::ScenarioDeleted { name } => {
+                            if let Ok(mut comp) = completer.lock() {
+                                comp.scenarios.retain(|s| s != name);
+                            }
+                        }
+                        CommandResult::ScenarioList { items } => {
+                            if let Ok(mut comp) = completer.lock() {
+                                comp.scenarios = items.iter().map(|i| i.name.clone()).collect();
+                            }
+                        }
+                        _ => {}
+                    }
+                    print_result(&result, steps);
+                    if did_update_scenario {
+                        return InputResult::UpdatePrompt;
+                    }
                 }
-            } else {
-                *scenario_name = Some(arg.to_string());
-                println!("  Scenario: {}", c_accent(arg));
+                Err(e) => eprintln!("  {}", c_danger(&e)),
             }
             InputResult::Continue
         }
@@ -1267,6 +1332,21 @@ fn print_result(result: &CommandResult, steps: &[String]) {
         CommandResult::Error { message } => {
             println!("  {}", c_danger(message));
         }
+        CommandResult::ScenarioList { items } => {
+            print!("{}", fmt::render_scenario_list(items));
+        }
+        CommandResult::ScenarioCreated { name } => {
+            println!("{}", fmt::render_scenario_created(name));
+        }
+        CommandResult::ScenarioSwitched { from, to } => {
+            println!("{}", fmt::render_scenario_switched(from, to));
+        }
+        CommandResult::ScenarioForked { from, to, at_step } => {
+            println!("{}", fmt::render_scenario_forked(from, to, *at_step));
+        }
+        CommandResult::ScenarioDeleted { name } => {
+            println!("{}", fmt::render_scenario_deleted(name));
+        }
     }
 }
 
@@ -1660,23 +1740,35 @@ fn print_inline_help(cmd: &str) {
 struct IloldPrompt {
     contract: String,
     steps: Vec<String>,
+    scenario: String,
+}
+
+impl IloldPrompt {
+    fn label(&self) -> String {
+        if self.scenario == "main" {
+            self.contract.clone()
+        } else {
+            format!("{}/{}", self.contract, self.scenario)
+        }
+    }
 }
 
 impl Prompt for IloldPrompt {
     fn render_prompt_left(&self) -> Cow<'_, str> {
+        let label = self.label();
         if self.steps.is_empty() {
-            Cow::Owned(format!("ilold[{}]", self.contract))
+            Cow::Owned(format!("ilold[{}]", label))
         } else if self.steps.len() <= 3 {
             let path = self.steps.iter()
                 .map(|s| s.as_str())
                 .collect::<Vec<_>>()
                 .join(" → ");
-            Cow::Owned(format!("ilold[→ {}]", path))
+            Cow::Owned(format!("ilold[{} → {}]", label, path))
         } else {
             let skipped = self.steps.len() - 2;
             Cow::Owned(format!(
-                "ilold[→ {} → ...{} more → {}]",
-                self.steps[0], skipped, self.steps.last().unwrap()
+                "ilold[{} → {} → ...{} more → {}]",
+                label, self.steps[0], skipped, self.steps.last().unwrap()
             ))
         }
     }
@@ -1697,6 +1789,7 @@ impl Prompt for IloldPrompt {
 struct IloldCompleter {
     functions: Vec<String>,
     contracts: Vec<String>,
+    scenarios: Vec<String>,
 }
 
 impl Completer for IloldCompleter {
@@ -1717,14 +1810,27 @@ impl Completer for IloldCompleter {
 
         let needs_contract = line_lower.starts_with("use ");
 
-        if !needs_func && !needs_contract {
+        let needs_scenario = line_lower.starts_with("scenario switch ")
+            || line_lower.starts_with("scenario delete ")
+            || line_lower.starts_with("sc switch ")
+            || line_lower.starts_with("sc delete ")
+            || line_lower.starts_with("scen switch ")
+            || line_lower.starts_with("scen delete ");
+
+        if !needs_func && !needs_contract && !needs_scenario {
             return Vec::new();
         }
 
         let arg_start = line[..pos].rfind(' ').map(|i| i + 1).unwrap_or(0);
         let partial = &line[arg_start..pos];
 
-        let source = if needs_contract { &self.contracts } else { &self.functions };
+        let source = if needs_scenario {
+            &self.scenarios
+        } else if needs_contract {
+            &self.contracts
+        } else {
+            &self.functions
+        };
 
         source.iter()
             .filter(|f| f.starts_with(partial))

@@ -1,5 +1,6 @@
 use colored::Colorize;
 
+use ilold_core::exploration::commands::ScenarioInfo;
 use ilold_core::exploration::session::MutationScope;
 use ilold_core::exploration::timeline::{TimelineEntry, VariableTimeline};
 use ilold_core::narrative::trace::{FlowKind, FlowNode, FlowTree};
@@ -469,6 +470,85 @@ fn render_slice_side(label: &str, entries: &[SliceEntry], var: &str, out: &mut S
             entry.text,
         ));
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Scenario renderers
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub fn render_scenario_list(items: &[ScenarioInfo]) -> String {
+    if items.is_empty() {
+        return format!("  {}\n", c_muted("(no scenarios)"));
+    }
+
+    let name_width = items
+        .iter()
+        .map(|s| s.name.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max(4);
+
+    // Build header-box lines (plain text; header_box colors the frame).
+    let title = format!(
+        "scenarios — {} total, active: {}",
+        items.len(),
+        items
+            .iter()
+            .find(|s| s.active)
+            .map(|s| s.name.as_str())
+            .unwrap_or("?"),
+    );
+    let header = format!(
+        "  {}   {}   {}",
+        pad_right("", 1),
+        pad_right("name", name_width),
+        "steps",
+    );
+    let mut lines: Vec<String> = vec![title, header];
+    for s in items {
+        let marker = if s.active { "→" } else { " " };
+        lines.push(format!(
+            "  {}   {}   {}",
+            marker,
+            pad_right(&s.name, name_width),
+            s.step_count,
+        ));
+    }
+    let refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
+    let mut out = header_box(&refs);
+    out.push('\n');
+    out
+}
+
+pub fn render_scenario_forked(from: &str, to: &str, at_step: usize) -> String {
+    format!(
+        "  {} Forked '{}' → '{}' at step {}",
+        c_ok("✓"),
+        c_accent(from),
+        c_accent(to),
+        at_step,
+    )
+}
+
+pub fn render_scenario_created(name: &str) -> String {
+    format!("  {} Created scenario '{}'", c_ok("✓"), c_accent(name))
+}
+
+pub fn render_scenario_switched(from: &str, to: &str) -> String {
+    if from == to {
+        format!("  {} Already on scenario '{}'", c_muted("·"), c_accent(to))
+    } else {
+        format!(
+            "  {} Switched: '{}' → '{}'",
+            c_ok("✓"),
+            c_accent(from),
+            c_accent(to),
+        )
+    }
+}
+
+pub fn render_scenario_deleted(name: &str) -> String {
+    format!("  {} Deleted scenario '{}'", c_ok("✓"), c_accent(name))
 }
 
 #[cfg(test)]

@@ -6,11 +6,12 @@ use axum::Json;
 use serde::Deserialize;
 
 use ilold_core::exploration::commands::{
-    AnalysisData, CanvasPatch, CommandResult, SessionCommand,
+    AnalysisData, CanvasPatch, CommandResult, ScenarioAction, ScenarioInfo, SessionCommand,
     canvas_patch_from, execute_command, get_flow_tree, get_function_info, get_sequence_narrative,
-    get_session_state, get_step_narrative,
+    get_session_state, get_step_narrative, validate_scenario_name,
 };
 use ilold_core::exploration::session::{ExplorationSession, VariableSummary};
+use ilold_core::journal::types::JournalEntry;
 use ilold_core::exploration::timeline::{build_variable_timeline, VariableTimeline};
 use ilold_core::narrative::trace::FlowTree;
 use ilold_core::narrative::types::{FunctionNarrative, SequenceNarrative};
@@ -22,18 +23,6 @@ use crate::state::{AppState, ScenarioStore};
 pub struct CommandRequest {
     pub contract: Option<String>,
     pub command: SessionCommand,
-}
-
-/// Borrow the active ExplorationSession via a read lock.
-/// Returns 404 if no session exists (it shouldn't because we auto-seed "main",
-/// but defensive).
-#[allow(dead_code)]
-fn with_active<F, T>(state: &AppState, f: F) -> Result<T, (StatusCode, String)>
-where
-    F: FnOnce(&ExplorationSession) -> Result<T, (StatusCode, String)>,
-{
-    let store = state.scenarios.read().unwrap();
-    f(store.active_session())
 }
 
 fn build_analysis_data<'a>(
@@ -87,6 +76,114 @@ fn timestamp_now() -> String {
         .unwrap_or_default()
 }
 
+/// Validate a scenario name and check it is not already taken in the store.
+/// Shared guard for both `ScenarioAction::New` and `ScenarioAction::Fork`.
+/// Returns `Err(CommandResult::Error)` ready to be propagated.
+fn reserve_name(store: &ScenarioStore, name: &str) -> Result<(), CommandResult> {
+    if let Err(e) = validate_scenario_name(name) {
+        return Err(CommandResult::Error { message: e });
+    }
+    if store.contains(name) {
+        return Err(CommandResult::Error {
+            message: format!("Scenario '{name}' already exists"),
+        });
+    }
+    Ok(())
+}
+
+/// Execute scenario lifecycle commands against the `ScenarioStore`. Lives
+/// in the web crate because it needs `&mut ScenarioStore` (crate boundary);
+/// `commands.rs` only defines the data types.
+fn execute_scenario(
+    store: &mut ScenarioStore,
+    action: ScenarioAction,
+    timestamp: &str,
+    contract: &str,
+) -> CommandResult {
+    match action {
+        ScenarioAction::New { name } => {
+            if let Err(err) = reserve_name(store, &name) {
+                return err;
+            }
+            let session = ExplorationSession::new(contract, "ilold");
+            store.insert(name.clone(), session);
+            CommandResult::ScenarioCreated { name }
+        }
+        ScenarioAction::List => {
+            let active = store.active().to_string();
+            let items: Vec<ScenarioInfo> = store
+                .names()
+                .iter()
+                .map(|n| ScenarioInfo {
+                    name: n.clone(),
+                    active: n == &active,
+                    step_count: store.get(n).map(|s| s.steps.len()).unwrap_or(0),
+                })
+                .collect();
+            CommandResult::ScenarioList { items }
+        }
+        ScenarioAction::Switch { name } => {
+            let from = store.active().to_string();
+            if name == from {
+                // idempotent no-op per spec S3.4; caller is responsible for
+                // suppressing WS broadcast when from == to.
+                return CommandResult::ScenarioSwitched { from, to: name };
+            }
+            match store.set_active(name.clone()) {
+                Ok(()) => CommandResult::ScenarioSwitched { from, to: name },
+                Err(e) => CommandResult::Error { message: e },
+            }
+        }
+        ScenarioAction::Fork { name } => fork_scenario(store, name, timestamp),
+        ScenarioAction::Delete { name } => {
+            if name == store.active() {
+                return CommandResult::Error {
+                    message: "Cannot delete active scenario — switch first.".into(),
+                };
+            }
+            if store.len() == 1 {
+                return CommandResult::Error {
+                    message: "Cannot delete the only remaining scenario.".into(),
+                };
+            }
+            if !store.contains(&name) {
+                return CommandResult::Error {
+                    message: format!("Scenario '{name}' does not exist"),
+                };
+            }
+            store.remove(&name);
+            CommandResult::ScenarioDeleted { name }
+        }
+    }
+}
+
+fn fork_scenario(
+    store: &mut ScenarioStore,
+    new_name: String,
+    timestamp: &str,
+) -> CommandResult {
+    if let Err(err) = reserve_name(store, &new_name) {
+        return err;
+    }
+    let from = store.active().to_string();
+    let mut cloned = store.active_session().clone();
+    // The `BranchCreated` variant's field names (`from_function`/`branch_function`)
+    // are reused here as scenario names per design §2.4 — intentionally not
+    // renamed to preserve save-file compatibility.
+    cloned.journal.record(JournalEntry::BranchCreated {
+        from_function: from.clone(),
+        branch_function: new_name.clone(),
+        timestamp: timestamp.to_string(),
+    });
+    let at_step = cloned.steps.len();
+    store.insert(new_name.clone(), cloned);
+    CommandResult::ScenarioForked {
+        from,
+        to: new_name,
+        at_step,
+    }
+}
+
 pub async fn handle_command(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CommandRequest>,
@@ -108,15 +205,25 @@ pub async fn handle_command(
             state.session_tx.send(CanvasPatch::ClearAll).ok();
         }
     }
-    let session = scenarios_guard.active_session_mut();
-
-    let result = execute_command(req.command, session, &data, &timestamp);
-
-    if let Some(patch) = canvas_patch_from(&result) {
-        state.session_tx.send(patch).ok();
+    // Scenario commands operate on the store itself; all other commands
+    // are delegated to the active session. Dispatch happens here (before
+    // `active_session_mut`) to avoid partial-move errors on `req.command`.
+    match req.command {
+        SessionCommand::Scenario { sub } => {
+            let result = execute_scenario(&mut scenarios_guard, sub, &timestamp, &contract_name);
+            // WS lifecycle events land in Phase S3; do not broadcast patches
+            // for scenario commands in v1.
+            Ok(Json(result))
+        }
+        other => {
+            let session = scenarios_guard.active_session_mut();
+            let result = execute_command(other, session, &data, &timestamp);
+            if let Some(patch) = canvas_patch_from(&result) {
+                state.session_tx.send(patch).ok();
+            }
+            Ok(Json(result))
+        }
     }
-
-    Ok(Json(result))
 }
 
 pub async fn get_step_detail(
