@@ -16,12 +16,24 @@ use ilold_core::narrative::trace::FlowTree;
 use ilold_core::narrative::types::{FunctionNarrative, SequenceNarrative};
 use ilold_core::slicing::{build_slice_result, SliceDirection, SliceResult};
 
-use crate::state::AppState;
+use crate::state::{AppState, ScenarioStore};
 
 #[derive(Deserialize)]
 pub struct CommandRequest {
     pub contract: Option<String>,
     pub command: SessionCommand,
+}
+
+/// Borrow the active ExplorationSession via a read lock.
+/// Returns 404 if no session exists (it shouldn't because we auto-seed "main",
+/// but defensive).
+#[allow(dead_code)]
+fn with_active<F, T>(state: &AppState, f: F) -> Result<T, (StatusCode, String)>
+where
+    F: FnOnce(&ExplorationSession) -> Result<T, (StatusCode, String)>,
+{
+    let store = state.scenarios.read().unwrap();
+    f(store.active_session())
 }
 
 fn build_analysis_data<'a>(
@@ -56,11 +68,12 @@ fn resolve_contract(state: &AppState, explicit: Option<&str>) -> Result<String, 
         return Ok(name.to_string());
     }
 
-    let session_guard = state.session.read().unwrap();
-    if let Some(session) = session_guard.as_ref() {
+    let scenarios_guard = state.scenarios.read().unwrap();
+    let session = scenarios_guard.active_session();
+    if !session.contract.is_empty() {
         return Ok(session.contract.clone());
     }
-    drop(session_guard);
+    drop(scenarios_guard);
 
     state.project.find_contract(None)
         .map(|c| c.name.clone())
@@ -82,18 +95,20 @@ pub async fn handle_command(
     let data = build_analysis_data(&state, &contract_name)?;
     let timestamp = timestamp_now();
 
-    let mut session_guard = state.session.write().unwrap();
-    // If the contract changed (e.g., user ran `use OtherContract`), reset the session.
-    // Otherwise steps from the old contract would fail to resolve in the new one.
-    if let Some(existing) = session_guard.as_ref() {
-        if existing.contract != contract_name {
-            *session_guard = None;
+    let mut scenarios_guard = state.scenarios.write().unwrap();
+    // Contract switch: only reset if the active session has actual steps.
+    // An empty session with a mismatched contract means the auto-seed picked
+    // a default contract that didn't match the first real request — just
+    // swap it transparently (no ClearAll, nothing was ever on the canvas).
+    let needs_reset = scenarios_guard.active_session().contract != contract_name;
+    if needs_reset {
+        let had_steps = !scenarios_guard.active_session().steps.is_empty();
+        *scenarios_guard = ScenarioStore::new_for_contract(&contract_name);
+        if had_steps {
             state.session_tx.send(CanvasPatch::ClearAll).ok();
         }
     }
-    let session = session_guard.get_or_insert_with(|| {
-        ExplorationSession::new(&contract_name, "ilold")
-    });
+    let session = scenarios_guard.active_session_mut();
 
     let result = execute_command(req.command, session, &data, &timestamp);
 
@@ -108,9 +123,8 @@ pub async fn get_step_detail(
     State(state): State<Arc<AppState>>,
     Path(step_index): Path<usize>,
 ) -> Result<Json<FunctionNarrative>, (StatusCode, String)> {
-    let session_guard = state.session.read().unwrap();
-    let session = session_guard.as_ref()
-        .ok_or((StatusCode::NOT_FOUND, "No active session".into()))?;
+    let scenarios_guard = state.scenarios.read().unwrap();
+    let session = scenarios_guard.active_session();
 
     let data = build_analysis_data(&state, &session.contract)?;
 
@@ -127,9 +141,8 @@ pub async fn get_session_step_trace(
     State(state): State<Arc<AppState>>,
     Path(step_index): Path<usize>,
 ) -> Result<Json<FlowTree>, (StatusCode, String)> {
-    let session_guard = state.session.read().unwrap();
-    let session = session_guard.as_ref()
-        .ok_or((StatusCode::NOT_FOUND, "No active session".into()))?;
+    let scenarios_guard = state.scenarios.read().unwrap();
+    let session = scenarios_guard.active_session();
 
     let step = session.steps.get(step_index)
         .ok_or((StatusCode::NOT_FOUND, format!("step {} not found", step_index)))?;
@@ -152,9 +165,8 @@ pub async fn get_variable_timeline_handler(
     State(state): State<Arc<AppState>>,
     Path(variable): Path<String>,
 ) -> Result<Json<VariableTimeline>, (StatusCode, String)> {
-    let session_guard = state.session.read().unwrap();
-    let session = session_guard.as_ref()
-        .ok_or((StatusCode::NOT_FOUND, "No active session".into()))?;
+    let scenarios_guard = state.scenarios.read().unwrap();
+    let session = scenarios_guard.active_session();
 
     let timeline = build_variable_timeline(session, &variable);
     Ok(Json(timeline))
@@ -163,9 +175,8 @@ pub async fn get_variable_timeline_handler(
 pub async fn get_state_detail(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<VariableSummary>>, (StatusCode, String)> {
-    let session_guard = state.session.read().unwrap();
-    let session = session_guard.as_ref()
-        .ok_or((StatusCode::NOT_FOUND, "No active session".into()))?;
+    let scenarios_guard = state.scenarios.read().unwrap();
+    let session = scenarios_guard.active_session();
 
     Ok(Json(get_session_state(session)))
 }
@@ -173,9 +184,8 @@ pub async fn get_state_detail(
 pub async fn get_sequence_detail(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<SequenceNarrative>, (StatusCode, String)> {
-    let session_guard = state.session.read().unwrap();
-    let session = session_guard.as_ref()
-        .ok_or((StatusCode::NOT_FOUND, "No active session".into()))?;
+    let scenarios_guard = state.scenarios.read().unwrap();
+    let session = scenarios_guard.active_session();
 
     let data = build_analysis_data(&state, &session.contract)?;
 
@@ -245,11 +255,8 @@ pub async fn get_function_slice(
     Query(params): Query<SliceQuery>,
 ) -> Result<Json<SliceResult>, (StatusCode, String)> {
     let contract_name = {
-        let guard = state.session.read().unwrap();
-        guard.as_ref()
-            .ok_or((StatusCode::NOT_FOUND, "No active session".into()))?
-            .contract
-            .clone()
+        let guard = state.scenarios.read().unwrap();
+        guard.active_session().contract.clone()
     };
 
     let contract = state.project.contracts.iter()
