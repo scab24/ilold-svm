@@ -35,6 +35,8 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/session/function/{contract}/{func}", get(api::session::get_function_detail))
         .route("/api/session/trace/{contract}/{func}", get(api::session::get_flow_trace))
         .route("/api/session/slice/{func}/{variable}", get(api::session::get_function_slice))
+        .route("/api/scenarios", get(api::session::get_scenarios))
+        .route("/api/scenarios/all", get(api::session::get_all_scenarios))
         .route("/ws", get(ws::handler::ws_handler))
         .route("/ws/pty", get(ws::pty::ws_pty_handler))
         .layer(CorsLayer::permissive())

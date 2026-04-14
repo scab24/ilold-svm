@@ -18,6 +18,36 @@ fn fixture(name: &str) -> PathBuf {
         .join(name)
 }
 
+/// Fresh server with no auto-seeded steps. Mirrors `start()` in
+/// `scenario_commands_test.rs` — duplicated because integration test files
+/// cannot share helper modules without extra plumbing.
+async fn start() -> (reqwest::Client, u16) {
+    let paths = vec![fixture("staking.sol")];
+    let (_state, port) = ilold_web::start_server(paths, 0, 2).await.unwrap();
+    (reqwest::Client::new(), port)
+}
+
+/// POST /api/cmd helper. Same shape as `cmd()` in `scenario_commands_test.rs`.
+async fn cmd(
+    client: &reqwest::Client,
+    port: u16,
+    contract: &str,
+    command: serde_json::Value,
+) -> serde_json::Value {
+    let res = client
+        .post(format!("http://127.0.0.1:{port}/api/cmd"))
+        .json(&serde_json::json!({ "contract": contract, "command": command }))
+        .send()
+        .await
+        .expect("POST /api/cmd failed");
+    assert!(
+        res.status().is_success(),
+        "POST /api/cmd returned {}",
+        res.status()
+    );
+    res.json().await.expect("response was not JSON")
+}
+
 async fn start_with_staking() -> (reqwest::Client, u16) {
     let paths = vec![fixture("staking.sol")];
     let (_state, port) = ilold_web::start_server(paths, 0, 2).await.unwrap();
@@ -176,5 +206,197 @@ async fn existing_trace_endpoint_targets_active_scenario() {
     assert!(
         body.is_object(),
         "response should be a FlowTree object, got: {body}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Phase S3: GET /api/scenarios and GET /api/scenarios/all
+// ---------------------------------------------------------------------------
+
+fn scenario_new(name: &str) -> serde_json::Value {
+    serde_json::json!({ "Scenario": { "sub": { "New": { "name": name } } } })
+}
+
+fn scenario_switch(name: &str) -> serde_json::Value {
+    serde_json::json!({ "Scenario": { "sub": { "Switch": { "name": name } } } })
+}
+
+fn call(func: &str) -> serde_json::Value {
+    serde_json::json!({ "Call": { "func": func } })
+}
+
+async fn get_scenarios(client: &reqwest::Client, port: u16) -> serde_json::Value {
+    let res = client
+        .get(format!("http://127.0.0.1:{port}/api/scenarios"))
+        .send()
+        .await
+        .expect("GET /api/scenarios failed");
+    assert!(
+        res.status().is_success(),
+        "GET /api/scenarios returned {}",
+        res.status()
+    );
+    res.json().await.expect("response was not JSON")
+}
+
+async fn get_scenarios_all(client: &reqwest::Client, port: u16) -> serde_json::Value {
+    let res = client
+        .get(format!("http://127.0.0.1:{port}/api/scenarios/all"))
+        .send()
+        .await
+        .expect("GET /api/scenarios/all failed");
+    assert!(
+        res.status().is_success(),
+        "GET /api/scenarios/all returned {}",
+        res.status()
+    );
+    res.json().await.expect("response was not JSON")
+}
+
+#[tokio::test]
+async fn get_scenarios_returns_main_on_fresh_server() {
+    let (client, port) = start().await;
+
+    let body = get_scenarios(&client, port).await;
+    let arr = body
+        .as_array()
+        .unwrap_or_else(|| panic!("expected array, got: {body}"));
+    assert_eq!(arr.len(), 1, "expected single auto-seeded main scenario");
+    assert_eq!(arr[0].get("name").and_then(|v| v.as_str()), Some("main"));
+    assert_eq!(arr[0].get("active").and_then(|v| v.as_bool()), Some(true));
+    assert_eq!(arr[0].get("step_count").and_then(|v| v.as_u64()), Some(0));
+}
+
+#[tokio::test]
+async fn get_scenarios_reflects_new_and_step_count() {
+    let (client, port) = start().await;
+
+    cmd(&client, port, "Staking", scenario_new("alt1")).await;
+    cmd(&client, port, "Staking", call("deposit")).await;
+
+    let body = get_scenarios(&client, port).await;
+    let arr = body
+        .as_array()
+        .unwrap_or_else(|| panic!("expected array, got: {body}"));
+    assert_eq!(arr.len(), 2, "expected main + alt1, got: {arr:?}");
+
+    let main = arr
+        .iter()
+        .find(|it| it.get("name").and_then(|n| n.as_str()) == Some("main"))
+        .expect("main entry missing");
+    assert_eq!(main.get("active").and_then(|v| v.as_bool()), Some(true));
+    assert_eq!(main.get("step_count").and_then(|v| v.as_u64()), Some(1));
+
+    let alt1 = arr
+        .iter()
+        .find(|it| it.get("name").and_then(|n| n.as_str()) == Some("alt1"))
+        .expect("alt1 entry missing");
+    assert_eq!(alt1.get("active").and_then(|v| v.as_bool()), Some(false));
+    assert_eq!(alt1.get("step_count").and_then(|v| v.as_u64()), Some(0));
+}
+
+#[tokio::test]
+async fn get_scenarios_all_returns_ordered_snapshot() {
+    let (client, port) = start().await;
+
+    cmd(&client, port, "Staking", scenario_new("alt1")).await;
+    cmd(&client, port, "Staking", scenario_new("alt2")).await;
+    cmd(&client, port, "Staking", call("deposit")).await;
+
+    let body = get_scenarios_all(&client, port).await;
+    assert_eq!(body.get("active").and_then(|v| v.as_str()), Some("main"));
+
+    let scenarios = body
+        .get("scenarios")
+        .and_then(|v| v.as_array())
+        .unwrap_or_else(|| panic!("scenarios should be an array, got: {body}"));
+    assert_eq!(scenarios.len(), 3, "expected 3 scenarios, got: {scenarios:?}");
+
+    // Insertion order: main, alt1, alt2. Each entry is a (name, steps) tuple
+    // serialized as a 2-element array.
+    let names: Vec<&str> = scenarios
+        .iter()
+        .map(|entry| {
+            entry
+                .as_array()
+                .and_then(|arr| arr.first())
+                .and_then(|v| v.as_str())
+                .expect("entry[0] should be scenario name")
+        })
+        .collect();
+    assert_eq!(names, vec!["main", "alt1", "alt2"], "insertion order broken");
+
+    let main_steps = scenarios[0]
+        .as_array()
+        .and_then(|arr| arr.get(1))
+        .and_then(|v| v.as_array())
+        .expect("main steps array");
+    assert_eq!(main_steps.len(), 1, "main should have 1 step");
+    let step0 = &main_steps[0];
+    assert_eq!(
+        step0.get("function").and_then(|v| v.as_str()),
+        Some("deposit")
+    );
+    assert_eq!(step0.get("step_index").and_then(|v| v.as_u64()), Some(0));
+    assert!(
+        step0.get("access").is_some(),
+        "SessionStepView must serialize an `access` field, got: {step0}"
+    );
+
+    for idx in [1usize, 2] {
+        let steps = scenarios[idx]
+            .as_array()
+            .and_then(|arr| arr.get(1))
+            .and_then(|v| v.as_array())
+            .unwrap_or_else(|| panic!("scenarios[{idx}] missing steps array"));
+        assert!(
+            steps.is_empty(),
+            "scenarios[{idx}] ({}) should be empty, got: {steps:?}",
+            names[idx]
+        );
+    }
+}
+
+#[tokio::test]
+async fn get_scenarios_all_tracks_active_after_switch() {
+    let (client, port) = start().await;
+
+    cmd(&client, port, "Staking", scenario_new("alt1")).await;
+    cmd(&client, port, "Staking", scenario_switch("alt1")).await;
+
+    let body = get_scenarios_all(&client, port).await;
+    assert_eq!(
+        body.get("active").and_then(|v| v.as_str()),
+        Some("alt1"),
+        "active should reflect post-switch scenario, got: {body}"
+    );
+}
+
+#[tokio::test]
+async fn get_scenarios_access_level_resolves_correctly() {
+    let (client, port) = start().await;
+
+    cmd(&client, port, "Staking", call("deposit")).await;
+
+    let body = get_scenarios_all(&client, port).await;
+    let scenarios = body
+        .get("scenarios")
+        .and_then(|v| v.as_array())
+        .expect("scenarios array");
+    let main_steps = scenarios[0]
+        .as_array()
+        .and_then(|arr| arr.get(1))
+        .and_then(|v| v.as_array())
+        .expect("main steps array");
+    let access = main_steps[0]
+        .get("access")
+        .expect("access field");
+    // `AccessLevel::Public` is a unit variant, so serde serializes it as the
+    // bare string "Public" (non-unit variants like `Restricted { role }`
+    // would serialize as an object).
+    assert_eq!(
+        access.as_str(),
+        Some("Public"),
+        "deposit should be Public, got: {access}"
     );
 }

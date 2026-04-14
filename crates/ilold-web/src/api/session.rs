@@ -3,8 +3,9 @@ use std::sync::Arc;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
+use ilold_core::classify::entry_points::AccessLevel;
 use ilold_core::exploration::commands::{
     AnalysisData, CanvasPatch, CommandResult, ScenarioAction, ScenarioInfo, SessionCommand,
     canvas_patch_from, execute_command, get_flow_tree, get_function_info, get_sequence_narrative,
@@ -200,9 +201,12 @@ pub async fn handle_command(
     let needs_reset = scenarios_guard.active_session().contract != contract_name;
     if needs_reset {
         let had_steps = !scenarios_guard.active_session().steps.is_empty();
+        let active_before_reset = scenarios_guard.active().to_string();
         *scenarios_guard = ScenarioStore::new_for_contract(&contract_name);
         if had_steps {
-            state.session_tx.send(CanvasPatch::ClearAll).ok();
+            state.session_tx.send(CanvasPatch::ClearAll {
+                scenario: active_before_reset,
+            }).ok();
         }
     }
     // Scenario commands operate on the store itself; all other commands
@@ -210,15 +214,26 @@ pub async fn handle_command(
     // `active_session_mut`) to avoid partial-move errors on `req.command`.
     match req.command {
         SessionCommand::Scenario { sub } => {
+            // Capture the active scenario BEFORE executing the scenario
+            // command. Switch/Delete mutate `active` or remove scenarios; the
+            // lifecycle patch embeds the pre-call name for consistent
+            // routing on the frontend.
+            let active_before = scenarios_guard.active().to_string();
             let result = execute_scenario(&mut scenarios_guard, sub, &timestamp, &contract_name);
-            // WS lifecycle events land in Phase S3; do not broadcast patches
-            // for scenario commands in v1.
+            if let Some(patch) = canvas_patch_from(&result, &active_before) {
+                state.session_tx.send(patch).ok();
+            }
             Ok(Json(result))
         }
         other => {
+            // Capture the active scenario name BEFORE delegating — the
+            // session mutation below doesn't change `active`, but grabbing
+            // it here keeps the pattern symmetric with the scenario branch
+            // and avoids a second borrow after `active_session_mut`.
+            let active_name = scenarios_guard.active().to_string();
             let session = scenarios_guard.active_session_mut();
             let result = execute_command(other, session, &data, &timestamp);
-            if let Some(patch) = canvas_patch_from(&result) {
+            if let Some(patch) = canvas_patch_from(&result, &active_name) {
                 state.session_tx.send(patch).ok();
             }
             Ok(Json(result))
@@ -405,6 +420,79 @@ fn parse_slice_direction(raw: Option<&str>) -> Result<SliceDirection, String> {
             other
         )),
     }
+}
+
+/// Lightweight per-step view for the `/api/scenarios/all` snapshot. The
+/// access level is resolved against `AppState.classifications` (same lookup
+/// pattern used by `execute_who` in the core crate) so the frontend can
+/// colour the node without re-classifying.
+#[derive(Serialize)]
+pub struct SessionStepView {
+    pub function: String,
+    pub access: AccessLevel,
+    pub step_index: usize,
+}
+
+#[derive(Serialize)]
+pub struct AllScenariosResponse {
+    pub active: String,
+    /// Ordered by creation order (main first, then insertion order). Not a
+    /// HashMap — the frontend composes scenarios into a visual tree and needs
+    /// stable iteration so "main" always anchors the canvas.
+    pub scenarios: Vec<(String, Vec<SessionStepView>)>,
+}
+
+/// Return the list of scenarios — mirrors the `scenario list` CLI command.
+pub async fn get_scenarios(
+    State(state): State<Arc<AppState>>,
+) -> Json<Vec<ScenarioInfo>> {
+    let guard = state.scenarios.read().unwrap();
+    let active = guard.active().to_string();
+    let items = guard
+        .names()
+        .iter()
+        .map(|name| ScenarioInfo {
+            name: name.clone(),
+            active: name == &active,
+            step_count: guard.get(name).map(|s| s.steps.len()).unwrap_or(0),
+        })
+        .collect();
+    Json(items)
+}
+
+/// Bulk snapshot of every scenario's step list. Used by the frontend canvas
+/// to paint all scenarios at once (e.g. on reconnect / initial load).
+pub async fn get_all_scenarios(
+    State(state): State<Arc<AppState>>,
+) -> Json<AllScenariosResponse> {
+    let guard = state.scenarios.read().unwrap();
+    let active = guard.active().to_string();
+    let mut scenarios: Vec<(String, Vec<SessionStepView>)> = Vec::with_capacity(guard.len());
+    for name in guard.names() {
+        let Some(session) = guard.get(name) else { continue };
+        let classifs = state.classifications.get(&session.contract);
+        let steps = session
+            .steps
+            .iter()
+            .enumerate()
+            .map(|(idx, step)| {
+                // Same lookup pattern as `execute_who`'s `access_for`
+                // (`commands.rs:515-519`): fall back to `Internal` when the
+                // classification is missing so the response shape is stable.
+                let access = classifs
+                    .and_then(|c| c.iter().find(|(n, _)| n == &step.function))
+                    .map(|(_, a)| a.clone())
+                    .unwrap_or(AccessLevel::Internal);
+                SessionStepView {
+                    function: step.function.clone(),
+                    access,
+                    step_index: idx,
+                }
+            })
+            .collect();
+        scenarios.push((name.clone(), steps));
+    }
+    Json(AllScenariosResponse { active, scenarios })
 }
 
 /// Parse a comma-separated `expand` query value into a set of step_ids.

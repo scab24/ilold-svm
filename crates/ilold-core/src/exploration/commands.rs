@@ -160,10 +160,19 @@ pub enum CommandResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CanvasPatch {
-    AddNode { function: String, access: AccessLevel, step_index: usize },
-    RemoveLastNode,
-    ClearAll,
-    Highlight { function: String },
+    AddNode { scenario: String, function: String, access: AccessLevel, step_index: usize },
+    RemoveLastNode { scenario: String },
+    ClearAll { scenario: String },
+    Highlight { scenario: String, function: String },
+    ScenarioEvent(ScenarioEvent),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ScenarioEvent {
+    Created { name: String },
+    Switched { from: String, to: String },
+    Deleted { name: String },
+    Forked { from: String, to: String, at_step: usize },
 }
 
 /// Validates scenario name against `^[a-z][a-z0-9_-]{0,31}$`.
@@ -186,17 +195,46 @@ pub fn validate_scenario_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub fn canvas_patch_from(result: &CommandResult) -> Option<CanvasPatch> {
+pub fn canvas_patch_from(result: &CommandResult, active_scenario: &str) -> Option<CanvasPatch> {
     match result {
         CommandResult::StepAdded { function, access, step_index, .. } => {
             Some(CanvasPatch::AddNode {
+                scenario: active_scenario.to_string(),
                 function: function.clone(),
                 access: access.clone(),
                 step_index: *step_index,
             })
         }
-        CommandResult::StepRemoved { .. } => Some(CanvasPatch::RemoveLastNode),
-        CommandResult::Cleared => Some(CanvasPatch::ClearAll),
+        CommandResult::StepRemoved { .. } => Some(CanvasPatch::RemoveLastNode {
+            scenario: active_scenario.to_string(),
+        }),
+        CommandResult::Cleared => Some(CanvasPatch::ClearAll {
+            scenario: active_scenario.to_string(),
+        }),
+        CommandResult::ScenarioCreated { name } => {
+            Some(CanvasPatch::ScenarioEvent(ScenarioEvent::Created { name: name.clone() }))
+        }
+        CommandResult::ScenarioSwitched { from, to } => {
+            if from == to {
+                // idempotent no-op: suppress WS broadcast
+                None
+            } else {
+                Some(CanvasPatch::ScenarioEvent(ScenarioEvent::Switched {
+                    from: from.clone(),
+                    to: to.clone(),
+                }))
+            }
+        }
+        CommandResult::ScenarioDeleted { name } => {
+            Some(CanvasPatch::ScenarioEvent(ScenarioEvent::Deleted { name: name.clone() }))
+        }
+        CommandResult::ScenarioForked { from, to, at_step } => {
+            Some(CanvasPatch::ScenarioEvent(ScenarioEvent::Forked {
+                from: from.clone(),
+                to: to.clone(),
+                at_step: *at_step,
+            }))
+        }
         _ => None,
     }
 }
