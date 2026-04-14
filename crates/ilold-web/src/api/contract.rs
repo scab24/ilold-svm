@@ -35,6 +35,7 @@ pub struct FunctionSummary {
     pub path_count: usize,
     pub happy_paths: usize,
     pub revert_paths: usize,
+    pub modifiers: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -81,6 +82,7 @@ pub async fn get_contract(
                 path_count: pt.map(|p| p.stats.total_paths).unwrap_or(0),
                 happy_paths: pt.map(|p| p.stats.happy_paths).unwrap_or(0),
                 revert_paths: pt.map(|p| p.stats.revert_paths).unwrap_or(0),
+                modifiers: f.modifiers.iter().map(|m| m.name.clone()).collect(),
             }
         })
         .collect();
@@ -117,6 +119,7 @@ pub async fn get_contract(
                 path_count: pt.map(|p| p.stats.total_paths).unwrap_or(0),
                 happy_paths: pt.map(|p| p.stats.happy_paths).unwrap_or(0),
                 revert_paths: pt.map(|p| p.stats.revert_paths).unwrap_or(0),
+                modifiers: f.modifiers.iter().map(|m| m.name.clone()).collect(),
             }
         })
         .collect();

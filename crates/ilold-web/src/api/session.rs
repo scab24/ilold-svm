@@ -6,7 +6,7 @@ use axum::Json;
 use serde::Deserialize;
 
 use ilold_core::exploration::commands::{
-    AnalysisData, CommandResult, SessionCommand,
+    AnalysisData, CanvasPatch, CommandResult, SessionCommand,
     canvas_patch_from, execute_command, get_flow_tree, get_function_info, get_sequence_narrative,
     get_session_state, get_step_narrative,
 };
@@ -83,6 +83,14 @@ pub async fn handle_command(
     let timestamp = timestamp_now();
 
     let mut session_guard = state.session.write().unwrap();
+    // If the contract changed (e.g., user ran `use OtherContract`), reset the session.
+    // Otherwise steps from the old contract would fail to resolve in the new one.
+    if let Some(existing) = session_guard.as_ref() {
+        if existing.contract != contract_name {
+            *session_guard = None;
+            state.session_tx.send(CanvasPatch::ClearAll).ok();
+        }
+    }
     let session = session_guard.get_or_insert_with(|| {
         ExplorationSession::new(&contract_name, "ilold")
     });

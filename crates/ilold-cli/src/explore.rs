@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -14,7 +15,66 @@ use ilold_core::exploration::commands::CommandResult;
 use crate::colors::*;
 use crate::fmt;
 
-pub async fn run(paths: Vec<PathBuf>, port: u16, max_seq_depth: usize) -> Result<()> {
+pub async fn run(paths: Vec<PathBuf>, port: u16, max_seq_depth: usize, attach: Option<String>) -> Result<()> {
+    // --attach mode: connect to a running server instead of starting one locally
+    if let Some(url) = attach {
+        let client = reqwest::Client::new();
+        let resp = client.get(format!("{url}/api/project"))
+            .send().await
+            .map_err(|e| anyhow::anyhow!("Cannot reach server at {url}: {e}"))?;
+        if !resp.status().is_success() {
+            anyhow::bail!("Server at {url} returned {}", resp.status());
+        }
+        let project_info: serde_json::Value = resp.json().await?;
+
+        let contracts_arr = project_info["contracts"].as_array();
+        // Pick the LAST contract (not interface/library) — in Solidity the main
+        // contract is always at the end of the file, after imports and dependencies.
+        let contract_name = contracts_arr
+            .and_then(|arr| arr.iter().rev().find(|c| c["kind"].as_str() == Some("Contract")))
+            .or_else(|| contracts_arr.and_then(|arr| arr.last()))
+            .and_then(|c| c["name"].as_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        // /api/project only has function counts, not names.
+        // Fetch /api/contract/{name} per contract to get function names for the completer.
+        let mut functions_by_contract = HashMap::<String, Vec<String>>::new();
+        let contract_names_raw: Vec<String> = contracts_arr
+            .map(|arr| arr.iter().filter_map(|c| c["name"].as_str().map(String::from)).collect())
+            .unwrap_or_default();
+        for cname in &contract_names_raw {
+            if let Ok(resp) = client.get(format!("{url}/api/contract/{cname}")).send().await {
+                if let Ok(detail) = resp.json::<serde_json::Value>().await {
+                    let funcs: Vec<String> = detail["functions"].as_array()
+                        .map(|fs| fs.iter().filter_map(|f| f["name"].as_str().map(String::from)).collect())
+                        .unwrap_or_default();
+                    functions_by_contract.insert(cname.clone(), funcs);
+                }
+            }
+        }
+
+        let function_names = functions_by_contract.get(&contract_name).cloned().unwrap_or_default();
+        let contract_names: Vec<String> = functions_by_contract.keys().cloned().collect();
+        let func_count = function_names.len();
+
+        let banner = fmt::header_box(&[
+            &format!("ilold explore — {} (attached)", contract_name),
+            &format!("{} functions | Type ? for help", func_count),
+            &format!("Server: {}", url),
+        ]);
+        println!("{}\n", banner);
+
+        let base_url = url;
+        let handle = tokio::runtime::Handle::current();
+        let repl_thread = std::thread::spawn(move || {
+            repl_loop(handle, contract_name, function_names, contract_names, None, base_url, Some(functions_by_contract));
+        });
+        repl_thread.join().map_err(|_| anyhow::anyhow!("REPL thread panicked"))?;
+        return Ok(());
+    }
+
+    // Local mode: start server and connect
     println!("Analyzing {} file(s)...", paths.len());
     let (state, actual_port) = ilold_web::start_server(paths, port, max_seq_depth).await?;
 
@@ -49,8 +109,9 @@ pub async fn run(paths: Vec<PathBuf>, port: u16, max_seq_depth: usize) -> Result
 
     let handle = tokio::runtime::Handle::current();
     let state_for_thread = state.clone();
+    let base_url = format!("http://127.0.0.1:{}", actual_port);
     let repl_thread = std::thread::spawn(move || {
-        repl_loop(handle, actual_port, contract_name, function_names, contract_names, state_for_thread);
+        repl_loop(handle, contract_name, function_names, contract_names, Some(state_for_thread), base_url, None);
     });
 
     repl_thread.join().map_err(|_| anyhow::anyhow!("REPL thread panicked"))?;
@@ -59,11 +120,12 @@ pub async fn run(paths: Vec<PathBuf>, port: u16, max_seq_depth: usize) -> Result
 
 fn repl_loop(
     handle: tokio::runtime::Handle,
-    port: u16,
     mut contract: String,
     mut functions: Vec<String>,
     contract_names: Vec<String>,
-    state: std::sync::Arc<ilold_web::state::AppState>,
+    state: Option<std::sync::Arc<ilold_web::state::AppState>>,
+    base_url: String,
+    functions_by_contract: Option<HashMap<String, Vec<String>>>,
 ) {
     let history_path = dirs::home_dir()
         .map(|h| h.join(".ilold").join("history"))
@@ -90,7 +152,6 @@ fn repl_loop(
         )));
 
     let client = reqwest::Client::new();
-    let base_url = format!("http://127.0.0.1:{port}");
     let mut steps: Vec<String> = Vec::new();
     let mut scenario_name: Option<String> = None;
 
@@ -99,7 +160,25 @@ fn repl_loop(
         steps: Vec::new(),
     };
 
+    // Initial prompt sync in --attach mode: pick up steps from other terminals
+    if state.is_none() {
+        if let Some(server_steps) = sync_steps(&handle, &client, &base_url, &contract) {
+            steps = server_steps;
+            prompt.steps = steps.clone();
+        }
+    }
+
     loop {
+        // Sync prompt from server in --attach mode (catches changes from other terminals)
+        if state.is_none() {
+            if let Some(server_steps) = sync_steps(&handle, &client, &base_url, &contract) {
+                if server_steps != steps {
+                    steps = server_steps;
+                    prompt.steps = steps.clone();
+                }
+            }
+        }
+
         match editor.read_line(&prompt) {
             Ok(Signal::Success(line)) => {
                 let line = line.trim();
@@ -117,14 +196,25 @@ fn repl_loop(
                     InputResult::SwitchContract(new_name) => {
                         contract = new_name.clone();
                         steps.clear();
-                        if let Some(c) = state.project.contracts.iter().find(|c| c.name == new_name) {
-                            functions = state.project
-                                .accessible_functions(c)
-                                .iter()
-                                .map(|af| af.function.name.clone())
-                                .collect();
-                            if let Ok(mut comp) = completer.lock() {
-                                comp.functions = functions.clone();
+                        if let Some(ref state) = state {
+                            // Local mode: use AppState directly
+                            if let Some(c) = state.project.contracts.iter().find(|c| c.name == new_name) {
+                                functions = state.project
+                                    .accessible_functions(c)
+                                    .iter()
+                                    .map(|af| af.function.name.clone())
+                                    .collect();
+                                if let Ok(mut comp) = completer.lock() {
+                                    comp.functions = functions.clone();
+                                }
+                            }
+                        } else if let Some(ref fbc) = functions_by_contract {
+                            // --attach mode: use cached per-contract function map
+                            if let Some(funcs) = fbc.get(&new_name) {
+                                functions = funcs.clone();
+                                if let Ok(mut comp) = completer.lock() {
+                                    comp.functions = functions.clone();
+                                }
                             }
                         }
                         prompt.contract = contract.clone();
@@ -164,7 +254,7 @@ fn handle_input(
     contract: &str,
     steps: &mut Vec<String>,
     scenario_name: &mut Option<String>,
-    state: &std::sync::Arc<ilold_web::state::AppState>,
+    state: &Option<std::sync::Arc<ilold_web::state::AppState>>,
 ) -> InputResult {
     // Allow shortcuts like `st0`, `st1`, `step2` without requiring a space.
     let normalized = split_numeric_suffix(line);
@@ -201,7 +291,28 @@ fn handle_input(
         }
 
         "ct" | "contracts" => {
-            print_contracts(state, contract);
+            if let Some(ref state) = state {
+                print_contracts(state, contract);
+            } else {
+                // --attach mode: fetch contract list from server
+                match handle.block_on(async {
+                    let resp = client.get(format!("{base_url}/api/project")).send().await?;
+                    resp.json::<serde_json::Value>().await
+                }) {
+                    Ok(info) => {
+                        if let Some(arr) = info["contracts"].as_array() {
+                            println!();
+                            for c in arr {
+                                let name = c["name"].as_str().unwrap_or("?");
+                                let marker = if name == contract { c_ok(" ← current").to_string() } else { String::new() };
+                                println!("  {} {}{}", c_accent("[C]"), name, marker);
+                            }
+                            println!();
+                        }
+                    }
+                    Err(e) => eprintln!("  {}", c_danger(&format!("Failed to fetch contracts: {e}"))),
+                }
+            }
             InputResult::Continue
         }
         "use" => {
@@ -209,23 +320,38 @@ fn handle_input(
                 println!("  Usage: use <contract>");
                 return InputResult::Continue;
             }
-            match state.project.find_contract(Some(arg)) {
-                Ok(c) => {
-                    let name = c.name.clone();
-                    if name == contract {
-                        println!("  Already using {}", c_accent(&name));
-                        return InputResult::Continue;
+            if let Some(ref state) = state {
+                // Local mode
+                match state.project.find_contract(Some(arg)) {
+                    Ok(c) => {
+                        let name = c.name.clone();
+                        if name == contract {
+                            println!("  Already using {}", c_accent(&name));
+                            return InputResult::Continue;
+                        }
+                        println!("  {} Now using: {}", c_ok("✓"), c_accent(&name));
+                        if !steps.is_empty() {
+                            println!("  {}", c_muted(&format!("Cleared {} step(s) from previous contract", steps.len())));
+                        }
+                        InputResult::SwitchContract(name)
                     }
-                    println!("  {} Now using: {}", c_ok("✓"), c_accent(&name));
-                    if !steps.is_empty() {
-                        println!("  {}", c_muted(&format!("Cleared {} step(s) from previous contract", steps.len())));
+                    Err(e) => {
+                        eprintln!("  {}", c_danger(&e));
+                        InputResult::Continue
                     }
-                    InputResult::SwitchContract(name)
                 }
-                Err(e) => {
-                    eprintln!("  {}", c_danger(&e));
-                    InputResult::Continue
+            } else {
+                // --attach mode: switch directly, let the server validate commands
+                let name = arg.to_string();
+                if name == contract {
+                    println!("  Already using {}", c_accent(&name));
+                    return InputResult::Continue;
                 }
+                println!("  {} Now using: {}", c_ok("✓"), c_accent(&name));
+                if !steps.is_empty() {
+                    println!("  {}", c_muted(&format!("Cleared {} step(s) from previous contract", steps.len())));
+                }
+                InputResult::SwitchContract(name)
             }
         }
 
@@ -633,6 +759,23 @@ fn handle_input(
             println!("  Unknown command: {}. Type {} for help.", c_danger(cmd.as_str()), c_accent("?"));
             InputResult::Continue
         }
+    }
+}
+
+/// Fetch current session steps from the server (for --attach prompt sync).
+fn sync_steps(
+    handle: &tokio::runtime::Handle,
+    client: &reqwest::Client,
+    base_url: &str,
+    contract: &str,
+) -> Option<Vec<String>> {
+    let body = serde_json::json!({
+        "contract": contract,
+        "command": "Session"
+    });
+    match send_command(handle, client, base_url, &body) {
+        Ok(CommandResult::SessionView { steps, .. }) => Some(steps),
+        _ => None,
     }
 }
 

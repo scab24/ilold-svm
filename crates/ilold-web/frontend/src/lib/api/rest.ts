@@ -19,6 +19,8 @@ export interface ContractDetail {
   inherits: string[];
   functions: FunctionSummary[];
   state_vars: StateVarSummary[];
+  inherited_functions?: FunctionSummary[];
+  inherited_state_vars?: StateVarSummary[];
 }
 
 export interface FunctionSummary {
@@ -30,6 +32,7 @@ export interface FunctionSummary {
   path_count: number;
   happy_paths: number;
   revert_paths: number;
+  modifiers: string[];
 }
 
 export interface StateVarSummary {

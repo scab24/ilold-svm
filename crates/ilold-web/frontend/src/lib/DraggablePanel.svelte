@@ -66,17 +66,46 @@
 </script>
 
 <div
-  class="draggable-panel"
+  class="draggable-panel fixed z-50 flex flex-col max-h-[calc(100vh-20px)] overflow-hidden min-w-[180px]"
   bind:this={panelEl}
-  style="left:{posX}px; top:{posY}px; width:{w}px; {h > 0 ? `height:${h}px;` : ''}"
+  style="
+    left:{posX}px;
+    top:{posY}px;
+    width:{w}px;
+    {h > 0 ? `height:${h}px;` : ''}
+    border-radius: 12px;
+    border: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+    background: linear-gradient(180deg, rgba(30, 30, 40, 0.92) 0%, rgba(20, 20, 28, 0.96) 100%);
+    backdrop-filter: blur(16px) saturate(1.8);
+    -webkit-backdrop-filter: blur(16px) saturate(1.8);
+    box-shadow:
+      0 25px 50px -12px rgba(0, 0, 0, 0.5),
+      0 12px 24px -8px rgba(0, 0, 0, 0.3),
+      0 0 0 1px rgba(91, 155, 213, 0.05),
+      0 0 60px -20px rgba(91, 155, 213, 0.06);
+  "
 >
-  <div class="drag-header" onmousedown={onDragStart}>
-    <span class="drag-title">{title}</span>
+  <!-- Title bar — glass header -->
+  <div
+    class="flex items-center py-2 px-3 cursor-grab select-none gap-1.5 shrink-0 active:cursor-grabbing"
+    style="
+      border-bottom: 1px solid color-mix(in srgb, var(--color-border) 40%, transparent);
+      background: linear-gradient(180deg, rgba(30, 30, 40, 0.85) 0%, rgba(24, 24, 30, 0.9) 100%);
+      backdrop-filter: blur(16px) saturate(1.8);
+      -webkit-backdrop-filter: blur(16px) saturate(1.8);
+    "
+    onmousedown={onDragStart}
+  >
+    <span class="text-[11px] font-semibold text-accent-hover flex-1 overflow-hidden text-ellipsis whitespace-nowrap tracking-wide uppercase">{title}</span>
     {#if onclose}
-      <button class="drag-close" onclick={onclose}>✕</button>
+      <button
+        class="bg-transparent border-none text-text-dim cursor-pointer text-xs py-0.5 px-1.5 transition-colors duration-150 hover:text-text"
+        style="border-radius: 6px;"
+        onclick={onclose}
+      >✕</button>
     {/if}
   </div>
-  <div class="drag-body">
+  <div class="drag-body flex-1 overflow-y-auto pb-3.5">
     {@render children()}
   </div>
   <!-- Resize edges -->
@@ -86,60 +115,9 @@
 </div>
 
 <style>
-  .draggable-panel {
-    position: fixed;
-    background: #18181eee;
-    border: 1px solid #252530;
-    border-radius: 10px;
-    z-index: 50;
-    display: flex;
-    flex-direction: column;
-    box-shadow: 0 4px 24px #08080a66;
-    backdrop-filter: blur(12px);
-    max-height: calc(100vh - 20px);
-    overflow: hidden;
-    min-width: 180px;
-  }
-
-  .drag-header {
-    display: flex;
-    align-items: center;
-    padding: 6px 10px;
-    border-bottom: 1px solid #252530;
-    cursor: grab;
-    user-select: none;
-    gap: 6px;
-    flex-shrink: 0;
-  }
-  .drag-header:active { cursor: grabbing; }
-
-  .drag-title {
-    font-size: 12px;
-    font-weight: 600;
-    color: #8bb8e8;
-    flex: 1;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .drag-close {
-    background: none;
-    border: none;
-    color: #4a5568;
-    cursor: pointer;
-    font-size: 12px;
-    padding: 2px 6px;
-    border-radius: 3px;
-  }
-  .drag-close:hover { background: #252530; color: #b8c4d4; }
-
   .drag-body {
-    flex: 1;
-    overflow-y: auto;
     scrollbar-width: thin;
-    scrollbar-color: #333340 transparent;
-    padding-bottom: 14px;
+    scrollbar-color: var(--color-border) transparent;
   }
 
   /* Resize handles — edges and corner */
@@ -153,15 +131,15 @@
   }
   .resize-se {
     position: absolute; bottom: 0; right: 0; width: 18px; height: 18px;
-    cursor: nwse-resize; border-radius: 0 0 10px 0;
+    cursor: nwse-resize; border-radius: 0 0 12px 0;
   }
   .resize-se::after {
     content: '';
     position: absolute; bottom: 4px; right: 4px;
     width: 8px; height: 8px;
-    border-right: 2px solid #4a5568;
-    border-bottom: 2px solid #4a5568;
+    border-right: 2px solid var(--color-text-dim);
+    border-bottom: 2px solid var(--color-text-dim);
     opacity: 0.6;
   }
-  .resize-se:hover::after { opacity: 1; border-color: #8bb8e8; }
+  .resize-se:hover::after { opacity: 1; border-color: var(--color-accent-hover); }
 </style>

@@ -12,6 +12,7 @@ tower-http = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
+portable-pty = "0.8"
 
 [dev-dependencies]
 tokio-tungstenite = "0.24"

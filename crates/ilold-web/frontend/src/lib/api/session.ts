@@ -1,0 +1,112 @@
+// Session API client — maps to the /api/session/* and /api/cmd endpoints.
+// All functions return typed responses matching the Rust backend structs.
+
+const BASE = '';
+
+// ── Command bus ─────────────────────────────────────────────────────────────
+
+export interface CommandRequest {
+  contract?: string;
+  command: SessionCommand;
+}
+
+export type SessionCommand =
+  | { Call: { func: string } }
+  | 'Back'
+  | 'Clear'
+  | 'State'
+  | 'Functions'
+  | 'FunctionsAll'
+  | 'StateVarsAll'
+  | { Who: { variable: string } }
+  | 'Session'
+  | 'Export'
+  | 'SaveSession';
+
+export async function postCommand(command: SessionCommand, contract?: string) {
+  const body: CommandRequest = { command };
+  if (contract) body.contract = contract;
+
+  const res = await fetch(`${BASE}/api/cmd`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Command failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+// ── Session queries ─────────────────────────────────────────────────────────
+
+export async function getSessionState() {
+  const res = await fetch(`${BASE}/api/session/state`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function getSessionSequence() {
+  const res = await fetch(`${BASE}/api/session/sequence`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function getStepNarrative(index: number) {
+  const res = await fetch(`${BASE}/api/session/step/${index}/narrative`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function getStepTrace(index: number) {
+  const res = await fetch(`${BASE}/api/session/step/${index}/trace`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function getVariableTimeline(variable: string) {
+  const res = await fetch(`${BASE}/api/session/timeline/${variable}`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export interface SliceParams {
+  func: string;
+  variable: string;
+  direction?: 'backward' | 'forward' | 'both';
+}
+
+export async function getSlice(params: SliceParams) {
+  let url = `${BASE}/api/session/slice/${params.func}/${params.variable}`;
+  if (params.direction) url += `?direction=${params.direction}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export interface TraceParams {
+  contract: string;
+  func: string;
+  depth?: number;
+  reverts?: boolean;
+  expand?: number[];
+}
+
+export async function getFlowTrace(params: TraceParams) {
+  let url = `${BASE}/api/session/trace/${params.contract}/${params.func}`;
+  const qs: string[] = [];
+  if (params.depth != null) qs.push(`depth=${params.depth}`);
+  if (params.reverts) qs.push('reverts=true');
+  if (params.expand?.length) qs.push(`expand=${params.expand.join(',')}`);
+  if (qs.length) url += `?${qs.join('&')}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function getFunctionNarrative(contract: string, func: string) {
+  const res = await fetch(`${BASE}/api/session/function/${contract}/${func}`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
