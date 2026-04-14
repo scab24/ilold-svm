@@ -12,6 +12,7 @@ export type AccessLevel =
 
 export interface SessionAddNode {
   type: "session_add_node";
+  scenario: string;
   function: string;
   access: AccessLevel;
   step_index: number;
@@ -19,15 +20,65 @@ export interface SessionAddNode {
 
 export interface SessionRemoveNode {
   type: "session_remove_node";
+  scenario: string;
 }
 
 export interface SessionClear {
   type: "session_clear";
+  scenario: string;
 }
 
 export interface SessionHighlight {
   type: "session_highlight";
+  scenario: string;
   function: string;
+}
+
+// ── Scenario lifecycle events ───────────────────────────────────────────────
+
+export interface ScenarioCreated {
+  type: "scenario_created";
+  name: string;
+}
+
+export interface ScenarioSwitched {
+  type: "scenario_switched";
+  from: string;
+  to: string;
+}
+
+export interface ScenarioDeleted {
+  type: "scenario_deleted";
+  name: string;
+}
+
+export interface ScenarioForked {
+  type: "scenario_forked";
+  from: string;
+  to: string;
+  at_step: number;
+}
+
+// ── Scenario REST types ─────────────────────────────────────────────────────
+
+export interface ScenarioInfo {
+  name: string;
+  active: boolean;
+  step_count: number;
+}
+
+export interface SessionStepView {
+  function: string;
+  access: AccessLevel;
+  step_index: number;
+}
+
+// Backend serializes `Vec<(String, Vec<SessionStepView>)>` as JSON arrays of
+// `[name, steps]` tuples — ordered (main first, then insertion order) so the
+// frontend canvas can anchor "main" consistently.
+export interface AllScenariosResponse {
+  active: string;
+  scenarios: Array<[string, SessionStepView[]]>;
 }
 
 export interface SearchResult {
@@ -58,6 +109,10 @@ export type ServerMessage =
   | SessionRemoveNode
   | SessionClear
   | SessionHighlight
+  | ScenarioCreated
+  | ScenarioSwitched
+  | ScenarioDeleted
+  | ScenarioForked
   | SearchResult
   | SearchComplete
   | SearchError;
@@ -80,6 +135,10 @@ export interface TopicMap {
   session_remove_node: SessionRemoveNode;
   session_clear: SessionClear;
   session_highlight: SessionHighlight;
+  scenario_created: ScenarioCreated;
+  scenario_switched: ScenarioSwitched;
+  scenario_deleted: ScenarioDeleted;
+  scenario_forked: ScenarioForked;
   connection: ConnectionEvent;
 }
 
