@@ -414,12 +414,33 @@
       }
 
       const allFuncs = [...(contract?.functions ?? []), ...(contract?.inherited_functions ?? [])];
-      const composedNodes: Node<GraphNodeData>[] = tree.nodes.map((cn: ComposedNode, idx: number) => {
+
+      // Lane-per-scenario layout. Shared-prefix nodes sit on the base lane
+      // (the main scenario's row) so the path from the root stays straight.
+      // Each divergent scenario gets its own horizontal lane below, indexed by
+      // insertion order. Without this, divergent tails with the same
+      // stepIndex stacked with a 10 px gap and visually overlapped each
+      // other, making forks look like they had deleted prior scenarios.
+      const SESSION_BASE_X = 200;
+      const SESSION_BASE_Y = 300;
+      const SESSION_STEP_WIDTH = 280;
+      const SESSION_LANE_HEIGHT = 100;
+      const scenarioNames = Array.from(scenarios.keys());
+      const laneOf = (scn?: string): number => {
+        if (!scn) return 0;
+        const i = scenarioNames.indexOf(scn);
+        return i < 0 ? 0 : i;
+      };
+
+      const composedNodes: Node<GraphNodeData>[] = tree.nodes.map((cn: ComposedNode) => {
         const funcDetail = allFuncs.find((f: any) => f.name === cn.function);
         return {
           id: cn.id,
           type: 'function',
-          position: { x: 200 + cn.stepIndex * 280, y: 300 + idx * 10 },
+          position: {
+            x: SESSION_BASE_X + cn.stepIndex * SESSION_STEP_WIDTH,
+            y: SESSION_BASE_Y + laneOf(cn._scenario) * SESSION_LANE_HEIGHT,
+          },
           data: {
             _type: 'function',
             _sessionStep: true,
