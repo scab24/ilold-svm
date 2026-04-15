@@ -6,7 +6,7 @@
   import { getHighlightedFunction, getScenarios, getActiveScenario } from '$lib/stores/session.svelte';
   import { composeScenarioTree, type ComposedNode } from '$lib/canvas/scenarios';
   import { promptScenarioName } from '$lib/scenarios/name';
-  import { postCommand } from '$lib/api/session';
+  import { dispatchScenarioAction } from '$lib/scenarios/dispatch';
   import Legend from '$lib/components/contract/Legend.svelte';
   import FunctionSidebar from '$lib/components/contract/FunctionSidebar.svelte';
   import FloatingToolbar from '$lib/components/contract/FloatingToolbar.svelte';
@@ -721,14 +721,11 @@
     contextMenu = null;
     const name = promptScenarioName();
     if (!name) return;
-    try {
-      await postCommand(
-        { Scenario: { sub: { Fork: { name, at_step: stepIndex + 1 } } } },
-        contract?.name,
-      );
-    } catch (e) {
-      console.warn('scenario fork failed:', e);
-    }
+    await dispatchScenarioAction(
+      { Fork: { name, at_step: stepIndex + 1 } },
+      contract?.name,
+      'fork',
+    );
   }
 
   function handleContextMenu(event: MouseEvent, node: Node<GraphNodeData>) {

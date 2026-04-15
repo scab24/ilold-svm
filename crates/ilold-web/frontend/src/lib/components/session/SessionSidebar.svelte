@@ -3,8 +3,8 @@
   import SessionTimeline from './SessionTimeline.svelte';
   import StatePanel from './StatePanel.svelte';
   import { getScenarios, getActiveScenario } from '$lib/stores/session.svelte';
-  import { postCommand } from '$lib/api/session';
   import { promptScenarioName } from '$lib/scenarios/name';
+  import { dispatchScenarioAction } from '$lib/scenarios/dispatch';
 
   let { contract }: { contract: string } = $props();
 
@@ -17,21 +17,19 @@
 
   async function switchScenario(name: string) {
     if (name === activeScenario) return;
-    try {
-      await postCommand({ Scenario: { sub: { Switch: { name } } } }, contract);
-    } catch (e) {
-      console.warn('scenario switch failed:', e);
-    }
+    await dispatchScenarioAction({ Switch: { name } }, contract, 'switch');
   }
 
   async function newScenario() {
     const name = promptScenarioName();
     if (!name) return;
-    try {
-      await postCommand({ Scenario: { sub: { New: { name } } } }, contract);
-    } catch (e) {
-      console.warn('scenario new failed:', e);
-    }
+    await dispatchScenarioAction({ New: { name } }, contract, 'new');
+  }
+
+  // Backend guards: cannot delete the active scenario or the only one.
+  // The pill hides ✕ on the active row, so we only reach here for safe cases.
+  async function deleteScenario(name: string) {
+    await dispatchScenarioAction({ Delete: { name } }, contract, 'delete');
   }
 
   // Resizable sidebar width (drag handle on left edge)
@@ -106,21 +104,35 @@
       <span class="text-[9px] uppercase tracking-wider text-text-dim font-semibold mr-1 shrink-0">Scenarios</span>
       {#each scenarioEntries as [name, steps] (name)}
         {@const isActive = name === activeScenario}
-        <button
-          class="shrink-0 border transition-colors duration-150 {isActive ? 'text-accent-light' : 'text-text-muted hover:text-text'}"
+        <div
+          class="shrink-0 inline-flex items-stretch border transition-colors duration-150"
           style="
-            padding: 3px 8px;
             border-radius: 999px;
-            font-size: 10px;
             font-family: var(--font-mono), monospace;
             border-color: {isActive ? 'var(--color-accent)' : 'color-mix(in srgb, var(--color-border) 50%, transparent)'};
             background: {isActive ? 'color-mix(in srgb, var(--color-accent) 18%, transparent)' : 'rgba(30, 30, 40, 0.6)'};
           "
-          onclick={() => switchScenario(name)}
-          title={isActive ? `Active scenario: ${name}` : `Switch to ${name}`}
         >
-          {name} <span class="text-text-dim ml-0.5">• {steps.length}</span>
-        </button>
+          <button
+            class="bg-transparent border-none {isActive ? 'text-accent-light' : 'text-text-muted hover:text-text'} transition-colors duration-150 cursor-pointer"
+            style="padding: 3px {isActive ? '8px' : '4px'} 3px 8px; font-size: 10px; font-family: inherit; border-radius: {isActive ? '999px' : '999px 0 0 999px'};"
+            onclick={() => switchScenario(name)}
+            title={isActive ? `Active scenario: ${name}` : `Switch to ${name}`}
+          >
+            {name} <span class="text-text-dim ml-0.5">• {steps.length}</span>
+          </button>
+          {#if !isActive}
+            <button
+              class="bg-transparent border-none text-text-dim hover:text-danger transition-colors duration-150 cursor-pointer"
+              style="padding: 3px 6px 3px 2px; font-size: 9px; font-family: inherit; border-radius: 0 999px 999px 0;"
+              onclick={() => deleteScenario(name)}
+              title={`Delete scenario ${name}`}
+              aria-label={`Delete scenario ${name}`}
+            >
+              ✕
+            </button>
+          {/if}
+        </div>
       {/each}
       <button
         class="shrink-0 border cursor-pointer text-text-muted hover:text-accent-hover transition-colors duration-150"
