@@ -12,6 +12,13 @@ export interface CommandRequest {
   command: SessionCommand;
 }
 
+export type ScenarioAction =
+  | { New: { name: string } }
+  | 'List'
+  | { Switch: { name: string } }
+  | { Fork: { name: string; at_step?: number } }
+  | { Delete: { name: string } };
+
 export type SessionCommand =
   | { Call: { func: string } }
   | 'Back'
@@ -23,7 +30,8 @@ export type SessionCommand =
   | { Who: { variable: string } }
   | 'Session'
   | 'Export'
-  | 'SaveSession';
+  | 'SaveSession'
+  | { Scenario: { sub: ScenarioAction } };
 
 export async function postCommand(command: SessionCommand, contract?: string) {
   const body: CommandRequest = { command };

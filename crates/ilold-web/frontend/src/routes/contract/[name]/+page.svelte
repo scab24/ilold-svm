@@ -1,6 +1,6 @@
 <script lang="ts">
   import { page } from '$app/state';
-  import { onMount, tick } from 'svelte';
+  import { onMount, tick, untrack } from 'svelte';
   import { getContract, getCallGraph, getCfg, getPaths, getSequences, getSequenceAnalysis, type ContractDetail, type CytoscapeGraph, type SequenceAnalysis } from '$lib/api/rest';
   import { toggleSearch, setSearchContext, getSearchNavigate, setSearchNavigate } from '$lib/stores/search.svelte';
   import { getHighlightedFunction, getScenarios, getActiveScenario } from '$lib/stores/session.svelte';
@@ -381,79 +381,71 @@
   // active glow vs muted) re-runs when the user switches scenarios even if
   // the tree shape is identical.
   $effect(() => {
+    // Reactive reads — trigger re-run on scenario changes + active-scenario flip.
     const scenarios = getScenarios();
     const active = getActiveScenario();
     if (!contract || !callgraphRaw) return;
 
     const tree = composeScenarioTree(scenarios);
 
-    // 1. Remove existing session step nodes + edges from the canvas.
-    //    We identify them by ID prefix `session:` (covers both legacy
-    //    `session:step:N` and the new `session:shared:*` / `session:<name>:*`).
-    //    `session-path:*` edges get cleaned up automatically by
-    //    `removeNodesById` since their source/target is a session node.
-    const toRemove = new Set<string>();
-    for (const n of getNodes()) {
-      if (n.id.startsWith('session:')) toRemove.add(n.id);
-    }
-    if (toRemove.size > 0) removeNodesById(toRemove);
+    // Graph-store reads/writes are wrapped in untrack() to prevent a reactive
+    // cycle: reading getNodes() would subscribe this effect to `nodes`, and
+    // the subsequent removeNodesById/addNodes/addEdges would re-trigger it
+    // (infinite loop that froze the canvas on every c <func>).
+    untrack(() => {
+      const toRemove = new Set<string>();
+      for (const n of getNodes()) {
+        if (n.id.startsWith('session:')) toRemove.add(n.id);
+      }
+      if (toRemove.size > 0) removeNodesById(toRemove);
 
-    if (tree.nodes.length === 0) {
-      sessionVisCount = 0;
-      return;
-    }
+      if (tree.nodes.length === 0) {
+        sessionVisCount = 0;
+        return;
+      }
 
-    // 2. Emit composed nodes. Position is a placeholder — `relayoutSeqTree`
-    //    at the bottom anchors the tree. We keep nodes spaced horizontally
-    //    as a fallback so nothing overlaps before layout.
-    const allFuncs = [...(contract?.functions ?? []), ...(contract?.inherited_functions ?? [])];
-    const composedNodes: Node<GraphNodeData>[] = tree.nodes.map((cn: ComposedNode, idx: number) => {
-      const funcDetail = allFuncs.find((f: any) => f.name === cn.function);
-      return {
-        id: cn.id,
-        type: 'function',
-        position: { x: 200 + cn.stepIndex * 280, y: 300 + idx * 10 },
-        data: {
-          _type: 'function',
-          _sessionStep: true,
-          _scenario: cn._scenario,
-          _divergenceCount: cn._divergenceCount,
-          _activeScenario: active,
-          label: cn.function,
-          is_external: false,
-          contractName: contract!.name,
-          visibility: funcDetail?.visibility,
-          mutability: funcDetail?.mutability,
-          path_count: funcDetail?.path_count,
-          modifiers: funcDetail?.modifiers,
-        } as GraphNodeData,
-      } as Node<GraphNodeData>;
+      const allFuncs = [...(contract?.functions ?? []), ...(contract?.inherited_functions ?? [])];
+      const composedNodes: Node<GraphNodeData>[] = tree.nodes.map((cn: ComposedNode, idx: number) => {
+        const funcDetail = allFuncs.find((f: any) => f.name === cn.function);
+        return {
+          id: cn.id,
+          type: 'function',
+          position: { x: 200 + cn.stepIndex * 280, y: 300 + idx * 10 },
+          data: {
+            _type: 'function',
+            _sessionStep: true,
+            _scenario: cn._scenario,
+            _divergenceCount: cn._divergenceCount,
+            _activeScenario: active,
+            label: cn.function,
+            is_external: false,
+            contractName: contract!.name,
+            visibility: funcDetail?.visibility,
+            mutability: funcDetail?.mutability,
+            path_count: funcDetail?.path_count,
+            modifiers: funcDetail?.modifiers,
+          } as GraphNodeData,
+        } as Node<GraphNodeData>;
+      });
+      addNodes(composedNodes);
+
+      const composedEdges: Edge[] = tree.edges.map((ce) => ({
+        id: ce.id,
+        source: ce.source,
+        target: ce.target,
+        sourceHandle: 'r',
+        targetHandle: 'l',
+        type: 'default',
+        style: `stroke: var(--color-text-muted)`,
+        markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12, color: 'var(--color-text-muted)' },
+        labelBgStyle: { fill: 'var(--color-surface)', fillOpacity: 0.85 },
+        labelBgPadding: [3, 5] as [number, number],
+        data: { _type: 'session-path', _scenario: ce._scenario },
+      }));
+      addEdges(composedEdges);
+
+      sessionVisCount = tree.nodes.length;
     });
-    addNodes(composedNodes);
-
-    // 3. Emit composed edges (step N-1 → step N within shared or per-scenario).
-    const composedEdges: Edge[] = tree.edges.map((ce) => ({
-      id: ce.id,
-      source: ce.source,
-      target: ce.target,
-      sourceHandle: 'r',
-      targetHandle: 'l',
-      type: 'default',
-      style: `stroke: var(--color-text-muted)`,
-      markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12, color: 'var(--color-text-muted)' },
-      labelBgStyle: { fill: 'var(--color-surface)', fillOpacity: 0.85 },
-      labelBgPadding: [3, 5] as [number, number],
-      data: { _type: 'session-path', _scenario: ce._scenario },
-    }));
-    addEdges(composedEdges);
-
-    // 4. Relayout anchored on the shared root if present, else the first
-    //    scenario's step 0. `relayoutSeqTree` walks the seq subtree via
-    //    `_seqParent`, which session step nodes don't set — but it's a
-    //    no-op on our nodes and harmless to call. Skipped for now: the
-    //    horizontal fallback above keeps nodes readable; a dedicated
-    //    scenario-tree layout is a future Phase S7+ concern.
-    sessionVisCount = tree.nodes.length;
   });
 
   // Highlight the function node when the session broadcasts session_highlight

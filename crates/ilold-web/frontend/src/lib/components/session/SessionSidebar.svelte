@@ -2,11 +2,42 @@
   import EmbeddedTerminal from './EmbeddedTerminal.svelte';
   import SessionTimeline from './SessionTimeline.svelte';
   import StatePanel from './StatePanel.svelte';
+  import { getScenarios, getActiveScenario } from '$lib/stores/session.svelte';
+  import { postCommand } from '$lib/api/session';
 
   let { contract }: { contract: string } = $props();
 
   let open = $state(true);
   let activeTab: 'timeline' | 'state' = $state('timeline');
+
+  // Reactive view of scenarios (ordered map + active name, both from session store)
+  const scenarioEntries = $derived(Array.from(getScenarios().entries()));
+  const activeScenario = $derived(getActiveScenario());
+
+  const NAME_REGEX = /^[a-z][a-z0-9_-]{0,31}$/;
+
+  async function switchScenario(name: string) {
+    if (name === activeScenario) return;
+    try {
+      await postCommand({ Scenario: { sub: { Switch: { name } } } }, contract);
+    } catch (e) {
+      console.warn('scenario switch failed:', e);
+    }
+  }
+
+  async function newScenario() {
+    const name = prompt('New scenario name (lowercase, a-z 0-9 _ -, max 32):');
+    if (!name) return;
+    if (!NAME_REGEX.test(name)) {
+      console.warn('Invalid scenario name. Must match ^[a-z][a-z0-9_-]{0,31}$');
+      return;
+    }
+    try {
+      await postCommand({ Scenario: { sub: { New: { name } } } }, contract);
+    } catch (e) {
+      console.warn('scenario new failed:', e);
+    }
+  }
 
   // Resizable sidebar width (drag handle on left edge)
   let sidebarWidth = $state(480);
@@ -69,6 +100,50 @@
   </button>
 
   <div class="flex flex-col flex-1 min-h-0" class:hidden={!open}>
+    <!-- Scenario selector — pill tabs, one per scenario plus a + button -->
+    <div
+      class="flex items-center gap-1 px-2 py-1.5 overflow-x-auto shrink-0"
+      style="
+        background: color-mix(in srgb, var(--color-surface) 60%, transparent);
+        border-bottom: 1px solid color-mix(in srgb, var(--color-border) 30%, transparent);
+      "
+    >
+      <span class="text-[9px] uppercase tracking-wider text-text-dim font-semibold mr-1 shrink-0">Scenarios</span>
+      {#each scenarioEntries as [name, steps] (name)}
+        {@const isActive = name === activeScenario}
+        <button
+          class="shrink-0 border transition-colors duration-150 {isActive ? 'text-accent-light' : 'text-text-muted hover:text-text'}"
+          style="
+            padding: 3px 8px;
+            border-radius: 999px;
+            font-size: 10px;
+            font-family: var(--font-mono), monospace;
+            border-color: {isActive ? 'var(--color-accent)' : 'color-mix(in srgb, var(--color-border) 50%, transparent)'};
+            background: {isActive ? 'color-mix(in srgb, var(--color-accent) 18%, transparent)' : 'rgba(30, 30, 40, 0.6)'};
+          "
+          onclick={() => switchScenario(name)}
+          title={isActive ? `Active scenario: ${name}` : `Switch to ${name}`}
+        >
+          {name} <span class="text-text-dim ml-0.5">• {steps.length}</span>
+        </button>
+      {/each}
+      <button
+        class="shrink-0 border cursor-pointer text-text-muted hover:text-accent-hover transition-colors duration-150"
+        style="
+          padding: 3px 8px;
+          border-radius: 999px;
+          font-size: 11px;
+          font-weight: 600;
+          border-color: color-mix(in srgb, var(--color-border) 50%, transparent);
+          background: rgba(30, 30, 40, 0.6);
+        "
+        onclick={newScenario}
+        title="Create new scenario"
+      >
+        +
+      </button>
+    </div>
+
     <!-- Tab header — glass effect -->
     <div
       class="flex px-1.5 mb-0"
