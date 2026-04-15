@@ -64,7 +64,11 @@ pub enum ScenarioAction {
     New { name: String },
     List,
     Switch { name: String },
-    Fork { name: String },
+    Fork {
+        name: String,
+        #[serde(default)]
+        at_step: Option<usize>,
+    },
     Delete { name: String },
 }
 

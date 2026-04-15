@@ -59,6 +59,10 @@ fn scenario_fork(name: &str) -> serde_json::Value {
     serde_json::json!({ "Scenario": { "sub": { "Fork": { "name": name } } } })
 }
 
+fn scenario_fork_at(name: &str, at_step: usize) -> serde_json::Value {
+    serde_json::json!({ "Scenario": { "sub": { "Fork": { "name": name, "at_step": at_step } } } })
+}
+
 fn scenario_delete(name: &str) -> serde_json::Value {
     serde_json::json!({ "Scenario": { "sub": { "Delete": { "name": name } } } })
 }
@@ -327,6 +331,88 @@ async fn scenario_name_validation_rejects_invalid() {
             "unexpected error for {bad:?}: {msg}"
         );
     }
+}
+
+// ── Phase S7: fork-at-step-N ────────────────────────────────────────────────
+
+#[tokio::test]
+async fn scenario_fork_at_step_truncates_to_n() {
+    let (client, port) = start().await;
+
+    // Build main with 3 steps, then fork at step 2.
+    cmd(&client, port, "Staking", call("deposit")).await;
+    cmd(&client, port, "Staking", call("deposit")).await;
+    cmd(&client, port, "Staking", call("withdraw")).await;
+
+    let r = cmd(&client, port, "Staking", scenario_fork_at("alt1", 2)).await;
+    let forked = r.get("ScenarioForked").expect("ScenarioForked variant");
+    assert_eq!(forked.get("at_step").and_then(|v| v.as_u64()), Some(2));
+
+    let r = cmd(&client, port, "Staking", scenario_list()).await;
+    let items = list_items(&r);
+    assert_eq!(
+        find_scenario(items, "main")
+            .get("step_count")
+            .and_then(|v| v.as_u64()),
+        Some(3),
+        "main must be unchanged"
+    );
+    assert_eq!(
+        find_scenario(items, "alt1")
+            .get("step_count")
+            .and_then(|v| v.as_u64()),
+        Some(2),
+        "alt1 must be truncated to first 2 steps"
+    );
+}
+
+#[tokio::test]
+async fn scenario_fork_at_step_zero_creates_empty() {
+    let (client, port) = start().await;
+
+    cmd(&client, port, "Staking", call("deposit")).await;
+    cmd(&client, port, "Staking", call("withdraw")).await;
+
+    let r = cmd(&client, port, "Staking", scenario_fork_at("alt1", 0)).await;
+    assert_eq!(
+        r.get("ScenarioForked")
+            .and_then(|v| v.get("at_step"))
+            .and_then(|v| v.as_u64()),
+        Some(0)
+    );
+
+    let r = cmd(&client, port, "Staking", scenario_list()).await;
+    let items = list_items(&r);
+    assert_eq!(
+        find_scenario(items, "alt1")
+            .get("step_count")
+            .and_then(|v| v.as_u64()),
+        Some(0),
+        "fork at 0 must yield an empty scenario"
+    );
+}
+
+#[tokio::test]
+async fn scenario_fork_at_step_greater_than_length_errors() {
+    let (client, port) = start().await;
+
+    cmd(&client, port, "Staking", call("deposit")).await;
+
+    let r = cmd(&client, port, "Staking", scenario_fork_at("alt1", 5)).await;
+    let msg = r
+        .get("Error")
+        .and_then(|v| v.get("message"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_else(|| panic!("expected Error, got: {r}"));
+    assert!(
+        msg.contains("Cannot fork at step 5") && msg.contains("only 1 step"),
+        "unexpected error: {msg}"
+    );
+
+    // Verify no scenario was created on failure.
+    let r = cmd(&client, port, "Staking", scenario_list()).await;
+    let items = list_items(&r);
+    assert_eq!(items.len(), 1, "failed fork must not create a scenario");
 }
 
 #[tokio::test]

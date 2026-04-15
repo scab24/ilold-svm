@@ -292,11 +292,40 @@ fn handle_input(
             let name_arg = sub_parts.get(1).map(|s| s.trim()).unwrap_or("");
 
             use ilold_core::exploration::commands::ScenarioAction;
+
+            // Parse `fork <name>` or `fork <name> at <N>`. Returns Err with a
+            // user-facing message on parse failure.
+            let parse_fork = |raw: &str| -> Result<ScenarioAction, String> {
+                let parts: Vec<&str> = raw.split_whitespace().collect();
+                match parts.as_slice() {
+                    [name] => Ok(ScenarioAction::Fork {
+                        name: name.to_string(),
+                        at_step: None,
+                    }),
+                    [name, "at", n_str] => n_str
+                        .parse::<usize>()
+                        .map(|n| ScenarioAction::Fork {
+                            name: name.to_string(),
+                            at_step: Some(n),
+                        })
+                        .map_err(|_| format!(
+                            "Invalid at-step: '{n_str}' is not a non-negative integer"
+                        )),
+                    _ => Err("Usage: scenario fork <name> [at <N>]".to_string()),
+                }
+            };
+
             let action: Option<ScenarioAction> = match sub {
                 "new" if !name_arg.is_empty() => Some(ScenarioAction::New { name: name_arg.to_string() }),
                 "list" | "ls" => Some(ScenarioAction::List),
                 "switch" if !name_arg.is_empty() => Some(ScenarioAction::Switch { name: name_arg.to_string() }),
-                "fork" if !name_arg.is_empty() => Some(ScenarioAction::Fork { name: name_arg.to_string() }),
+                "fork" if !name_arg.is_empty() => match parse_fork(name_arg) {
+                    Ok(a) => Some(a),
+                    Err(msg) => {
+                        eprintln!("  {}", c_danger(&msg));
+                        return InputResult::Continue;
+                    }
+                },
                 "delete" | "rm" if !name_arg.is_empty() => Some(ScenarioAction::Delete { name: name_arg.to_string() }),
                 _ => None,
             };

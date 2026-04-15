@@ -135,7 +135,7 @@ fn execute_scenario(
                 Err(e) => CommandResult::Error { message: e },
             }
         }
-        ScenarioAction::Fork { name } => fork_scenario(store, name, timestamp),
+        ScenarioAction::Fork { name, at_step } => fork_scenario(store, name, at_step, timestamp),
         ScenarioAction::Delete { name } => {
             if name == store.active() {
                 return CommandResult::Error {
@@ -161,6 +161,7 @@ fn execute_scenario(
 fn fork_scenario(
     store: &mut ScenarioStore,
     new_name: String,
+    at_step: Option<usize>,
     timestamp: &str,
 ) -> CommandResult {
     if let Err(err) = reserve_name(store, &new_name) {
@@ -168,6 +169,28 @@ fn fork_scenario(
     }
     let from = store.active().to_string();
     let mut cloned = store.active_session().clone();
+
+    // Resolve effective step count. None (legacy) → keep all steps.
+    // Some(N) → truncate to first N; error if N > current length.
+    // Mutations live inside each ExplorationStep, so truncating `steps`
+    // drops their owning step's mutations as well.
+    let len = cloned.steps.len();
+    let effective = match at_step {
+        None => len,
+        Some(n) if n > len => {
+            let noun = if len == 1 { "step" } else { "steps" };
+            return CommandResult::Error {
+                message: format!(
+                    "Cannot fork at step {n}: only {len} {noun} in active scenario"
+                ),
+            };
+        }
+        Some(n) => {
+            cloned.steps.truncate(n);
+            n
+        }
+    };
+
     // The `BranchCreated` variant's field names (`from_function`/`branch_function`)
     // are reused here as scenario names per design §2.4 — intentionally not
     // renamed to preserve save-file compatibility.
@@ -176,12 +199,11 @@ fn fork_scenario(
         branch_function: new_name.clone(),
         timestamp: timestamp.to_string(),
     });
-    let at_step = cloned.steps.len();
     store.insert(new_name.clone(), cloned);
     CommandResult::ScenarioForked {
         from,
         to: new_name,
-        at_step,
+        at_step: effective,
     }
 }
 
