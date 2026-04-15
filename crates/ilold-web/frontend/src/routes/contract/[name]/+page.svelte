@@ -5,6 +5,8 @@
   import { toggleSearch, setSearchContext, getSearchNavigate, setSearchNavigate } from '$lib/stores/search.svelte';
   import { getHighlightedFunction, getScenarios, getActiveScenario } from '$lib/stores/session.svelte';
   import { composeScenarioTree, type ComposedNode } from '$lib/canvas/scenarios';
+  import { promptScenarioName } from '$lib/scenarios/name';
+  import { postCommand } from '$lib/api/session';
   import Legend from '$lib/components/contract/Legend.svelte';
   import FunctionSidebar from '$lib/components/contract/FunctionSidebar.svelte';
   import FloatingToolbar from '$lib/components/contract/FloatingToolbar.svelte';
@@ -42,7 +44,14 @@
   let branchMenu: { x: number; y: number; parentNodeId: string; parentFuncName: string } | null = $state(null);
 
   // Context menu: right-click on nodes
-  let contextMenu: { x: number; y: number; nodeId: string; funcName: string; nodeType: string } | null = $state(null);
+  let contextMenu: {
+    x: number;
+    y: number;
+    nodeId: string;
+    funcName: string;
+    nodeType: string;
+    sessionStep?: { stepIndex: number };
+  } | null = $state(null);
 
   let canvasFuncs: Set<string> = $state(new Set()); // functions currently on canvas
 
@@ -417,6 +426,7 @@
             _scenario: cn._scenario,
             _divergenceCount: cn._divergenceCount,
             _activeScenario: active,
+            stepIndex: cn.stepIndex,
             label: cn.function,
             is_external: false,
             contractName: contract!.name,
@@ -683,14 +693,43 @@
     resetAllDimmed();
   }
 
+  // Right-click "⎇ Fork scenario here": forks the active scenario, keeping
+  // steps [0..=stepIndex] (i.e. truncate at stepIndex + 1). Surfaces backend
+  // errors via console.warn — ScenarioStore enforces uniqueness of names.
+  async function handleForkScenario(stepIndex: number) {
+    contextMenu = null;
+    const name = promptScenarioName();
+    if (!name) return;
+    try {
+      await postCommand(
+        { Scenario: { sub: { Fork: { name, at_step: stepIndex + 1 } } } },
+        contract?.name,
+      );
+    } catch (e) {
+      console.warn('scenario fork failed:', e);
+    }
+  }
+
   function handleContextMenu(event: MouseEvent, node: Node<GraphNodeData>) {
     const data = node.data;
+    // "Fork scenario here" is only meaningful when the node belongs to the
+    // active scenario's path: shared-prefix nodes (no _scenario) or divergent
+    // tail nodes whose _scenario matches the active. Forking from another
+    // scenario's tail would target steps that don't exist in the active.
+    let sessionStep: { stepIndex: number } | undefined;
+    if (data._type === 'function' && data._sessionStep === true) {
+      const { _scenario: scn, _activeScenario: active, stepIndex: idx } = data;
+      if (typeof idx === 'number' && (!scn || scn === active)) {
+        sessionStep = { stepIndex: idx };
+      }
+    }
     contextMenu = {
       x: event.clientX,
       y: event.clientY,
       nodeId: node.id,
       funcName: data._type === 'function' ? data.label : ('_parentFunc' in data ? (data as any)._parentFunc : ('_funcName' in data ? (data as any)._funcName : (data as any).label)),
       nodeType: data._type,
+      sessionStep,
     };
     branchMenu = null;
   }
@@ -1140,6 +1179,7 @@
       onremovefunc={(func) => { removeFuncFromCanvas(func); contextMenu = null; selectedNode = null; }}
       onremovenode={(nodeId) => { removeSeqNode(nodeId); contextMenu = null; selectedNode = null; }}
       onaddbranch={(x, y, nodeId, func) => { branchMenu = { x, y, parentNodeId: nodeId, parentFuncName: func }; contextMenu = null; }}
+      onforkscenario={handleForkScenario}
       onclose={() => contextMenu = null}
     />
 

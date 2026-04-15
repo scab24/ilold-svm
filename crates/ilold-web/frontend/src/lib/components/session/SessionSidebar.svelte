@@ -4,6 +4,7 @@
   import StatePanel from './StatePanel.svelte';
   import { getScenarios, getActiveScenario } from '$lib/stores/session.svelte';
   import { postCommand } from '$lib/api/session';
+  import { promptScenarioName } from '$lib/scenarios/name';
 
   let { contract }: { contract: string } = $props();
 
@@ -13,8 +14,6 @@
   // Reactive view of scenarios (ordered map + active name, both from session store)
   const scenarioEntries = $derived(Array.from(getScenarios().entries()));
   const activeScenario = $derived(getActiveScenario());
-
-  const NAME_REGEX = /^[a-z][a-z0-9_-]{0,31}$/;
 
   async function switchScenario(name: string) {
     if (name === activeScenario) return;
@@ -26,12 +25,8 @@
   }
 
   async function newScenario() {
-    const name = prompt('New scenario name (lowercase, a-z 0-9 _ -, max 32):');
+    const name = promptScenarioName();
     if (!name) return;
-    if (!NAME_REGEX.test(name)) {
-      console.warn('Invalid scenario name. Must match ^[a-z][a-z0-9_-]{0,31}$');
-      return;
-    }
     try {
       await postCommand({ Scenario: { sub: { New: { name } } } }, contract);
     } catch (e) {

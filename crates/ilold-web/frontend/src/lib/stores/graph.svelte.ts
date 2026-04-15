@@ -19,6 +19,7 @@ export interface FunctionNodeData {
   _scenario?: string;             // undefined for shared-prefix / non-session nodes
   _divergenceCount?: number;      // on last shared node when >1 scenarios diverge
   _activeScenario?: string;       // current active scenario (for highlight/mute classes)
+  stepIndex?: number;             // session-step index, used by right-click "Fork scenario here"
 }
 
 export interface BlockNodeData {
