@@ -73,12 +73,27 @@ export interface SessionStepView {
   step_index: number;
 }
 
-// Backend serializes `Vec<(String, Vec<SessionStepView>)>` as JSON arrays of
-// `[name, steps]` tuples — ordered (main first, then insertion order) so the
-// frontend canvas can anchor "main" consistently.
+/** Where a scenario was forked from. `at_step` is the boundary: the
+ *  scenario's steps [0..at_step) are the inherited prefix (a clone of the
+ *  origin's steps at fork time), steps [at_step..] are its own. Null for
+ *  `main` and for scenarios loaded from a pre-fork-origin save file. */
+export interface ForkOrigin {
+  scenario: string;
+  at_step: number;
+}
+
+export interface ScenarioSnapshot {
+  name: string;
+  steps: SessionStepView[];
+  forked_from: ForkOrigin | null;
+}
+
+// Backend serializes `ScenarioSnapshot` objects in insertion order (main
+// first, then creation order) so the frontend canvas can anchor "main"
+// consistently and render forks as branches from their recorded origin.
 export interface AllScenariosResponse {
   active: string;
-  scenarios: Array<[string, SessionStepView[]]>;
+  scenarios: ScenarioSnapshot[];
 }
 
 export interface SearchResult {

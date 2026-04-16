@@ -11,6 +11,7 @@ import type {
   ScenarioDeleted,
   ScenarioForked,
   ConnectionEvent,
+  ForkOrigin,
 } from '$lib/api/types';
 
 // ── Reactive state (Svelte 5 $state runes) ──────────────────────────────────
@@ -22,11 +23,16 @@ import type {
 let scenarios = $state<Map<string, SessionStep[]>>(new Map([['main', []]]));
 let activeScenario = $state<string>('main');
 let highlightedFunction = $state<string | null>(null);
+// Fork origin per scenario (backend-authoritative, populated by resync).
+// Main has no entry — only forked scenarios appear here. Used by the canvas
+// to render forks as branches emerging from their origin node.
+let forkOrigins = $state<Map<string, ForkOrigin>>(new Map());
 
 function resetState() {
   scenarios = new Map([['main', []]]);
   activeScenario = 'main';
   highlightedFunction = null;
+  forkOrigins = new Map();
 }
 
 // ── WebSocket subscriptions (created once on module import) ─────────────────
@@ -81,6 +87,14 @@ subscribe('scenario_deleted', (msg: ScenarioDeleted) => {
   const next = new Map(scenarios);
   next.delete(msg.name);
   scenarios = next;
+  // Drop the fork-origin entry for the deleted scenario. Forks that pointed
+  // TO this scenario keep their origin; the canvas renders them as standalone
+  // when the referenced origin no longer exists.
+  if (forkOrigins.has(msg.name)) {
+    const nextOrigins = new Map(forkOrigins);
+    nextOrigins.delete(msg.name);
+    forkOrigins = nextOrigins;
+  }
 });
 
 subscribe('scenario_forked', (_msg: ScenarioForked) => {
@@ -106,17 +120,24 @@ async function resync(): Promise<void> {
     if (gen !== resyncGen) return; // stale — a newer resync superseded this
 
     const newMap = new Map<string, SessionStep[]>();
-    for (const [name, steps] of response.scenarios) {
+    const newOrigins = new Map<string, ForkOrigin>();
+    for (const snapshot of response.scenarios) {
       // SessionStepView has identical shape to SessionStep — copy fields
       // explicitly so TS infers the narrowed type and future drift breaks here.
       newMap.set(
-        name,
-        steps.map((s) => ({
+        snapshot.name,
+        snapshot.steps.map((s) => ({
           function: s.function,
           access: s.access,
           step_index: s.step_index,
         })),
       );
+      if (snapshot.forked_from) {
+        newOrigins.set(snapshot.name, {
+          scenario: snapshot.forked_from.scenario,
+          at_step: snapshot.forked_from.at_step,
+        });
+      }
     }
     // Guarantee 'main' is always present — the store invariant on backend
     // (ScenarioStore::DEFAULT) is "main exists"; if the response is somehow
@@ -124,6 +145,7 @@ async function resync(): Promise<void> {
     if (newMap.size === 0) newMap.set('main', []);
 
     scenarios = newMap;
+    forkOrigins = newOrigins;
     activeScenario = response.active || 'main';
     highlightedFunction = null;
   } catch (e) {
@@ -139,6 +161,10 @@ export function getScenarios(): Map<string, SessionStep[]> {
 
 export function getActiveScenario(): string {
   return activeScenario;
+}
+
+export function getForkOrigins(): Map<string, ForkOrigin> {
+  return forkOrigins;
 }
 
 export function getScenarioSteps(name: string): SessionStep[] {

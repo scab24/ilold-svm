@@ -312,23 +312,16 @@ async fn get_scenarios_all_returns_ordered_snapshot() {
         .unwrap_or_else(|| panic!("scenarios should be an array, got: {body}"));
     assert_eq!(scenarios.len(), 3, "expected 3 scenarios, got: {scenarios:?}");
 
-    // Insertion order: main, alt1, alt2. Each entry is a (name, steps) tuple
-    // serialized as a 2-element array.
+    // Insertion order: main, alt1, alt2. Each entry is a ScenarioSnapshot
+    // object with `name`, `steps`, `forked_from` fields.
     let names: Vec<&str> = scenarios
         .iter()
-        .map(|entry| {
-            entry
-                .as_array()
-                .and_then(|arr| arr.first())
-                .and_then(|v| v.as_str())
-                .expect("entry[0] should be scenario name")
-        })
+        .map(|entry| entry.get("name").and_then(|v| v.as_str()).expect("name"))
         .collect();
     assert_eq!(names, vec!["main", "alt1", "alt2"], "insertion order broken");
 
     let main_steps = scenarios[0]
-        .as_array()
-        .and_then(|arr| arr.get(1))
+        .get("steps")
         .and_then(|v| v.as_array())
         .expect("main steps array");
     assert_eq!(main_steps.len(), 1, "main should have 1 step");
@@ -343,10 +336,20 @@ async fn get_scenarios_all_returns_ordered_snapshot() {
         "SessionStepView must serialize an `access` field, got: {step0}"
     );
 
+    // main was never forked; alt1/alt2 were created with `scenario new`, not
+    // `scenario fork`, so none of the three carry a forked_from marker.
+    for idx in 0..3 {
+        assert!(
+            scenarios[idx].get("forked_from").map(|v| v.is_null()).unwrap_or(true),
+            "scenarios[{idx}] ({}) should have forked_from = null, got: {}",
+            names[idx],
+            scenarios[idx]
+        );
+    }
+
     for idx in [1usize, 2] {
         let steps = scenarios[idx]
-            .as_array()
-            .and_then(|arr| arr.get(1))
+            .get("steps")
             .and_then(|v| v.as_array())
             .unwrap_or_else(|| panic!("scenarios[{idx}] missing steps array"));
         assert!(
@@ -373,6 +376,56 @@ async fn get_scenarios_all_tracks_active_after_switch() {
 }
 
 #[tokio::test]
+async fn get_scenarios_all_exposes_fork_origin() {
+    let (client, port) = start().await;
+
+    // Build main with 3 steps, fork alt1 at step 2.
+    cmd(&client, port, "Staking", call("deposit")).await;
+    cmd(&client, port, "Staking", call("deposit")).await;
+    cmd(&client, port, "Staking", call("withdraw")).await;
+    cmd(
+        &client,
+        port,
+        "Staking",
+        serde_json::json!({ "Scenario": { "sub": { "Fork": { "name": "alt1", "at_step": 2 } } } }),
+    )
+    .await;
+
+    let body = get_scenarios_all(&client, port).await;
+    let scenarios = body
+        .get("scenarios")
+        .and_then(|v| v.as_array())
+        .expect("scenarios array");
+
+    let main = scenarios
+        .iter()
+        .find(|s| s.get("name").and_then(|v| v.as_str()) == Some("main"))
+        .expect("main snapshot");
+    assert!(
+        main.get("forked_from").map(|v| v.is_null()).unwrap_or(true),
+        "main must have forked_from = null, got: {main}"
+    );
+
+    let alt1 = scenarios
+        .iter()
+        .find(|s| s.get("name").and_then(|v| v.as_str()) == Some("alt1"))
+        .expect("alt1 snapshot");
+    let fork = alt1
+        .get("forked_from")
+        .unwrap_or_else(|| panic!("alt1.forked_from missing: {alt1}"));
+    assert_eq!(
+        fork.get("scenario").and_then(|v| v.as_str()),
+        Some("main"),
+        "fork origin must be main, got: {fork}"
+    );
+    assert_eq!(
+        fork.get("at_step").and_then(|v| v.as_u64()),
+        Some(2),
+        "fork at_step must be 2, got: {fork}"
+    );
+}
+
+#[tokio::test]
 async fn get_scenarios_access_level_resolves_correctly() {
     let (client, port) = start().await;
 
@@ -384,8 +437,7 @@ async fn get_scenarios_access_level_resolves_correctly() {
         .and_then(|v| v.as_array())
         .expect("scenarios array");
     let main_steps = scenarios[0]
-        .as_array()
-        .and_then(|arr| arr.get(1))
+        .get("steps")
         .and_then(|v| v.as_array())
         .expect("main steps array");
     let access = main_steps[0]

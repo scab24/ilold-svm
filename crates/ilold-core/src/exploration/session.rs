@@ -16,6 +16,22 @@ pub struct ExplorationSession {
     pub contract: String,
     pub steps: Vec<ExplorationStep>,
     pub journal: AuditJournal,
+    /// Set when this scenario was created via `scenario fork`. Records the
+    /// source scenario and the at-step boundary so the frontend can render
+    /// the fork as a branch from the origin instead of a parallel timeline.
+    /// `None` for the default `main` scenario and for any scenario loaded
+    /// from a pre-fork-origin save file (serde defaults to `None`).
+    #[serde(default)]
+    pub forked_from: Option<ForkOrigin>,
+}
+
+/// Where a scenario was forked from. The `at_step` is the boundary: the
+/// scenario's steps `[0..at_step)` are the inherited prefix (a clone of the
+/// origin's steps at fork time), and steps `[at_step..]` are its own.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ForkOrigin {
+    pub scenario: String,
+    pub at_step: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -77,6 +93,7 @@ impl ExplorationSession {
             contract: contract.into(),
             steps: Vec::new(),
             journal: AuditJournal::new(project, contract, ""),
+            forked_from: None,
         }
     }
 

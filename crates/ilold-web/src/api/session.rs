@@ -11,7 +11,7 @@ use ilold_core::exploration::commands::{
     canvas_patch_from, execute_command, get_flow_tree, get_function_info, get_sequence_narrative,
     get_session_state, get_step_narrative, validate_scenario_name,
 };
-use ilold_core::exploration::session::{ExplorationSession, VariableSummary};
+use ilold_core::exploration::session::{ExplorationSession, ForkOrigin, VariableSummary};
 use ilold_core::journal::types::JournalEntry;
 use ilold_core::exploration::timeline::{build_variable_timeline, VariableTimeline};
 use ilold_core::narrative::trace::FlowTree;
@@ -191,6 +191,13 @@ fn fork_scenario(
         }
     };
 
+    // Record the fork origin on the cloned session itself. The frontend
+    // reads this (via /api/scenarios/all) to render the scenario as a
+    // branch from its source instead of a parallel timeline.
+    cloned.forked_from = Some(ForkOrigin {
+        scenario: from.clone(),
+        at_step: effective,
+    });
     // The `BranchCreated` variant's field names (`from_function`/`branch_function`)
     // are reused here as scenario names per design §2.4 — intentionally not
     // renamed to preserve save-file compatibility.
@@ -455,13 +462,22 @@ pub struct SessionStepView {
     pub step_index: usize,
 }
 
+/// Per-scenario snapshot in `AllScenariosResponse`. `forked_from` is `None`
+/// for `main` and for any scenario loaded from a pre-fork-origin save file.
+#[derive(Serialize)]
+pub struct ScenarioSnapshot {
+    pub name: String,
+    pub steps: Vec<SessionStepView>,
+    pub forked_from: Option<ForkOrigin>,
+}
+
 #[derive(Serialize)]
 pub struct AllScenariosResponse {
     pub active: String,
     /// Ordered by creation order (main first, then insertion order). Not a
     /// HashMap — the frontend composes scenarios into a visual tree and needs
     /// stable iteration so "main" always anchors the canvas.
-    pub scenarios: Vec<(String, Vec<SessionStepView>)>,
+    pub scenarios: Vec<ScenarioSnapshot>,
 }
 
 /// Return the list of scenarios — mirrors the `scenario list` CLI command.
@@ -489,7 +505,7 @@ pub async fn get_all_scenarios(
 ) -> Json<AllScenariosResponse> {
     let guard = state.scenarios.read().unwrap();
     let active = guard.active().to_string();
-    let mut scenarios: Vec<(String, Vec<SessionStepView>)> = Vec::with_capacity(guard.len());
+    let mut scenarios: Vec<ScenarioSnapshot> = Vec::with_capacity(guard.len());
     for name in guard.names() {
         let Some(session) = guard.get(name) else { continue };
         let classifs = state.classifications.get(&session.contract);
@@ -512,7 +528,11 @@ pub async fn get_all_scenarios(
                 }
             })
             .collect();
-        scenarios.push((name.clone(), steps));
+        scenarios.push(ScenarioSnapshot {
+            name: name.clone(),
+            steps,
+            forked_from: session.forked_from.clone(),
+        });
     }
     Json(AllScenariosResponse { active, scenarios })
 }
