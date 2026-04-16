@@ -3,7 +3,7 @@
   import { onMount, tick, untrack } from 'svelte';
   import { getContract, getCallGraph, getCfg, getPaths, getSequences, getSequenceAnalysis, type ContractDetail, type CytoscapeGraph, type SequenceAnalysis } from '$lib/api/rest';
   import { toggleSearch, setSearchContext, getSearchNavigate, setSearchNavigate } from '$lib/stores/search.svelte';
-  import { getHighlightedFunction, getScenarios, getActiveScenario } from '$lib/stores/session.svelte';
+  import { getHighlightedFunction, getScenarios, getActiveScenario, getForkOrigins } from '$lib/stores/session.svelte';
   import { composeScenarioTree, type ComposedNode } from '$lib/canvas/scenarios';
   import { promptScenarioName } from '$lib/scenarios/name';
   import { dispatchScenarioAction } from '$lib/scenarios/dispatch';
@@ -392,10 +392,11 @@
   $effect(() => {
     // Reactive reads — trigger re-run on scenario changes + active-scenario flip.
     const scenarios = getScenarios();
+    const forkOrigins = getForkOrigins();
     const active = getActiveScenario();
     if (!contract || !callgraphRaw) return;
 
-    const tree = composeScenarioTree(scenarios);
+    const tree = composeScenarioTree(scenarios, forkOrigins);
 
     // Graph-store reads/writes are wrapped in untrack() to prevent a reactive
     // cycle: reading getNodes() would subscribe this effect to `nodes`, and
@@ -415,22 +416,15 @@
 
       const allFuncs = [...(contract?.functions ?? []), ...(contract?.inherited_functions ?? [])];
 
-      // Lane-per-scenario layout. Shared-prefix nodes sit on the base lane
-      // (the main scenario's row) so the path from the root stays straight.
-      // Each divergent scenario gets its own horizontal lane below, indexed by
-      // insertion order. Without this, divergent tails with the same
-      // stepIndex stacked with a 10 px gap and visually overlapped each
-      // other, making forks look like they had deleted prior scenarios.
+      // Lane-per-scenario tree. Each scenario renders only its divergent
+      // tail (`steps[at_step..end]`) on its own horizontal lane; the
+      // inherited prefix is reused from the origin's lane. A fork edge
+      // connects origin:step:{at_step-1} → self:step:{at_step} so branches
+      // visibly emerge from their fork point.
       const SESSION_BASE_X = 200;
       const SESSION_BASE_Y = 300;
       const SESSION_STEP_WIDTH = 280;
       const SESSION_LANE_HEIGHT = 100;
-      const scenarioNames = Array.from(scenarios.keys());
-      const laneOf = (scn?: string): number => {
-        if (!scn) return 0;
-        const i = scenarioNames.indexOf(scn);
-        return i < 0 ? 0 : i;
-      };
 
       const composedNodes: Node<GraphNodeData>[] = tree.nodes.map((cn: ComposedNode) => {
         const funcDetail = allFuncs.find((f: any) => f.name === cn.function);
@@ -439,13 +433,13 @@
           type: 'function',
           position: {
             x: SESSION_BASE_X + cn.stepIndex * SESSION_STEP_WIDTH,
-            y: SESSION_BASE_Y + laneOf(cn._scenario) * SESSION_LANE_HEIGHT,
+            y: SESSION_BASE_Y + cn.lane * SESSION_LANE_HEIGHT,
           },
           data: {
             _type: 'function',
             _sessionStep: true,
             _scenario: cn._scenario,
-            _divergenceCount: cn._divergenceCount,
+            _scenariosPassingThrough: cn._scenariosPassingThrough,
             _activeScenario: active,
             stepIndex: cn.stepIndex,
             label: cn.function,
@@ -460,19 +454,27 @@
       });
       addNodes(composedNodes);
 
-      const composedEdges: Edge[] = tree.edges.map((ce) => ({
-        id: ce.id,
-        source: ce.source,
-        target: ce.target,
-        sourceHandle: 'r',
-        targetHandle: 'l',
-        type: 'default',
-        style: `stroke: var(--color-text-muted)`,
-        markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12, color: 'var(--color-text-muted)' },
-        labelBgStyle: { fill: 'var(--color-surface)', fillOpacity: 0.85 },
-        labelBgPadding: [3, 5] as [number, number],
-        data: { _type: 'session-path', _scenario: ce._scenario },
-      }));
+      const composedEdges: Edge[] = tree.edges.map((ce) => {
+        const isFork = ce._forkEdge === true;
+        const color = isFork ? 'var(--color-accent)' : 'var(--color-text-muted)';
+        return {
+          id: ce.id,
+          source: ce.source,
+          target: ce.target,
+          sourceHandle: 'r',
+          targetHandle: 'l',
+          // 'smoothstep' draws curved right-angle corners, which reads as a
+          // branch emerging from the origin — distinct from the straight
+          // within-scenario edges.
+          type: isFork ? 'smoothstep' : 'default',
+          animated: isFork,
+          style: `stroke: ${color}; ${isFork ? 'stroke-dasharray: 4 4;' : ''}`,
+          markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12, color },
+          labelBgStyle: { fill: 'var(--color-surface)', fillOpacity: 0.85 },
+          labelBgPadding: [3, 5] as [number, number],
+          data: { _type: 'session-path', _scenario: ce._scenario, _forkEdge: isFork },
+        };
+      });
       addEdges(composedEdges);
 
       sessionVisCount = tree.nodes.length;
@@ -730,14 +732,14 @@
 
   function handleContextMenu(event: MouseEvent, node: Node<GraphNodeData>) {
     const data = node.data;
-    // "Fork scenario here" is only meaningful when the node belongs to the
-    // active scenario's path: shared-prefix nodes (no _scenario) or divergent
-    // tail nodes whose _scenario matches the active. Forking from another
-    // scenario's tail would target steps that don't exist in the active.
+    // "Fork scenario here" is only meaningful when the active scenario's
+    // path passes through this node — either it owns the node or inherits
+    // it from an ancestor. `_scenariosPassingThrough` already encodes both
+    // cases so the check is a single Array.includes.
     let sessionStep: { stepIndex: number } | undefined;
     if (data._type === 'function' && data._sessionStep === true) {
-      const { _scenario: scn, _activeScenario: active, stepIndex: idx } = data;
-      if (typeof idx === 'number' && (!scn || scn === active)) {
+      const { _scenariosPassingThrough: scns, _activeScenario: active, stepIndex: idx } = data;
+      if (typeof idx === 'number' && active && scns?.includes(active)) {
         sessionStep = { stepIndex: idx };
       }
     }

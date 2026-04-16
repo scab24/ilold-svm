@@ -14,10 +14,10 @@ export interface FunctionNodeData {
   mutability?: string;
   path_count?: number;
   modifiers?: string[];
-  // Scenarios (Phase S5): composed session-step metadata
+  // Scenarios: composed session-step metadata
   _sessionStep?: true;
-  _scenario?: string;             // undefined for shared-prefix / non-session nodes
-  _divergenceCount?: number;      // on last shared node when >1 scenarios diverge
+  _scenario?: string;             // the scenario that owns this rendered node
+  _scenariosPassingThrough?: string[]; // full set of scenarios whose path includes this node (inherited + own)
   _activeScenario?: string;       // current active scenario (for highlight/mute classes)
   stepIndex?: number;             // session-step index, used by right-click "Fork scenario here"
 }

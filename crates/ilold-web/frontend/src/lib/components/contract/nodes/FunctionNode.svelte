@@ -34,21 +34,23 @@
     visLabel != null || mutIcon != null || (data.path_count != null && data.path_count > 0) || hasAccessControl
   );
 
-  // ── Scenario styling (Phase S5) ────────────────────────────────────────────
-  // `_divergenceCount` appears on the last shared-prefix node when >1 scenarios
-  // diverge past it. `_scenario` is set on divergent tail nodes and drives the
-  // active-glow / muted-opacity pair below.
-  let divergenceCount = $derived(
-    typeof data._divergenceCount === 'number' && data._divergenceCount > 1
-      ? data._divergenceCount
-      : null
-  );
+  // ── Scenario styling ───────────────────────────────────────────────────────
+  // `_scenario` is the owning scenario (shown as a small pill badge).
+  // `_scenariosPassingThrough` is the full membership set — when the active
+  // scenario is in it, the node lights up as part of the active path
+  // (including inherited prefix nodes, not just its own divergent tail).
   let scenarioName = $derived(data._scenario ?? null);
   let scenarioActive = $derived(
-    scenarioName != null && data._activeScenario === scenarioName
+    data._sessionStep === true &&
+    data._activeScenario != null &&
+    data._scenariosPassingThrough != null &&
+    data._scenariosPassingThrough.includes(data._activeScenario)
   );
   let scenarioMuted = $derived(
-    scenarioName != null && data._activeScenario !== scenarioName
+    data._sessionStep === true &&
+    data._activeScenario != null &&
+    data._scenariosPassingThrough != null &&
+    !data._scenariosPassingThrough.includes(data._activeScenario)
   );
 </script>
 
@@ -65,12 +67,6 @@
       class="inline-block ml-1 text-[8px] px-1 rounded bg-accent-dark/30 text-accent-hover align-middle"
       title={`Scenario: ${scenarioName}`}
     >{scenarioName}</span>
-  {/if}
-  {#if divergenceCount}
-    <span
-      class="inline-block ml-1 text-[8px] px-1 rounded bg-warning/20 text-warning align-middle"
-      title={`${divergenceCount} scenarios diverge here`}
-    >{divergenceCount}⑃</span>
   {/if}
   {#if hasBadges}
     <div class="flex items-center justify-center gap-1 mt-0.5">

@@ -1,40 +1,36 @@
-import type { SessionStep, AccessLevel } from '$lib/api/types';
-
-// ── Longest-common-prefix length (by step.function name) ────────────────────
-// Returns length of the longest common prefix across all step arrays.
-// Empty input → 0; single array → its full length.
-export function lcpLen(arrs: SessionStep[][]): number {
-  if (arrs.length === 0) return 0;
-  if (arrs.length === 1) return arrs[0].length;
-  const min = Math.min(...arrs.map((a) => a.length));
-  let i = 0;
-  while (i < min) {
-    const name = arrs[0][i].function;
-    if (!arrs.every((a) => a[i].function === name)) return i;
-    i++;
-  }
-  return i;
-}
+import type { SessionStep, AccessLevel, ForkOrigin } from '$lib/api/types';
 
 // ── Composed tree types ─────────────────────────────────────────────────────
 
 export interface ComposedNode {
   id: string;
   stepIndex: number;
+  /** Horizontal lane index. Each scenario owns a lane by insertion order
+   *  (main = 0, first fork = 1, and so on). */
+  lane: number;
   function: string;
   access: AccessLevel;
   _sessionStep: true;
-  /** undefined for shared-prefix nodes; scenario name for divergent tail nodes. */
-  _scenario?: string;
-  /** Only on the last shared node when >1 scenarios diverge past the prefix. */
-  _divergenceCount?: number;
+  /** The scenario that OWNS this node. Inherited steps are not emitted as
+   *  separate nodes — they live on the origin's lane and the fork connects
+   *  to them via a fork edge. */
+  _scenario: string;
+  /** Every scenario whose full path passes through this node. Computed by
+   *  chasing each scenario's ancestry: if alt1 was forked from main at N,
+   *  alt1's path includes main:step:0..N-1 + alt1:step:N..end. */
+  _scenariosPassingThrough: string[];
 }
 
 export interface ComposedEdge {
   id: string;
   source: string;
   target: string;
-  _scenario?: string;
+  /** The scenario this edge belongs to. Within-scenario edges use the
+   *  owning scenario's name; fork edges carry the forked scenario. */
+  _scenario: string;
+  /** Fork edges connect an origin's last inherited step to the fork's first
+   *  divergent step. Rendered with a distinct style (curved, muted). */
+  _forkEdge?: true;
 }
 
 export interface ComposedTree {
@@ -42,109 +38,151 @@ export interface ComposedTree {
   edges: ComposedEdge[];
 }
 
-// ── composeScenarioTree ──────────────────────────────────────────────────────
-// Pure function: takes the scenario map and returns a unified node/edge tree.
+// ── Fork-aware composition ──────────────────────────────────────────────────
 //
-// Rules (design §8.1, spec §S7.3/S8.1):
-// - Single scenario → no "shared" layer; every node is scenario-specific.
-// - Multiple scenarios → emit shared prefix (LCP) as `session:shared:step:N`,
-//   then each divergent tail as `session:<name>:step:N`.
-// - When >1 scenarios diverge past the shared prefix AND a shared prefix
-//   exists, the last shared node carries `_divergenceCount`.
+// Each scenario emits ONLY its divergent-tail nodes (`steps[at_step..end]`).
+// The inherited prefix is visually reused from the origin's lane. A single
+// fork edge connects `origin:step:{at_step-1}` to `self:step:{at_step}` so
+// the canvas reads as a tree where branches emerge from their origin node.
+//
+// Chain forks (alt2 forked from alt1) work transitively: alt2's inherited
+// prefix is alt1's path up to at_step, which in turn includes main's prefix
+// if alt1 was a fork. Path membership is computed by chasing ancestry.
+
 export function composeScenarioTree(
   scenarios: Map<string, SessionStep[]>,
+  forkOrigins: Map<string, ForkOrigin>,
 ): ComposedTree {
-  const names = Array.from(scenarios.keys());
-  const arrs = names.map((n) => scenarios.get(n)!);
   const nodes: ComposedNode[] = [];
   const edges: ComposedEdge[] = [];
+  if (scenarios.size === 0) return { nodes, edges };
 
-  if (names.length === 0) return { nodes, edges };
+  const scenarioNames = Array.from(scenarios.keys());
+  const laneIndex = new Map(scenarioNames.map((n, i) => [n, i]));
 
-  // Single scenario: no shared layer — everything is scenario-specific.
-  const P = names.length === 1 ? 0 : lcpLen(arrs);
+  // Emit per-scenario nodes + within-scenario edges + fork edge.
+  for (const name of scenarioNames) {
+    const steps = scenarios.get(name)!;
+    const origin = forkOrigins.get(name);
+    const renderFrom = origin?.at_step ?? 0;
+    const lane = laneIndex.get(name)!;
 
-  // Shared prefix nodes + edges (only when multi-scenario and prefix > 0)
-  if (names.length > 1 && P > 0) {
-    for (let i = 0; i < P; i++) {
-      const step = arrs[0][i];
+    for (let i = renderFrom; i < steps.length; i++) {
+      const step = steps[i];
+      const id = nodeId(name, i);
       nodes.push({
-        id: `session:shared:step:${i}`,
+        id,
         stepIndex: i,
-        function: step.function,
-        access: step.access,
-        _sessionStep: true,
-      });
-      if (i > 0) {
-        edges.push({
-          id: `session-path:shared:${i - 1}→${i}`,
-          source: `session:shared:step:${i - 1}`,
-          target: `session:shared:step:${i}`,
-        });
-      }
-    }
-  }
-
-  // Divergence count: how many scenarios have steps past the shared prefix.
-  const divergentCount = arrs.filter((a) => a.length > P).length;
-  if (divergentCount > 1 && P > 0 && nodes.length > 0) {
-    nodes[nodes.length - 1]._divergenceCount = divergentCount;
-  }
-
-  // Per-scenario divergent tails.
-  for (let s = 0; s < names.length; s++) {
-    const name = names[s];
-    const arr = arrs[s];
-    if (arr.length <= P) continue;
-    for (let i = P; i < arr.length; i++) {
-      const step = arr[i];
-      const nodeId = `session:${name}:step:${i}`;
-      nodes.push({
-        id: nodeId,
-        stepIndex: i,
+        lane,
         function: step.function,
         access: step.access,
         _sessionStep: true,
         _scenario: name,
+        _scenariosPassingThrough: [], // filled in the second pass below
       });
-      const sourceId =
-        i === P
-          ? P > 0
-            ? `session:shared:step:${P - 1}`
-            : null
-          : `session:${name}:step:${i - 1}`;
-      if (sourceId) {
+      if (i > renderFrom) {
         edges.push({
-          id: `session-path:${name}:${i - 1}→${i}`,
-          source: sourceId,
-          target: nodeId,
+          id: `session-edge:${name}:${i - 1}→${i}`,
+          source: nodeId(name, i - 1),
+          target: id,
           _scenario: name,
         });
       }
     }
+
+    // Fork edge — only if the origin exists and has steps up to at_step.
+    if (origin && origin.at_step > 0 && steps.length > renderFrom) {
+      const originSteps = scenarios.get(origin.scenario);
+      // Guard: origin may have been deleted or truncated since the fork —
+      // skip the edge and render this scenario standalone.
+      if (originSteps && originSteps.length >= origin.at_step) {
+        const sourceNodeId = resolveOriginNodeId(
+          origin.scenario,
+          origin.at_step - 1,
+          forkOrigins,
+        );
+        if (sourceNodeId !== null) {
+          edges.push({
+            id: `session-fork:${origin.scenario}:${origin.at_step - 1}→${name}:${renderFrom}`,
+            source: sourceNodeId,
+            target: nodeId(name, renderFrom),
+            _scenario: name,
+            _forkEdge: true,
+          });
+        }
+      }
+    }
+  }
+
+  // Second pass: for each node, compute the list of scenarios whose path
+  // passes through it. The owning scenario always counts; descendants that
+  // inherit past this step also count.
+  const passesThrough = new Map<string, Set<string>>();
+  for (const n of nodes) passesThrough.set(n.id, new Set([n._scenario]));
+
+  for (const name of scenarioNames) {
+    const path = fullPath(name, scenarios, forkOrigins);
+    for (const nid of path) {
+      const set = passesThrough.get(nid);
+      if (set) set.add(name);
+    }
+  }
+
+  for (const n of nodes) {
+    n._scenariosPassingThrough = Array.from(passesThrough.get(n.id) ?? [n._scenario]);
   }
 
   return { nodes, edges };
 }
 
-// ── Manual test cases (reference only; no vitest wired yet — see README §Testing)
-// composeScenarioTree(new Map([['main', []]]))
-//   → { nodes: [], edges: [] }
-// composeScenarioTree(new Map([['main', [{function:'a',access:'Public',step_index:0}]]]))
-//   → 1 scenario-specific node `session:main:step:0` (no shared layer)
-// composeScenarioTree(new Map([
-//   ['main', [{function:'a',...},{function:'b',...}]],
-//   ['alt',  [{function:'a',...},{function:'c',...}]],
-// ]))
-//   → shared: [a] with _divergenceCount=2; divergent: main:1 (b), alt:1 (c)
-// composeScenarioTree(new Map([
-//   ['main', [{function:'x',...}]],
-//   ['alt',  [{function:'y',...}]],
-// ]))
-//   → no shared nodes; two disjoint roots main:0, alt:0
-// composeScenarioTree(new Map([
-//   ['s1', [{function:'a',...}]],
-//   ['s2', [{function:'a',...},{function:'b',...}]],
-//   ['s3', [{function:'a',...},{function:'b',...},{function:'c',...}]],
-// ]))
-//   → shared [a] with _divergenceCount=2 (s2 and s3 diverge past a; s1 ends at P)
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+function nodeId(scenario: string, stepIndex: number): string {
+  return `session:${scenario}:step:${stepIndex}`;
+}
+
+/** Resolve the node id that OWNS a given (scenario, stepIndex) pair, walking
+ *  ancestry when the scenario doesn't render that step itself (because it
+ *  was inherited). Returns null if the chain bottoms out without an owner —
+ *  e.g. the origin was deleted. The 64-iter guard is a safety net against
+ *  pathological fork graphs; realistic chains are shallow (< 10). */
+function resolveOriginNodeId(
+  scenario: string,
+  stepIndex: number,
+  forkOrigins: Map<string, ForkOrigin>,
+): string | null {
+  let current: string | undefined = scenario;
+  let guard = 0;
+  while (current && guard++ < 64) {
+    const origin = forkOrigins.get(current);
+    if (!origin || stepIndex >= origin.at_step) {
+      return nodeId(current, stepIndex);
+    }
+    current = origin.scenario;
+  }
+  return null;
+}
+
+/** Full path of a scenario = inherited prefix (chased through ancestry) +
+ *  own rendered nodes. Used to compute passesThrough membership. */
+function fullPath(
+  name: string,
+  scenarios: Map<string, SessionStep[]>,
+  forkOrigins: Map<string, ForkOrigin>,
+): string[] {
+  const origin = forkOrigins.get(name);
+  const ownStart = origin?.at_step ?? 0;
+  const path: string[] = [];
+
+  for (let i = 0; i < ownStart; i++) {
+    const owner = resolveOriginNodeId(name, i, forkOrigins);
+    if (owner !== null) path.push(owner);
+  }
+  const steps = scenarios.get(name);
+  if (steps) {
+    for (let i = ownStart; i < steps.length; i++) {
+      path.push(nodeId(name, i));
+    }
+  }
+  return path;
+}
