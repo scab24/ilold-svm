@@ -38,7 +38,6 @@ export interface SequenceNodeData {
   label: string;
   _funcName: string;
   _seqParent: string;
-  _isBranch: boolean;
   pathCount?: number;
   readOnly?: boolean;
   _transition?: any;
