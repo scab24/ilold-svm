@@ -16,13 +16,9 @@
   class:readonly={data.readOnly}
   class:has-conditions={hasConditions}
   class:has-shared={hasShared}
-  class:is-branch={data._isBranch}
   class:dimmed={data._dimmed}
 >
   <div class="flex items-center gap-1.5">
-    {#if data._isBranch}
-      <span class="text-[10px] text-success" title="Branch">&#x2441;</span>
-    {/if}
     {#if hasConditions}
       <span class="text-[10px] text-warning" title="Conditions affected">&#x26A0;</span>
     {/if}
@@ -33,9 +29,7 @@
     {#if data.pathCount}
       <span class="text-[9px] text-text-dim">{data.pathCount}p</span>
     {/if}
-    {#if !data._isBranch}
-      <span class="text-[8px] text-text-dim ml-auto">&#x25B6;</span>
-    {/if}
+    <span class="text-[8px] text-text-dim ml-auto">&#x25B6;</span>
   </div>
   {#if hasShared && visibleVars.length > 0}
     <div class="flex items-center gap-0.5 flex-wrap justify-center">
@@ -65,9 +59,6 @@
   }
   .seq-node.has-shared {
     border-style: dashed;
-  }
-  .seq-node.is-branch {
-    border-color: var(--color-success);
   }
   .seq-node.dimmed {
     opacity: 0.25;

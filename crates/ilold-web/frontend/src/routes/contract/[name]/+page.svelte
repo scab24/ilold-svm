@@ -234,28 +234,15 @@
     }));
   }
 
-  /** Remove non-branch descendants of a seq node, plus orphaned branches */
-  function collapseNonBranchDescendants(nodeId: string) {
+  /** Remove every seq-next descendant of a seq node. */
+  function collapseAllDescendants(nodeId: string) {
     const allDesc = findDescendants(nodeId);
     const toRemove = new Set<string>();
     for (const id of allDesc) {
       const n = findNode(id);
-      if (n && n.data._type === 'seq-next' && !(n.data as any)._isBranch) {
-        const subDesc = findDescendants(id);
-        for (const sid of subDesc) toRemove.add(sid);
-        toRemove.add(id);
-      }
+      if (n && n.data._type === 'seq-next') toRemove.add(id);
     }
-    if (toRemove.size > 0) {
-      // Also collect branches whose parent is being removed (they'd become orphans)
-      for (const id of allDesc) {
-        const n = findNode(id);
-        if (n && (n.data as any)._isBranch && toRemove.has((n.data as any)._seqParent)) {
-          toRemove.add(id);
-        }
-      }
-      removeNodesById(toRemove);
-    }
+    if (toRemove.size > 0) removeNodesById(toRemove);
   }
 
   /** Dim all function nodes (except excludeId) and call edges to 0.1 opacity */
@@ -752,13 +739,13 @@
     handleNodeTap(node);
     const d = node.data;
     if (d._type === 'function' && !d.is_external) {
-      await handleFunctionTap(d.label, node.id, event?.shiftKey ?? false, event);
+      await handleFunctionTap(d.label, node.id);
     } else if (d._type === 'seq-next') {
-      await handleSeqNodeTap((d as any)._funcName || d.label, node.id, event?.shiftKey ?? false, !!(d as any)._isBranch, (d as any)._seqParent, event);
+      await handleSeqNodeTap((d as any)._funcName || d.label, node.id, (d as any)._seqParent);
     }
   }
 
-  async function handleFunctionTap(funcName: string, nodeId: string, _shiftKey: boolean, _event?: MouseEvent) {
+  async function handleFunctionTap(funcName: string, nodeId: string) {
     if (mode === 'cfg') {
       await toggleFuncExpand(funcName);
     } else if (mode === 'sequences') {
@@ -766,25 +753,18 @@
     }
   }
 
-  async function handleSeqNodeTap(funcName: string, nodeId: string, _shiftKey: boolean, isBranch: boolean, seqParent: string, _event?: MouseEvent) {
-    // Remove auto-expanded siblings at same level (collapse sibling trees).
-    // Only runs when the tapped node is a NORMAL seq-next (not a manual branch):
-    // tapping a branch is additive and must never collapse alternative paths —
-    // only an auto-expanded seq-next "commits" to one sibling like the old
-    // Cytoscape behavior.
-    if (seqParent && !isBranch) {
+  async function handleSeqNodeTap(funcName: string, nodeId: string, seqParent: string) {
+    // Tapping a seq-next "commits" to one sibling path: collapse the
+    // auto-expanded sub-trees of all siblings at this level.
+    if (seqParent) {
       const siblings = getNodes().filter(
         n => n.data._type === 'seq-next'
           && (n.data as any)._seqParent === seqParent
           && n.id !== nodeId
-          && !(n.data as any)._isBranch  // keep manual branches
       );
       const toRemove = new Set<string>();
       for (const sib of siblings) {
-        // Remove the sibling's descendants
-        const desc = findDescendants(sib.id);
-        for (const id of desc) toRemove.add(id);
-        // Remove the sibling itself
+        for (const id of findDescendants(sib.id)) toRemove.add(id);
         toRemove.add(sib.id);
         seqExpanded.delete(sib.id);
       }
@@ -915,7 +895,7 @@
   async function toggleSeqExpand(funcName: string, parentNodeId: string) {
     // ── COLLAPSE ──
     if (seqExpanded.has(parentNodeId)) {
-      collapseNonBranchDescendants(parentNodeId);
+      collapseAllDescendants(parentNodeId);
       seqExpanded.delete(parentNodeId);
       seqExpanded = new Map(seqExpanded);
 
@@ -962,7 +942,6 @@
           label: targetName,
           _funcName: targetName,
           _seqParent: parentNodeId,
-          _isBranch: false,
           readOnly: func.read_only,
           pathCount: func.path_count,
           _transition: transition,
