@@ -13,16 +13,14 @@
     } | null;
     expandedFuncs: Set<string>;
     seqExpanded: Map<string, boolean>;
-    mode: 'cfg' | 'sequences';
     onexpandcfg: (funcName: string, nodeId: string) => void;
     onremovefunc: (funcName: string) => void;
     onremovenode: (nodeId: string) => void;
-    onaddbranch: (x: number, y: number, nodeId: string, funcName: string) => void;
     onforkscenario: (stepIndex: number) => void;
     onclose: () => void;
   }
 
-  let { menu, expandedFuncs, seqExpanded, mode, onexpandcfg, onremovefunc, onremovenode, onaddbranch, onforkscenario, onclose }: Props = $props();
+  let { menu, expandedFuncs, seqExpanded, onexpandcfg, onremovefunc, onremovenode, onforkscenario, onclose }: Props = $props();
 </script>
 
 {#if menu}
@@ -50,15 +48,6 @@
       >
         {expandedFuncs.has(menu.funcName) ? '▼ Collapse CFG' : '▶ Expand CFG'}
       </button>
-      {#if mode === 'sequences'}
-        <button
-          class="block w-full px-3 py-1.5 bg-transparent border-none text-text text-xs cursor-pointer text-left font-[inherit] transition-colors duration-150 hover:text-accent-hover"
-          style="border-radius: 6px;"
-          onclick={() => onaddbranch(menu!.x, menu!.y, menu!.nodeId, menu!.funcName)}
-        >
-          + Add branch
-        </button>
-      {/if}
       <button
         class="block w-full px-3 py-1.5 bg-transparent border-none text-text text-xs cursor-pointer text-left font-[inherit] transition-colors duration-150 hover:text-danger"
         style="border-radius: 6px;"
@@ -67,13 +56,6 @@
         ✕ Remove from canvas
       </button>
     {:else if menu.nodeType === 'seq-next'}
-      <button
-        class="block w-full px-3 py-1.5 bg-transparent border-none text-text text-xs cursor-pointer text-left font-[inherit] transition-colors duration-150 hover:text-accent-hover"
-        style="border-radius: 6px;"
-        onclick={() => onaddbranch(menu!.x, menu!.y, menu!.nodeId, menu!.funcName)}
-      >
-        + Add branch
-      </button>
       {#if seqExpanded.has(menu.nodeId)}
         <button
           class="block w-full px-3 py-1.5 bg-transparent border-none text-text text-xs cursor-pointer text-left font-[inherit] transition-colors duration-150 hover:text-accent-hover"

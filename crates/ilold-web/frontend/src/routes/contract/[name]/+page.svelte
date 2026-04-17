@@ -11,7 +11,6 @@
   import FunctionSidebar from '$lib/components/contract/FunctionSidebar.svelte';
   import FloatingToolbar from '$lib/components/contract/FloatingToolbar.svelte';
   import ContextMenu from '$lib/components/contract/ContextMenu.svelte';
-  import BranchMenu from '$lib/components/contract/BranchMenu.svelte';
   import NodeDetailPanel from '$lib/components/contract/NodeDetailPanel.svelte';
   import GraphCanvasFlow from '$lib/components/contract/GraphCanvasFlow.svelte';
   import SessionSidebar from '$lib/components/session/SessionSidebar.svelte';
@@ -39,9 +38,6 @@
   let seqAnalysis: SequenceAnalysis | null = $state(null);
   let seqExpanded: Map<string, boolean> = $state(new Map());
   let seqDirection: 'TB' | 'LR' = $state('TB');
-
-  // Branch menu: Shift+click shows a menu to add a branch
-  let branchMenu: { x: number; y: number; parentNodeId: string; parentFuncName: string } | null = $state(null);
 
   // Context menu: right-click on nodes
   let contextMenu: {
@@ -693,7 +689,6 @@
     }
 
     selectedNode = { ...data, id: node.id };
-    branchMenu = null;
     contextMenu = null;
 
     const funcName = data._type === 'function' ? data.label
@@ -712,7 +707,6 @@
   function handleBackgroundTap() {
     selectedNode = null;
     selectedPath = null;
-    branchMenu = null;
     resetAllDimmed();
   }
 
@@ -751,7 +745,6 @@
       nodeType: data._type,
       sessionStep,
     };
-    branchMenu = null;
   }
 
   async function handleNodeClick(node: Node<GraphNodeData>, event?: MouseEvent) {
@@ -765,35 +758,15 @@
     }
   }
 
-  async function handleFunctionTap(funcName: string, nodeId: string, shiftKey: boolean, event?: MouseEvent) {
-    branchMenu = null;
+  async function handleFunctionTap(funcName: string, nodeId: string, _shiftKey: boolean, _event?: MouseEvent) {
     if (mode === 'cfg') {
       await toggleFuncExpand(funcName);
     } else if (mode === 'sequences') {
-      if (shiftKey && event) {
-        branchMenu = {
-          x: event.clientX,
-          y: event.clientY,
-          parentNodeId: nodeId,
-          parentFuncName: funcName,
-        };
-      } else {
-        await toggleSeqExpand(funcName, nodeId);
-      }
+      await toggleSeqExpand(funcName, nodeId);
     }
   }
 
-  async function handleSeqNodeTap(funcName: string, nodeId: string, shiftKey: boolean, isBranch: boolean, seqParent: string, event?: MouseEvent) {
-    if (shiftKey && event) {
-      branchMenu = {
-        x: event.clientX,
-        y: event.clientY,
-        parentNodeId: nodeId,
-        parentFuncName: funcName,
-      };
-      return;
-    }
-
+  async function handleSeqNodeTap(funcName: string, nodeId: string, _shiftKey: boolean, isBranch: boolean, seqParent: string, _event?: MouseEvent) {
     // Remove auto-expanded siblings at same level (collapse sibling trees).
     // Only runs when the tapped node is a NORMAL seq-next (not a manual branch):
     // tapping a branch is additive and must never collapse alternative paths —
@@ -937,57 +910,6 @@
 
     expandedFuncs.add(funcName);
     expandedFuncs = new Set(expandedFuncs);
-  }
-
-  function addBranch(parentNodeId: string, parentFuncName: string, branchFuncName: string) {
-    if (!seqTree) return;
-
-    const func = seqTree.functions.find((f: any) => f.name === branchFuncName);
-    const transition = seqAnalysis?.transitions?.find(
-      t => t.from === parentFuncName && t.to === branchFuncName
-    ) ?? null;
-
-    // Unique suffix based on current child count (stable id for repeated branches)
-    const existingChildCount = getNodes().filter(
-      n => n.data._type === 'seq-next' && (n.data as any)._seqParent === parentNodeId
-    ).length;
-    const nodeId = `seq-branch:${parentNodeId}→${branchFuncName}:${existingChildCount}`;
-
-    // Add node at a placeholder position — relayoutSeqTree will assign the real one
-    // from the shared BFS so siblings (including pre-existing children) don't overlap.
-    addNode({
-      id: nodeId,
-      type: 'sequence',
-      position: { x: 0, y: 0 },
-      data: {
-        _type: 'seq-next',
-        label: branchFuncName,
-        _funcName: branchFuncName,
-        _seqParent: parentNodeId,
-        _isBranch: true,
-        readOnly: func?.read_only ?? false,
-        pathCount: func?.path_count,
-        _transition: transition,
-      },
-    } as Node<GraphNodeData>);
-
-    addEdge({
-      id: `seq-edge:branch:${parentNodeId}→${branchFuncName}:${existingChildCount}`,
-      source: parentNodeId,
-      sourceHandle: seqDirection === 'LR' ? 'r' : 'b',
-      target: nodeId,
-      targetHandle: seqDirection === 'LR' ? 'l' : 't',
-      type: 'default',
-      data: { _type: 'seq-edge' },
-      style: dashedEdgeStyle('var(--color-success)'),
-    });
-
-    // Re-layout the whole seq tree so the new branch integrates with existing children
-    // instead of stacking on top of them via a hardcoded offset.
-    const rootFunc = findSeqRootFunction(parentNodeId);
-    if (rootFunc) relayoutSeqTree(rootFunc.id);
-
-    branchMenu = null;
   }
 
   async function toggleSeqExpand(funcName: string, parentNodeId: string) {
@@ -1181,24 +1103,13 @@
       />
     {/if}
 
-    {#if branchMenu && seqTree}
-      <BranchMenu
-        menu={branchMenu}
-        functions={seqTree.functions}
-        onselect={(parentNodeId, parentFuncName, func) => addBranch(parentNodeId, parentFuncName, func)}
-        onclose={() => branchMenu = null}
-      />
-    {/if}
-
     <ContextMenu
       menu={contextMenu}
       {expandedFuncs}
       {seqExpanded}
-      {mode}
       onexpandcfg={(func, nodeId) => { toggleFuncExpand(func, nodeId); contextMenu = null; }}
       onremovefunc={(func) => { removeFuncFromCanvas(func); contextMenu = null; selectedNode = null; }}
       onremovenode={(nodeId) => { removeSeqNode(nodeId); contextMenu = null; selectedNode = null; }}
-      onaddbranch={(x, y, nodeId, func) => { branchMenu = { x, y, parentNodeId: nodeId, parentFuncName: func }; contextMenu = null; }}
       onforkscenario={handleForkScenario}
       onclose={() => contextMenu = null}
     />
