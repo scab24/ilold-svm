@@ -60,6 +60,19 @@ pub struct AnalysisData<'a> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ScenarioAction {
+    New { name: String },
+    List,
+    Switch { name: String },
+    Fork {
+        name: String,
+        #[serde(default)]
+        at_step: Option<usize>,
+    },
+    Delete { name: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SessionCommand {
     Call {
         func: String,
@@ -80,6 +93,14 @@ pub enum SessionCommand {
     LoadSession { json: String },
     FunctionsAll,
     StateVarsAll,
+    Scenario { sub: ScenarioAction },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScenarioInfo {
+    pub name: String,
+    pub active: bool,
+    pub step_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -134,27 +155,90 @@ pub enum CommandResult {
     Error {
         message: String,
     },
+    ScenarioList { items: Vec<ScenarioInfo> },
+    ScenarioCreated { name: String },
+    ScenarioSwitched { from: String, to: String },
+    ScenarioForked { from: String, to: String, at_step: usize },
+    ScenarioDeleted { name: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CanvasPatch {
-    AddNode { function: String, access: AccessLevel, step_index: usize },
-    RemoveLastNode,
-    ClearAll,
-    Highlight { function: String },
+    AddNode { scenario: String, function: String, access: AccessLevel, step_index: usize },
+    RemoveLastNode { scenario: String },
+    ClearAll { scenario: String },
+    Highlight { scenario: String, function: String },
+    ScenarioEvent(ScenarioEvent),
 }
 
-pub fn canvas_patch_from(result: &CommandResult) -> Option<CanvasPatch> {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ScenarioEvent {
+    Created { name: String },
+    Switched { from: String, to: String },
+    Deleted { name: String },
+    Forked { from: String, to: String, at_step: usize },
+}
+
+/// Validates scenario name against `^[a-z][a-z0-9_-]{0,31}$`.
+/// Manual ASCII check — avoids pulling in the `regex` crate.
+pub fn validate_scenario_name(name: &str) -> Result<(), String> {
+    const ERR: &str = "Invalid scenario name: must match ^[a-z][a-z0-9_-]{0,31}$";
+    if name.is_empty() || name.len() > 32 {
+        return Err(ERR.to_string());
+    }
+    let mut chars = name.chars();
+    let first = chars.next().ok_or_else(|| ERR.to_string())?;
+    if !first.is_ascii_lowercase() {
+        return Err(ERR.to_string());
+    }
+    for c in chars {
+        if !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-') {
+            return Err(ERR.to_string());
+        }
+    }
+    Ok(())
+}
+
+pub fn canvas_patch_from(result: &CommandResult, active_scenario: &str) -> Option<CanvasPatch> {
     match result {
         CommandResult::StepAdded { function, access, step_index, .. } => {
             Some(CanvasPatch::AddNode {
+                scenario: active_scenario.to_string(),
                 function: function.clone(),
                 access: access.clone(),
                 step_index: *step_index,
             })
         }
-        CommandResult::StepRemoved { .. } => Some(CanvasPatch::RemoveLastNode),
-        CommandResult::Cleared => Some(CanvasPatch::ClearAll),
+        CommandResult::StepRemoved { .. } => Some(CanvasPatch::RemoveLastNode {
+            scenario: active_scenario.to_string(),
+        }),
+        CommandResult::Cleared => Some(CanvasPatch::ClearAll {
+            scenario: active_scenario.to_string(),
+        }),
+        CommandResult::ScenarioCreated { name } => {
+            Some(CanvasPatch::ScenarioEvent(ScenarioEvent::Created { name: name.clone() }))
+        }
+        CommandResult::ScenarioSwitched { from, to } => {
+            if from == to {
+                // idempotent no-op: suppress WS broadcast
+                None
+            } else {
+                Some(CanvasPatch::ScenarioEvent(ScenarioEvent::Switched {
+                    from: from.clone(),
+                    to: to.clone(),
+                }))
+            }
+        }
+        CommandResult::ScenarioDeleted { name } => {
+            Some(CanvasPatch::ScenarioEvent(ScenarioEvent::Deleted { name: name.clone() }))
+        }
+        CommandResult::ScenarioForked { from, to, at_step } => {
+            Some(CanvasPatch::ScenarioEvent(ScenarioEvent::Forked {
+                from: from.clone(),
+                to: to.clone(),
+                at_step: *at_step,
+            }))
+        }
         _ => None,
     }
 }
@@ -231,6 +315,9 @@ pub fn execute_command(
         }
         SessionCommand::FunctionsAll => execute_functions_all(data),
         SessionCommand::StateVarsAll => execute_state_vars_all(data),
+        SessionCommand::Scenario { .. } => CommandResult::Error {
+            message: "Scenario commands must be dispatched at the store level, not through execute_command".into(),
+        },
     }
 }
 

@@ -1,9 +1,12 @@
 <script lang="ts">
   import { page } from '$app/state';
-  import { onMount, tick } from 'svelte';
+  import { onMount, tick, untrack } from 'svelte';
   import { getContract, getCallGraph, getCfg, getPaths, getSequences, getSequenceAnalysis, type ContractDetail, type CytoscapeGraph, type SequenceAnalysis } from '$lib/api/rest';
   import { toggleSearch, setSearchContext, getSearchNavigate, setSearchNavigate } from '$lib/stores/search.svelte';
-  import { getSteps, getHighlightedFunction } from '$lib/stores/session.svelte';
+  import { getHighlightedFunction, getScenarios, getActiveScenario, getForkOrigins } from '$lib/stores/session.svelte';
+  import { composeScenarioTree, type ComposedNode } from '$lib/canvas/scenarios';
+  import { promptScenarioName } from '$lib/scenarios/name';
+  import { dispatchScenarioAction } from '$lib/scenarios/dispatch';
   import Legend from '$lib/components/contract/Legend.svelte';
   import FunctionSidebar from '$lib/components/contract/FunctionSidebar.svelte';
   import FloatingToolbar from '$lib/components/contract/FloatingToolbar.svelte';
@@ -41,13 +44,19 @@
   let branchMenu: { x: number; y: number; parentNodeId: string; parentFuncName: string } | null = $state(null);
 
   // Context menu: right-click on nodes
-  let contextMenu: { x: number; y: number; nodeId: string; funcName: string; nodeType: string } | null = $state(null);
+  let contextMenu: {
+    x: number;
+    y: number;
+    nodeId: string;
+    funcName: string;
+    nodeType: string;
+    sessionStep?: { stepIndex: number };
+  } | null = $state(null);
 
   let canvasFuncs: Set<string> = $state(new Set()); // functions currently on canvas
 
   // Session → canvas auto-paint state
   let sessionVisCount = $state(0);
-  const sessionSteps = $derived(getSteps());
   const sessionHighlight = $derived(getHighlightedFunction());
 
   let callgraphRaw: CytoscapeGraph | null = $state(null);
@@ -370,69 +379,106 @@
     };
   }
 
-  // ── Session → canvas auto-paint ─────────────────────────────
-  // When the auditor types `c deposit` in a terminal, the session store updates
-  // via WebSocket. This effect reacts and auto-adds the function to the canvas.
+  // ── Session → canvas auto-paint (Phase S5) ──────────────────
+  // The session store owns an `activeScenario` + Map<name, steps[]>. This
+  // effect composes ALL scenarios into a unified tree (shared prefix +
+  // divergent tails) via `composeScenarioTree`, then syncs the canvas.
+  //
+  // Strategy: on every run, remove all `session:*` step nodes/edges and
+  // re-emit from the composed tree. Cheap (nodes are tiny) and avoids a
+  // fragile per-id diff. `activeScenario` is read so restyling (pill colors,
+  // active glow vs muted) re-runs when the user switches scenarios even if
+  // the tree shape is identical.
   $effect(() => {
-    const steps = sessionSteps;
+    // Reactive reads — trigger re-run on scenario changes + active-scenario flip.
+    const scenarios = getScenarios();
+    const forkOrigins = getForkOrigins();
+    const active = getActiveScenario();
     if (!contract || !callgraphRaw) return;
 
-    if (steps.length > sessionVisCount) {
-      // Each step gets its OWN node — tree layout, not circular.
-      // deposit_0 → withdraw_1 → deposit_2 (separate nodes even for same function)
+    const tree = composeScenarioTree(scenarios, forkOrigins);
+
+    // Graph-store reads/writes are wrapped in untrack() to prevent a reactive
+    // cycle: reading getNodes() would subscribe this effect to `nodes`, and
+    // the subsequent removeNodesById/addNodes/addEdges would re-trigger it
+    // (infinite loop that froze the canvas on every c <func>).
+    untrack(() => {
+      const toRemove = new Set<string>();
+      for (const n of getNodes()) {
+        if (n.id.startsWith('session:')) toRemove.add(n.id);
+      }
+      if (toRemove.size > 0) removeNodesById(toRemove);
+
+      if (tree.nodes.length === 0) {
+        sessionVisCount = 0;
+        return;
+      }
+
       const allFuncs = [...(contract?.functions ?? []), ...(contract?.inherited_functions ?? [])];
 
-      for (let i = sessionVisCount; i < steps.length; i++) {
-        const funcName = steps[i].function;
-        const funcDetail = allFuncs.find((f: any) => f.name === funcName);
-        const nodeId = `session:step:${i}`;
+      // Lane-per-scenario tree. Each scenario renders only its divergent
+      // tail (`steps[at_step..end]`) on its own horizontal lane; the
+      // inherited prefix is reused from the origin's lane. A fork edge
+      // connects origin:step:{at_step-1} → self:step:{at_step} so branches
+      // visibly emerge from their fork point.
+      const SESSION_BASE_X = 200;
+      const SESSION_BASE_Y = 300;
+      const SESSION_STEP_WIDTH = 280;
+      const SESSION_LANE_HEIGHT = 100;
 
-        addNode({
-          id: nodeId,
+      const composedNodes: Node<GraphNodeData>[] = tree.nodes.map((cn: ComposedNode) => {
+        const funcDetail = allFuncs.find((f: any) => f.name === cn.function);
+        return {
+          id: cn.id,
           type: 'function',
-          position: { x: 200 + i * 280, y: 300 },
+          position: {
+            x: SESSION_BASE_X + cn.stepIndex * SESSION_STEP_WIDTH,
+            y: SESSION_BASE_Y + cn.lane * SESSION_LANE_HEIGHT,
+          },
           data: {
             _type: 'function',
             _sessionStep: true,
-            label: funcName,
+            _scenario: cn._scenario,
+            _scenariosPassingThrough: cn._scenariosPassingThrough,
+            _activeScenario: active,
+            stepIndex: cn.stepIndex,
+            label: cn.function,
             is_external: false,
-            contractName: contract.name,
+            contractName: contract!.name,
             visibility: funcDetail?.visibility,
             mutability: funcDetail?.mutability,
             path_count: funcDetail?.path_count,
             modifiers: funcDetail?.modifiers,
-          },
-        } as Node<GraphNodeData>);
+          } as GraphNodeData,
+        } as Node<GraphNodeData>;
+      });
+      addNodes(composedNodes);
 
-        // Edge from previous step → this step (left to right)
-        if (i > 0) {
-          addEdge({
-            id: `session-path:${i - 1}→${i}`,
-            source: `session:step:${i - 1}`,
-            target: nodeId,
-            sourceHandle: 'r',
-            targetHandle: 'l',
-            type: 'default',
-            style: `stroke: var(--color-text-muted)`,
-            markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12, color: 'var(--color-text-muted)' },
-            label: `${i}`,
-            labelBgStyle: { fill: 'var(--color-surface)', fillOpacity: 0.85 },
-            labelBgPadding: [3, 5] as [number, number],
-            data: { _type: 'session-path', stepIndex: i },
-          });
-        }
-      }
-      sessionVisCount = steps.length;
-    } else if (steps.length < sessionVisCount) {
-      // Back or clear: remove step nodes + edges from the end
-      const toRemove = new Set<string>();
-      for (let i = sessionVisCount - 1; i >= steps.length; i--) {
-        toRemove.add(`session:step:${i}`);
-      }
-      if (toRemove.size > 0) removeNodesById(toRemove);
-      // removeNodesById already cleans edges whose source/target is a removed node
-      sessionVisCount = steps.length;
-    }
+      const composedEdges: Edge[] = tree.edges.map((ce) => {
+        const isFork = ce._forkEdge === true;
+        const color = isFork ? 'var(--color-accent)' : 'var(--color-text-muted)';
+        return {
+          id: ce.id,
+          source: ce.source,
+          target: ce.target,
+          sourceHandle: 'r',
+          targetHandle: 'l',
+          // 'smoothstep' draws curved right-angle corners, which reads as a
+          // branch emerging from the origin — distinct from the straight
+          // within-scenario edges.
+          type: isFork ? 'smoothstep' : 'default',
+          animated: isFork,
+          style: `stroke: ${color}; ${isFork ? 'stroke-dasharray: 4 4;' : ''}`,
+          markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12, color },
+          labelBgStyle: { fill: 'var(--color-surface)', fillOpacity: 0.85 },
+          labelBgPadding: [3, 5] as [number, number],
+          data: { _type: 'session-path', _scenario: ce._scenario, _forkEdge: isFork },
+        };
+      });
+      addEdges(composedEdges);
+
+      sessionVisCount = tree.nodes.length;
+    });
   });
 
   // Highlight the function node when the session broadcasts session_highlight
@@ -670,14 +716,40 @@
     resetAllDimmed();
   }
 
+  // Right-click "⎇ Fork scenario here": forks the active scenario, keeping
+  // steps [0..=stepIndex] (i.e. truncate at stepIndex + 1). Surfaces backend
+  // errors via console.warn — ScenarioStore enforces uniqueness of names.
+  async function handleForkScenario(stepIndex: number) {
+    contextMenu = null;
+    const name = promptScenarioName();
+    if (!name) return;
+    await dispatchScenarioAction(
+      { Fork: { name, at_step: stepIndex + 1 } },
+      contract?.name,
+      'fork',
+    );
+  }
+
   function handleContextMenu(event: MouseEvent, node: Node<GraphNodeData>) {
     const data = node.data;
+    // "Fork scenario here" is only meaningful when the active scenario's
+    // path passes through this node — either it owns the node or inherits
+    // it from an ancestor. `_scenariosPassingThrough` already encodes both
+    // cases so the check is a single Array.includes.
+    let sessionStep: { stepIndex: number } | undefined;
+    if (data._type === 'function' && data._sessionStep === true) {
+      const { _scenariosPassingThrough: scns, _activeScenario: active, stepIndex: idx } = data;
+      if (typeof idx === 'number' && active && scns?.includes(active)) {
+        sessionStep = { stepIndex: idx };
+      }
+    }
     contextMenu = {
       x: event.clientX,
       y: event.clientY,
       nodeId: node.id,
       funcName: data._type === 'function' ? data.label : ('_parentFunc' in data ? (data as any)._parentFunc : ('_funcName' in data ? (data as any)._funcName : (data as any).label)),
       nodeType: data._type,
+      sessionStep,
     };
     branchMenu = null;
   }
@@ -1127,6 +1199,7 @@
       onremovefunc={(func) => { removeFuncFromCanvas(func); contextMenu = null; selectedNode = null; }}
       onremovenode={(nodeId) => { removeSeqNode(nodeId); contextMenu = null; selectedNode = null; }}
       onaddbranch={(x, y, nodeId, func) => { branchMenu = { x, y, parentNodeId: nodeId, parentFuncName: func }; contextMenu = null; }}
+      onforkscenario={handleForkScenario}
       onclose={() => contextMenu = null}
     />
 

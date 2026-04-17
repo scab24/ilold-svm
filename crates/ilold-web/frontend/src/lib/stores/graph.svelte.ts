@@ -14,6 +14,12 @@ export interface FunctionNodeData {
   mutability?: string;
   path_count?: number;
   modifiers?: string[];
+  // Scenarios: composed session-step metadata
+  _sessionStep?: true;
+  _scenario?: string;             // the scenario that owns this rendered node
+  _scenariosPassingThrough?: string[]; // full set of scenarios whose path includes this node (inherited + own)
+  _activeScenario?: string;       // current active scenario (for highlight/mute classes)
+  stepIndex?: number;             // session-step index, used by right-click "Fork scenario here"
 }
 
 export interface BlockNodeData {

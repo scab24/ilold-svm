@@ -1,6 +1,8 @@
 // Session API client — maps to the /api/session/* and /api/cmd endpoints.
 // All functions return typed responses matching the Rust backend structs.
 
+import type { ScenarioInfo, AllScenariosResponse } from './types';
+
 const BASE = '';
 
 // ── Command bus ─────────────────────────────────────────────────────────────
@@ -9,6 +11,13 @@ export interface CommandRequest {
   contract?: string;
   command: SessionCommand;
 }
+
+export type ScenarioAction =
+  | { New: { name: string } }
+  | 'List'
+  | { Switch: { name: string } }
+  | { Fork: { name: string; at_step?: number } }
+  | { Delete: { name: string } };
 
 export type SessionCommand =
   | { Call: { func: string } }
@@ -21,7 +30,8 @@ export type SessionCommand =
   | { Who: { variable: string } }
   | 'Session'
   | 'Export'
-  | 'SaveSession';
+  | 'SaveSession'
+  | { Scenario: { sub: ScenarioAction } };
 
 export async function postCommand(command: SessionCommand, contract?: string) {
   const body: CommandRequest = { command };
@@ -107,6 +117,20 @@ export async function getFlowTrace(params: TraceParams) {
 
 export async function getFunctionNarrative(contract: string, func: string) {
   const res = await fetch(`${BASE}/api/session/function/${contract}/${func}`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+// ── Scenarios ───────────────────────────────────────────────────────────────
+
+export async function getScenarios(): Promise<ScenarioInfo[]> {
+  const res = await fetch(`${BASE}/api/scenarios`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function getAllScenarios(): Promise<AllScenariosResponse> {
+  const res = await fetch(`${BASE}/api/scenarios/all`);
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }

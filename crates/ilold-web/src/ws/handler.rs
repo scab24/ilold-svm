@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
 use ilold_core::classify::entry_points::AccessLevel;
-use ilold_core::exploration::commands::CanvasPatch;
+use ilold_core::exploration::commands::{CanvasPatch, ScenarioEvent};
 
 use crate::state::AppState;
 use super::search::{self, SearchQuery};
@@ -29,13 +29,21 @@ enum ServerMessage {
     #[serde(rename = "error")]
     Error { message: String },
     #[serde(rename = "session_add_node")]
-    SessionAddNode { function: String, access: AccessLevel, step_index: usize },
+    SessionAddNode { scenario: String, function: String, access: AccessLevel, step_index: usize },
     #[serde(rename = "session_remove_node")]
-    SessionRemoveNode,
+    SessionRemoveNode { scenario: String },
     #[serde(rename = "session_clear")]
-    SessionClear,
+    SessionClear { scenario: String },
     #[serde(rename = "session_highlight")]
-    SessionHighlight { function: String },
+    SessionHighlight { scenario: String, function: String },
+    #[serde(rename = "scenario_created")]
+    ScenarioCreated { name: String },
+    #[serde(rename = "scenario_switched")]
+    ScenarioSwitched { from: String, to: String },
+    #[serde(rename = "scenario_deleted")]
+    ScenarioDeleted { name: String },
+    #[serde(rename = "scenario_forked")]
+    ScenarioForked { from: String, to: String, at_step: usize },
 }
 
 pub async fn ws_handler(
@@ -47,12 +55,22 @@ pub async fn ws_handler(
 
 fn server_message_from_patch(patch: CanvasPatch) -> ServerMessage {
     match patch {
-        CanvasPatch::AddNode { function, access, step_index } => {
-            ServerMessage::SessionAddNode { function, access, step_index }
+        CanvasPatch::AddNode { scenario, function, access, step_index } => {
+            ServerMessage::SessionAddNode { scenario, function, access, step_index }
         }
-        CanvasPatch::RemoveLastNode => ServerMessage::SessionRemoveNode,
-        CanvasPatch::ClearAll => ServerMessage::SessionClear,
-        CanvasPatch::Highlight { function } => ServerMessage::SessionHighlight { function },
+        CanvasPatch::RemoveLastNode { scenario } => ServerMessage::SessionRemoveNode { scenario },
+        CanvasPatch::ClearAll { scenario } => ServerMessage::SessionClear { scenario },
+        CanvasPatch::Highlight { scenario, function } => {
+            ServerMessage::SessionHighlight { scenario, function }
+        }
+        CanvasPatch::ScenarioEvent(evt) => match evt {
+            ScenarioEvent::Created { name } => ServerMessage::ScenarioCreated { name },
+            ScenarioEvent::Switched { from, to } => ServerMessage::ScenarioSwitched { from, to },
+            ScenarioEvent::Deleted { name } => ServerMessage::ScenarioDeleted { name },
+            ScenarioEvent::Forked { from, to, at_step } => {
+                ServerMessage::ScenarioForked { from, to, at_step }
+            }
+        },
     }
 }
 

@@ -1,6 +1,16 @@
 <script lang="ts">
   interface Props {
-    menu: { x: number; y: number; nodeId: string; funcName: string; nodeType: string } | null;
+    menu: {
+      x: number;
+      y: number;
+      nodeId: string;
+      funcName: string;
+      nodeType: string;
+      /** Set when the right-clicked node is a session step in the active
+       *  scenario's path (shared prefix or active tail). Carries the step
+       *  index used by `Fork { at_step: stepIndex + 1 }`. */
+      sessionStep?: { stepIndex: number };
+    } | null;
     expandedFuncs: Set<string>;
     seqExpanded: Map<string, boolean>;
     mode: 'cfg' | 'sequences';
@@ -8,10 +18,11 @@
     onremovefunc: (funcName: string) => void;
     onremovenode: (nodeId: string) => void;
     onaddbranch: (x: number, y: number, nodeId: string, funcName: string) => void;
+    onforkscenario: (stepIndex: number) => void;
     onclose: () => void;
   }
 
-  let { menu, expandedFuncs, seqExpanded, mode, onexpandcfg, onremovefunc, onremovenode, onaddbranch, onclose }: Props = $props();
+  let { menu, expandedFuncs, seqExpanded, mode, onexpandcfg, onremovefunc, onremovenode, onaddbranch, onforkscenario, onclose }: Props = $props();
 </script>
 
 {#if menu}
@@ -93,6 +104,15 @@
         onclick={() => onremovefunc(menu!.funcName)}
       >
         ✕ Remove function
+      </button>
+    {/if}
+    {#if menu.sessionStep}
+      <button
+        class="block w-full px-3 py-1.5 bg-transparent border-none text-text text-xs cursor-pointer text-left font-[inherit] transition-colors duration-150 hover:text-accent-hover"
+        style="border-radius: 6px;"
+        onclick={() => onforkscenario(menu!.sessionStep!.stepIndex)}
+      >
+        ⎇ Fork scenario here
       </button>
     {/if}
     <!-- Separator before cancel -->

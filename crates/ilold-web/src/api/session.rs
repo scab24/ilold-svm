@@ -3,20 +3,22 @@ use std::sync::Arc;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
+use ilold_core::classify::entry_points::AccessLevel;
 use ilold_core::exploration::commands::{
-    AnalysisData, CanvasPatch, CommandResult, SessionCommand,
+    AnalysisData, CanvasPatch, CommandResult, ScenarioAction, ScenarioInfo, SessionCommand,
     canvas_patch_from, execute_command, get_flow_tree, get_function_info, get_sequence_narrative,
-    get_session_state, get_step_narrative,
+    get_session_state, get_step_narrative, validate_scenario_name,
 };
-use ilold_core::exploration::session::{ExplorationSession, VariableSummary};
+use ilold_core::exploration::session::{ExplorationSession, ForkOrigin, VariableSummary};
+use ilold_core::journal::types::JournalEntry;
 use ilold_core::exploration::timeline::{build_variable_timeline, VariableTimeline};
 use ilold_core::narrative::trace::FlowTree;
 use ilold_core::narrative::types::{FunctionNarrative, SequenceNarrative};
 use ilold_core::slicing::{build_slice_result, SliceDirection, SliceResult};
 
-use crate::state::AppState;
+use crate::state::{AppState, ScenarioStore};
 
 #[derive(Deserialize)]
 pub struct CommandRequest {
@@ -56,11 +58,12 @@ fn resolve_contract(state: &AppState, explicit: Option<&str>) -> Result<String, 
         return Ok(name.to_string());
     }
 
-    let session_guard = state.session.read().unwrap();
-    if let Some(session) = session_guard.as_ref() {
+    let scenarios_guard = state.scenarios.read().unwrap();
+    let session = scenarios_guard.active_session();
+    if !session.contract.is_empty() {
         return Ok(session.contract.clone());
     }
-    drop(session_guard);
+    drop(scenarios_guard);
 
     state.project.find_contract(None)
         .map(|c| c.name.clone())
@@ -74,6 +77,143 @@ fn timestamp_now() -> String {
         .unwrap_or_default()
 }
 
+/// Validate a scenario name and check it is not already taken in the store.
+/// Shared guard for both `ScenarioAction::New` and `ScenarioAction::Fork`.
+/// Returns `Err(CommandResult::Error)` ready to be propagated.
+fn reserve_name(store: &ScenarioStore, name: &str) -> Result<(), CommandResult> {
+    if let Err(e) = validate_scenario_name(name) {
+        return Err(CommandResult::Error { message: e });
+    }
+    if store.contains(name) {
+        return Err(CommandResult::Error {
+            message: format!("Scenario '{name}' already exists"),
+        });
+    }
+    Ok(())
+}
+
+/// Execute scenario lifecycle commands against the `ScenarioStore`. Lives
+/// in the web crate because it needs `&mut ScenarioStore` (crate boundary);
+/// `commands.rs` only defines the data types.
+fn execute_scenario(
+    store: &mut ScenarioStore,
+    action: ScenarioAction,
+    timestamp: &str,
+    contract: &str,
+) -> CommandResult {
+    match action {
+        ScenarioAction::New { name } => {
+            if let Err(err) = reserve_name(store, &name) {
+                return err;
+            }
+            let session = ExplorationSession::new(contract, "ilold");
+            store.insert(name.clone(), session);
+            CommandResult::ScenarioCreated { name }
+        }
+        ScenarioAction::List => {
+            let active = store.active().to_string();
+            let items: Vec<ScenarioInfo> = store
+                .names()
+                .iter()
+                .map(|n| ScenarioInfo {
+                    name: n.clone(),
+                    active: n == &active,
+                    step_count: store.get(n).map(|s| s.steps.len()).unwrap_or(0),
+                })
+                .collect();
+            CommandResult::ScenarioList { items }
+        }
+        ScenarioAction::Switch { name } => {
+            let from = store.active().to_string();
+            if name == from {
+                // idempotent no-op per spec S3.4; caller is responsible for
+                // suppressing WS broadcast when from == to.
+                return CommandResult::ScenarioSwitched { from, to: name };
+            }
+            match store.set_active(name.clone()) {
+                Ok(()) => CommandResult::ScenarioSwitched { from, to: name },
+                Err(e) => CommandResult::Error { message: e },
+            }
+        }
+        ScenarioAction::Fork { name, at_step } => fork_scenario(store, name, at_step, timestamp),
+        ScenarioAction::Delete { name } => {
+            if name == store.active() {
+                return CommandResult::Error {
+                    message: "Cannot delete active scenario — switch first.".into(),
+                };
+            }
+            if store.len() == 1 {
+                return CommandResult::Error {
+                    message: "Cannot delete the only remaining scenario.".into(),
+                };
+            }
+            if !store.contains(&name) {
+                return CommandResult::Error {
+                    message: format!("Scenario '{name}' does not exist"),
+                };
+            }
+            store.remove(&name);
+            CommandResult::ScenarioDeleted { name }
+        }
+    }
+}
+
+fn fork_scenario(
+    store: &mut ScenarioStore,
+    new_name: String,
+    at_step: Option<usize>,
+    timestamp: &str,
+) -> CommandResult {
+    if let Err(err) = reserve_name(store, &new_name) {
+        return err;
+    }
+    let from = store.active().to_string();
+    let mut cloned = store.active_session().clone();
+
+    // Resolve effective step count. None (legacy) → keep all steps.
+    // Some(N) → truncate to first N; error if N > current length.
+    // Mutations live inside each ExplorationStep, so truncating `steps`
+    // drops their owning step's mutations as well.
+    let len = cloned.steps.len();
+    let effective = match at_step {
+        None => len,
+        Some(n) if n > len => {
+            let noun = if len == 1 { "step" } else { "steps" };
+            return CommandResult::Error {
+                message: format!(
+                    "Cannot fork at step {n}: only {len} {noun} in active scenario"
+                ),
+            };
+        }
+        Some(n) => {
+            cloned.steps.truncate(n);
+            n
+        }
+    };
+
+    // Record the fork origin on the cloned session itself. The frontend
+    // reads this (via /api/scenarios/all) to render the scenario as a
+    // branch from its source instead of a parallel timeline.
+    cloned.forked_from = Some(ForkOrigin {
+        scenario: from.clone(),
+        at_step: effective,
+    });
+    // The `BranchCreated` variant's field names (`from_function`/`branch_function`)
+    // are reused here as scenario names per design §2.4 — intentionally not
+    // renamed to preserve save-file compatibility.
+    cloned.journal.record(JournalEntry::BranchCreated {
+        from_function: from.clone(),
+        branch_function: new_name.clone(),
+        timestamp: timestamp.to_string(),
+    });
+    store.insert(new_name.clone(), cloned);
+    CommandResult::ScenarioForked {
+        from,
+        to: new_name,
+        at_step: effective,
+    }
+}
+
 pub async fn handle_command(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CommandRequest>,
@@ -82,35 +222,60 @@ pub async fn handle_command(
     let data = build_analysis_data(&state, &contract_name)?;
     let timestamp = timestamp_now();
 
-    let mut session_guard = state.session.write().unwrap();
-    // If the contract changed (e.g., user ran `use OtherContract`), reset the session.
-    // Otherwise steps from the old contract would fail to resolve in the new one.
-    if let Some(existing) = session_guard.as_ref() {
-        if existing.contract != contract_name {
-            *session_guard = None;
-            state.session_tx.send(CanvasPatch::ClearAll).ok();
+    let mut scenarios_guard = state.scenarios.write().unwrap();
+    // Contract switch: only reset if the active session has actual steps.
+    // An empty session with a mismatched contract means the auto-seed picked
+    // a default contract that didn't match the first real request — just
+    // swap it transparently (no ClearAll, nothing was ever on the canvas).
+    let needs_reset = scenarios_guard.active_session().contract != contract_name;
+    if needs_reset {
+        let had_steps = !scenarios_guard.active_session().steps.is_empty();
+        let active_before_reset = scenarios_guard.active().to_string();
+        *scenarios_guard = ScenarioStore::new_for_contract(&contract_name);
+        if had_steps {
+            state.session_tx.send(CanvasPatch::ClearAll {
+                scenario: active_before_reset,
+            }).ok();
         }
     }
-    let session = session_guard.get_or_insert_with(|| {
-        ExplorationSession::new(&contract_name, "ilold")
-    });
-
-    let result = execute_command(req.command, session, &data, &timestamp);
-
-    if let Some(patch) = canvas_patch_from(&result) {
-        state.session_tx.send(patch).ok();
+    // Scenario commands operate on the store itself; all other commands
+    // are delegated to the active session. Dispatch happens here (before
+    // `active_session_mut`) to avoid partial-move errors on `req.command`.
+    match req.command {
+        SessionCommand::Scenario { sub } => {
+            // Capture the active scenario BEFORE executing the scenario
+            // command. Switch/Delete mutate `active` or remove scenarios; the
+            // lifecycle patch embeds the pre-call name for consistent
+            // routing on the frontend.
+            let active_before = scenarios_guard.active().to_string();
+            let result = execute_scenario(&mut scenarios_guard, sub, &timestamp, &contract_name);
+            if let Some(patch) = canvas_patch_from(&result, &active_before) {
+                state.session_tx.send(patch).ok();
+            }
+            Ok(Json(result))
+        }
+        other => {
+            // Capture the active scenario name BEFORE delegating — the
+            // session mutation below doesn't change `active`, but grabbing
+            // it here keeps the pattern symmetric with the scenario branch
+            // and avoids a second borrow after `active_session_mut`.
+            let active_name = scenarios_guard.active().to_string();
+            let session = scenarios_guard.active_session_mut();
+            let result = execute_command(other, session, &data, &timestamp);
+            if let Some(patch) = canvas_patch_from(&result, &active_name) {
+                state.session_tx.send(patch).ok();
+            }
+            Ok(Json(result))
+        }
     }
-
-    Ok(Json(result))
 }
 
 pub async fn get_step_detail(
     State(state): State<Arc<AppState>>,
     Path(step_index): Path<usize>,
 ) -> Result<Json<FunctionNarrative>, (StatusCode, String)> {
-    let session_guard = state.session.read().unwrap();
-    let session = session_guard.as_ref()
-        .ok_or((StatusCode::NOT_FOUND, "No active session".into()))?;
+    let scenarios_guard = state.scenarios.read().unwrap();
+    let session = scenarios_guard.active_session();
 
     let data = build_analysis_data(&state, &session.contract)?;
 
@@ -127,9 +292,8 @@ pub async fn get_session_step_trace(
     State(state): State<Arc<AppState>>,
     Path(step_index): Path<usize>,
 ) -> Result<Json<FlowTree>, (StatusCode, String)> {
-    let session_guard = state.session.read().unwrap();
-    let session = session_guard.as_ref()
-        .ok_or((StatusCode::NOT_FOUND, "No active session".into()))?;
+    let scenarios_guard = state.scenarios.read().unwrap();
+    let session = scenarios_guard.active_session();
 
     let step = session.steps.get(step_index)
         .ok_or((StatusCode::NOT_FOUND, format!("step {} not found", step_index)))?;
@@ -152,9 +316,8 @@ pub async fn get_variable_timeline_handler(
     State(state): State<Arc<AppState>>,
     Path(variable): Path<String>,
 ) -> Result<Json<VariableTimeline>, (StatusCode, String)> {
-    let session_guard = state.session.read().unwrap();
-    let session = session_guard.as_ref()
-        .ok_or((StatusCode::NOT_FOUND, "No active session".into()))?;
+    let scenarios_guard = state.scenarios.read().unwrap();
+    let session = scenarios_guard.active_session();
 
     let timeline = build_variable_timeline(session, &variable);
     Ok(Json(timeline))
@@ -163,9 +326,8 @@ pub async fn get_variable_timeline_handler(
 pub async fn get_state_detail(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<VariableSummary>>, (StatusCode, String)> {
-    let session_guard = state.session.read().unwrap();
-    let session = session_guard.as_ref()
-        .ok_or((StatusCode::NOT_FOUND, "No active session".into()))?;
+    let scenarios_guard = state.scenarios.read().unwrap();
+    let session = scenarios_guard.active_session();
 
     Ok(Json(get_session_state(session)))
 }
@@ -173,9 +335,8 @@ pub async fn get_state_detail(
 pub async fn get_sequence_detail(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<SequenceNarrative>, (StatusCode, String)> {
-    let session_guard = state.session.read().unwrap();
-    let session = session_guard.as_ref()
-        .ok_or((StatusCode::NOT_FOUND, "No active session".into()))?;
+    let scenarios_guard = state.scenarios.read().unwrap();
+    let session = scenarios_guard.active_session();
 
     let data = build_analysis_data(&state, &session.contract)?;
 
@@ -245,11 +406,8 @@ pub async fn get_function_slice(
     Query(params): Query<SliceQuery>,
 ) -> Result<Json<SliceResult>, (StatusCode, String)> {
     let contract_name = {
-        let guard = state.session.read().unwrap();
-        guard.as_ref()
-            .ok_or((StatusCode::NOT_FOUND, "No active session".into()))?
-            .contract
-            .clone()
+        let guard = state.scenarios.read().unwrap();
+        guard.active_session().contract.clone()
     };
 
     let contract = state.project.contracts.iter()
@@ -291,6 +449,92 @@ fn parse_slice_direction(raw: Option<&str>) -> Result<SliceDirection, String> {
             other
         )),
     }
+}
+
+/// Lightweight per-step view for the `/api/scenarios/all` snapshot. The
+/// access level is resolved against `AppState.classifications` (same lookup
+/// pattern used by `execute_who` in the core crate) so the frontend can
+/// colour the node without re-classifying.
+#[derive(Serialize)]
+pub struct SessionStepView {
+    pub function: String,
+    pub access: AccessLevel,
+    pub step_index: usize,
+}
+
+/// Per-scenario snapshot in `AllScenariosResponse`. `forked_from` is `None`
+/// for `main` and for any scenario loaded from a pre-fork-origin save file.
+#[derive(Serialize)]
+pub struct ScenarioSnapshot {
+    pub name: String,
+    pub steps: Vec<SessionStepView>,
+    pub forked_from: Option<ForkOrigin>,
+}
+
+#[derive(Serialize)]
+pub struct AllScenariosResponse {
+    pub active: String,
+    /// Ordered by creation order (main first, then insertion order). Not a
+    /// HashMap — the frontend composes scenarios into a visual tree and needs
+    /// stable iteration so "main" always anchors the canvas.
+    pub scenarios: Vec<ScenarioSnapshot>,
+}
+
+/// Return the list of scenarios — mirrors the `scenario list` CLI command.
+pub async fn get_scenarios(
+    State(state): State<Arc<AppState>>,
+) -> Json<Vec<ScenarioInfo>> {
+    let guard = state.scenarios.read().unwrap();
+    let active = guard.active().to_string();
+    let items = guard
+        .names()
+        .iter()
+        .map(|name| ScenarioInfo {
+            name: name.clone(),
+            active: name == &active,
+            step_count: guard.get(name).map(|s| s.steps.len()).unwrap_or(0),
+        })
+        .collect();
+    Json(items)
+}
+
+/// Bulk snapshot of every scenario's step list. Used by the frontend canvas
+/// to paint all scenarios at once (e.g. on reconnect / initial load).
+pub async fn get_all_scenarios(
+    State(state): State<Arc<AppState>>,
+) -> Json<AllScenariosResponse> {
+    let guard = state.scenarios.read().unwrap();
+    let active = guard.active().to_string();
+    let mut scenarios: Vec<ScenarioSnapshot> = Vec::with_capacity(guard.len());
+    for name in guard.names() {
+        let Some(session) = guard.get(name) else { continue };
+        let classifs = state.classifications.get(&session.contract);
+        let steps = session
+            .steps
+            .iter()
+            .enumerate()
+            .map(|(idx, step)| {
+                // Same lookup pattern as `execute_who`'s `access_for`
+                // (`commands.rs:515-519`): fall back to `Internal` when the
+                // classification is missing so the response shape is stable.
+                let access = classifs
+                    .and_then(|c| c.iter().find(|(n, _)| n == &step.function))
+                    .map(|(_, a)| a.clone())
+                    .unwrap_or(AccessLevel::Internal);
+                SessionStepView {
+                    function: step.function.clone(),
+                    access,
+                    step_index: idx,
+                }
+            })
+            .collect();
+        scenarios.push(ScenarioSnapshot {
+            name: name.clone(),
+            steps,
+            forked_from: session.forked_from.clone(),
+        });
+    }
+    Json(AllScenariosResponse { active, scenarios })
 }
 
 /// Parse a comma-separated `expand` query value into a set of step_ids.

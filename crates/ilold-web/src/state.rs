@@ -23,6 +23,97 @@ use ilold_core::sequence::types::SequenceTree;
 
 use serde::{Deserialize, Serialize};
 
+/// The default scenario name, auto-created for every fresh session.
+pub const DEFAULT_SCENARIO: &str = "main";
+
+/// Holds all scenarios for a contract. One is "active" at any time; commands
+/// without explicit scenario targeting operate on it. Insertion order is
+/// preserved via `order` for deterministic `names()` output.
+pub struct ScenarioStore {
+    pub version: u32,
+    pub contract: String,
+    active: String,
+    sessions: HashMap<String, ExplorationSession>,
+    order: Vec<String>,
+}
+
+impl ScenarioStore {
+    pub fn new_for_contract(contract: impl Into<String>) -> Self {
+        let contract = contract.into();
+        let mut sessions = HashMap::new();
+        sessions.insert(
+            DEFAULT_SCENARIO.to_string(),
+            ExplorationSession::new(&contract, "ilold"),
+        );
+        Self {
+            version: 2,
+            contract,
+            active: DEFAULT_SCENARIO.to_string(),
+            sessions,
+            order: vec![DEFAULT_SCENARIO.to_string()],
+        }
+    }
+
+    pub fn active(&self) -> &str {
+        &self.active
+    }
+
+    pub fn active_session(&self) -> &ExplorationSession {
+        self.sessions
+            .get(&self.active)
+            .expect("active scenario always present")
+    }
+
+    pub fn active_session_mut(&mut self) -> &mut ExplorationSession {
+        self.sessions
+            .get_mut(&self.active)
+            .expect("active scenario always present")
+    }
+
+    pub fn get(&self, name: &str) -> Option<&ExplorationSession> {
+        self.sessions.get(name)
+    }
+
+    pub fn get_mut(&mut self, name: &str) -> Option<&mut ExplorationSession> {
+        self.sessions.get_mut(name)
+    }
+
+    pub fn contains(&self, name: &str) -> bool {
+        self.sessions.contains_key(name)
+    }
+
+    pub fn names(&self) -> &[String] {
+        &self.order
+    }
+
+    pub fn len(&self) -> usize {
+        self.sessions.len()
+    }
+
+    pub fn insert(&mut self, name: impl Into<String>, session: ExplorationSession) {
+        let name = name.into();
+        if !self.sessions.contains_key(&name) {
+            self.order.push(name.clone());
+        }
+        self.sessions.insert(name, session);
+    }
+
+    pub fn remove(&mut self, name: &str) -> Option<ExplorationSession> {
+        let removed = self.sessions.remove(name)?;
+        self.order.retain(|n| n != name);
+        Some(removed)
+    }
+
+    pub fn set_active(&mut self, name: impl Into<String>) -> Result<(), String> {
+        let name = name.into();
+        if !self.sessions.contains_key(&name) {
+            return Err(format!("Scenario '{name}' does not exist"));
+        }
+        self.active = name;
+        Ok(())
+    }
+}
+
 pub struct AppState {
     pub project: Project,
     pub cfgs: HashMap<(String, String), CfgGraph>,
@@ -32,7 +123,7 @@ pub struct AppState {
     pub sequence_analyses: HashMap<String, SequenceAnalysis>,
     pub classifications: HashMap<String, Vec<(String, AccessLevel)>>,
     pub annotations: RwLock<Vec<Annotation>>,
-    pub session: RwLock<Option<ExplorationSession>>,
+    pub scenarios: RwLock<ScenarioStore>,
     pub session_tx: broadcast::Sender<CanvasPatch>,
     pub port: u16,
     pub contract_path: PathBuf,
@@ -124,6 +215,11 @@ impl AppState {
 
         let (session_tx, _) = broadcast::channel(64);
 
+        let default_contract = project.contracts.iter()
+            .find(|c| !c.name.is_empty())
+            .map(|c| c.name.clone())
+            .unwrap_or_else(|| "unknown".to_string());
+
         Ok(Self {
             project,
             cfgs,
@@ -133,7 +229,7 @@ impl AppState {
             sequence_analyses,
             classifications,
             annotations: RwLock::new(Vec::new()),
-            session: RwLock::new(None),
+            scenarios: RwLock::new(ScenarioStore::new_for_contract(default_contract)),
             session_tx,
             port,
             contract_path,

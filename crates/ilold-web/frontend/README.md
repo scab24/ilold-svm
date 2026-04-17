@@ -40,3 +40,7 @@ npm run build
 You can preview the production build with `npm run preview`.
 
 > To deploy your app, you may need to install an [adapter](https://svelte.dev/docs/kit/adapters) for your target environment.
+
+## Testing
+
+No frontend test infrastructure yet. E2E coverage comes via backend integration tests (cargo test --workspace) plus manual browser verification. A vitest setup is future work.

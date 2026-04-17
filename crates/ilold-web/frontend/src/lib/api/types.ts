@@ -12,6 +12,7 @@ export type AccessLevel =
 
 export interface SessionAddNode {
   type: "session_add_node";
+  scenario: string;
   function: string;
   access: AccessLevel;
   step_index: number;
@@ -19,15 +20,80 @@ export interface SessionAddNode {
 
 export interface SessionRemoveNode {
   type: "session_remove_node";
+  scenario: string;
 }
 
 export interface SessionClear {
   type: "session_clear";
+  scenario: string;
 }
 
 export interface SessionHighlight {
   type: "session_highlight";
+  scenario: string;
   function: string;
+}
+
+// ── Scenario lifecycle events ───────────────────────────────────────────────
+
+export interface ScenarioCreated {
+  type: "scenario_created";
+  name: string;
+}
+
+export interface ScenarioSwitched {
+  type: "scenario_switched";
+  from: string;
+  to: string;
+}
+
+export interface ScenarioDeleted {
+  type: "scenario_deleted";
+  name: string;
+}
+
+export interface ScenarioForked {
+  type: "scenario_forked";
+  from: string;
+  to: string;
+  at_step: number;
+}
+
+// ── Scenario REST types ─────────────────────────────────────────────────────
+
+export interface ScenarioInfo {
+  name: string;
+  active: boolean;
+  step_count: number;
+}
+
+export interface SessionStepView {
+  function: string;
+  access: AccessLevel;
+  step_index: number;
+}
+
+/** Where a scenario was forked from. `at_step` is the boundary: the
+ *  scenario's steps [0..at_step) are the inherited prefix (a clone of the
+ *  origin's steps at fork time), steps [at_step..] are its own. Null for
+ *  `main` and for scenarios loaded from a pre-fork-origin save file. */
+export interface ForkOrigin {
+  scenario: string;
+  at_step: number;
+}
+
+export interface ScenarioSnapshot {
+  name: string;
+  steps: SessionStepView[];
+  forked_from: ForkOrigin | null;
+}
+
+// Backend serializes `ScenarioSnapshot` objects in insertion order (main
+// first, then creation order) so the frontend canvas can anchor "main"
+// consistently and render forks as branches from their recorded origin.
+export interface AllScenariosResponse {
+  active: string;
+  scenarios: ScenarioSnapshot[];
 }
 
 export interface SearchResult {
@@ -58,6 +124,10 @@ export type ServerMessage =
   | SessionRemoveNode
   | SessionClear
   | SessionHighlight
+  | ScenarioCreated
+  | ScenarioSwitched
+  | ScenarioDeleted
+  | ScenarioForked
   | SearchResult
   | SearchComplete
   | SearchError;
@@ -80,6 +150,10 @@ export interface TopicMap {
   session_remove_node: SessionRemoveNode;
   session_clear: SessionClear;
   session_highlight: SessionHighlight;
+  scenario_created: ScenarioCreated;
+  scenario_switched: ScenarioSwitched;
+  scenario_deleted: ScenarioDeleted;
+  scenario_forked: ScenarioForked;
   connection: ConnectionEvent;
 }
 

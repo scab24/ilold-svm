@@ -45,6 +45,7 @@ async fn broadcast_add_node_on_call_command() {
 
     assert_eq!(payload["type"], "session_add_node");
     assert_eq!(payload["function"], "deposit");
+    assert_eq!(payload["scenario"], "main");
     assert!(payload["step_index"].is_number());
     assert!(payload["access"].is_string() || payload["access"].is_object());
 }
@@ -92,6 +93,7 @@ async fn broadcast_clear_after_call_and_clear() {
         .await.unwrap().unwrap().unwrap();
     let payload: serde_json::Value = serde_json::from_str(&msg.into_text().unwrap()).unwrap();
     assert_eq!(payload["type"], "session_clear");
+    assert_eq!(payload["scenario"], "main");
 }
 
 #[tokio::test]

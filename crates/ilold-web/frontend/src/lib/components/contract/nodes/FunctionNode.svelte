@@ -33,14 +33,41 @@
   let hasBadges = $derived(
     visLabel != null || mutIcon != null || (data.path_count != null && data.path_count > 0) || hasAccessControl
   );
+
+  // ── Scenario styling ───────────────────────────────────────────────────────
+  // `_scenario` is the owning scenario (shown as a small pill badge).
+  // `_scenariosPassingThrough` is the full membership set — when the active
+  // scenario is in it, the node lights up as part of the active path
+  // (including inherited prefix nodes, not just its own divergent tail).
+  let scenarioName = $derived(data._scenario ?? null);
+  let scenarioActive = $derived(
+    data._sessionStep === true &&
+    data._activeScenario != null &&
+    data._scenariosPassingThrough != null &&
+    data._scenariosPassingThrough.includes(data._activeScenario)
+  );
+  let scenarioMuted = $derived(
+    data._sessionStep === true &&
+    data._activeScenario != null &&
+    data._scenariosPassingThrough != null &&
+    !data._scenariosPassingThrough.includes(data._activeScenario)
+  );
 </script>
 
 <div
   class="function-node py-1.5 px-4 rounded-md bg-surface-alt border-[1.5px] border-accent text-text font-mono text-xs font-semibold min-w-[100px] text-center cursor-pointer"
   class:external={data.is_external}
   class:dimmed={data._dimmed}
+  class:scenario-active={scenarioActive}
+  class:scenario-muted={scenarioMuted}
 >
   <span>{data.label}</span>
+  {#if scenarioName}
+    <span
+      class="inline-block ml-1 text-[8px] px-1 rounded bg-accent-dark/30 text-accent-hover align-middle"
+      title={`Scenario: ${scenarioName}`}
+    >{scenarioName}</span>
+  {/if}
   {#if hasBadges}
     <div class="flex items-center justify-center gap-1 mt-0.5">
       {#if visLabel}
@@ -72,5 +99,14 @@
   }
   .function-node.dimmed {
     opacity: 0.55;
+  }
+  /* Phase S5 — scenario highlight/mute. Uses --color-accent from the token set
+     with a soft fallback so the glow stays visible even if the variable is
+     missing in a future theme refactor. */
+  .function-node.scenario-active {
+    box-shadow: 0 0 8px var(--color-accent, rgba(88, 166, 255, 0.4));
+  }
+  .function-node.scenario-muted {
+    opacity: 0.7;
   }
 </style>
