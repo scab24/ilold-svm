@@ -914,13 +914,16 @@
 
     const seqFunctions: Array<{ name: string; visibility: string; read_only: boolean; path_count: number }> = seqTree.functions;
 
-    // Filter to only functions with valid transitions from the parent
-    const validTargets = seqAnalysis?.transitions
-      ? seqFunctions.filter(func =>
-          seqAnalysis!.transitions.some(t => t.from === funcName && t.to === func.name)
-        )
-      : seqFunctions;
-    const targets = validTargets.length > 0 ? validTargets : seqFunctions;
+    // Show every contract function as a candidate next-step, matching the
+    // CLI `f` listing. The "interesting transition" signal (⚠ conditions
+    // badge + dashed border) is preserved automatically via the per-child
+    // `_transition` lookup below — no filtering needed here.
+    const targets = seqFunctions;
+
+    // Reuse the same lookup the scenarios canvas uses to pull modifier/
+    // mutability info that isn't on `SequenceFunction`. `contract` already
+    // holds the full function detail.
+    const allFuncs = [...(contract?.functions ?? []), ...(contract?.inherited_functions ?? [])];
 
     // Build new seq-next children with placeholder positions — relayoutSeqTree
     // will assign final positions from the shared BFS walk.
@@ -932,6 +935,7 @@
       const transition = seqAnalysis?.transitions?.find(
         t => t.from === funcName && t.to === targetName
       ) ?? null;
+      const funcDetail = allFuncs.find((f: any) => f.name === targetName);
 
       newNodes.push({
         id: nodeId,
@@ -944,6 +948,8 @@
           _seqParent: parentNodeId,
           readOnly: func.read_only,
           pathCount: func.path_count,
+          visibility: func.visibility,
+          modifiers: funcDetail?.modifiers,
           _transition: transition,
         },
       } as Node<GraphNodeData>);

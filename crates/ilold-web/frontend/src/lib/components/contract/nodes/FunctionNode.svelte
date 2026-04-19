@@ -1,24 +1,12 @@
 <script lang="ts">
   import { Handle, Position } from '@xyflow/svelte';
   import type { FunctionNodeData } from '$lib/stores/graph.svelte';
+  import { visibilityLabel, visibilityClass } from '$lib/utils/visibility';
 
   let { data }: { data: FunctionNodeData } = $props();
 
-  let visLabel = $derived(
-    data.visibility === 'Public' ? 'pub'
-    : data.visibility === 'External' ? 'ext'
-    : data.visibility === 'Internal' ? 'int'
-    : data.visibility === 'Private' ? 'priv'
-    : null
-  );
-
-  let visClass = $derived(
-    data.visibility === 'Public' ? 'bg-accent-dark/30 text-accent-hover'
-    : data.visibility === 'External' ? 'bg-warning/20 text-warning'
-    : data.visibility === 'Internal' ? 'bg-border text-text-muted'
-    : data.visibility === 'Private' ? 'bg-border text-text-muted'
-    : ''
-  );
+  let visLabel = $derived(visibilityLabel(data.visibility));
+  let visClass = $derived(visibilityClass(data.visibility));
 
   let mutIcon = $derived(
     data.mutability === 'View' || data.mutability === 'Pure' ? '\u{1F441}'
