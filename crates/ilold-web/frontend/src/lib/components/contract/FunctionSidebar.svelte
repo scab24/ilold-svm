@@ -4,11 +4,16 @@
   let {
     contract,
     canvasFuncs,
+    mode,
     onadd,
     onremove,
   }: {
     contract: ContractDetail;
     canvasFuncs: Set<string>;
+    /** In Session mode, clicking a function ALWAYS dispatches add (as a
+     *  session step) regardless of canvas membership, and the ✓ indicator
+     *  is suppressed because the canvas layer is hidden. */
+    mode: 'cfg' | 'sequences' | 'session';
     onadd: (func: string) => void;
     onremove: (func: string) => void;
   } = $props();
@@ -55,21 +60,23 @@
     <div class="flex-1 overflow-y-auto p-1.5">
       {#each entryPoints as func}
         {@const onCanvas = canvasFuncs.has(func.name)}
+        {@const inSession = mode === 'session'}
+        {@const showActive = onCanvas && !inSession}
         <button
-          class="flex items-center gap-1.5 w-full px-2 py-[6px] bg-transparent border-none text-text-muted text-[11px] font-mono cursor-pointer text-left transition-colors duration-150 hover:text-text {onCanvas ? 'text-accent-hover' : ''}"
+          class="flex items-center gap-1.5 w-full px-2 py-[6px] bg-transparent border-none text-text-muted text-[11px] font-mono cursor-pointer text-left transition-colors duration-150 hover:text-text {showActive ? 'text-accent-hover' : ''}"
           style="
             border-radius: 6px;
-            background: {onCanvas ? 'color-mix(in srgb, var(--color-accent) 8%, transparent)' : 'transparent'};
+            background: {showActive ? 'color-mix(in srgb, var(--color-accent) 8%, transparent)' : 'transparent'};
           "
-          onclick={() => onCanvas ? onremove(func.name) : onadd(func.name)}
-          title={onCanvas ? 'Remove from canvas' : 'Add to canvas'}
+          onclick={() => (inSession || !onCanvas) ? onadd(func.name) : onremove(func.name)}
+          title={inSession ? 'Add step to active scenario' : (onCanvas ? 'Remove from canvas' : 'Add to canvas')}
         >
           <span class="flex-1 overflow-hidden text-ellipsis whitespace-nowrap">{func.name}</span>
           <span
             class="text-[9px] text-text-dim px-1.5 py-px font-mono"
             style="border-radius: 8px; background: color-mix(in srgb, var(--color-border) 40%, transparent);"
           >{func.path_count}p</span>
-          {#if onCanvas}
+          {#if showActive}
             <span
               class="text-[10px]"
               style="color: var(--color-accent); text-shadow: 0 0 6px var(--color-accent);"

@@ -13,14 +13,24 @@
     } | null;
     expandedFuncs: Set<string>;
     seqExpanded: Map<string, boolean>;
+    mode: 'cfg' | 'sequences' | 'session';
     onexpandcfg: (funcName: string, nodeId: string) => void;
     onremovefunc: (funcName: string) => void;
     onremovenode: (nodeId: string) => void;
     onforkscenario: (stepIndex: number) => void;
+    /** Truncate the active scenario at `stepIndex` — removes this step and
+     *  everything after it. Same semantics as calling REPL `b` repeatedly. */
+    onremovefromhere: (stepIndex: number) => void;
     onclose: () => void;
   }
 
-  let { menu, expandedFuncs, seqExpanded, onexpandcfg, onremovefunc, onremovenode, onforkscenario, onclose }: Props = $props();
+  let { menu, expandedFuncs, seqExpanded, mode, onexpandcfg, onremovefunc, onremovenode, onforkscenario, onremovefromhere, onclose }: Props = $props();
+
+  // Canvas-action buttons (Expand CFG, Remove from canvas, Collapse, Remove
+  // node) belong to exploration modes. In Session mode the canvas is
+  // reserved for the scenarios tree, so these entries are hidden — the menu
+  // then shows only session-level actions (Fork scenario here) + Cancel.
+  const showCanvasActions = $derived(mode !== 'session');
 </script>
 
 {#if menu}
@@ -40,7 +50,7 @@
         0 0 0 1px rgba(91, 155, 213, 0.05);
     "
   >
-    {#if menu.nodeType === 'function'}
+    {#if showCanvasActions && menu.nodeType === 'function'}
       <button
         class="block w-full px-3 py-1.5 bg-transparent border-none text-text text-xs cursor-pointer text-left font-[inherit] transition-colors duration-150 hover:text-accent-hover"
         style="border-radius: 6px;"
@@ -55,7 +65,7 @@
       >
         ✕ Remove from canvas
       </button>
-    {:else if menu.nodeType === 'seq-next'}
+    {:else if showCanvasActions && menu.nodeType === 'seq-next'}
       {#if seqExpanded.has(menu.nodeId)}
         <button
           class="block w-full px-3 py-1.5 bg-transparent border-none text-text text-xs cursor-pointer text-left font-[inherit] transition-colors duration-150 hover:text-accent-hover"
@@ -72,7 +82,7 @@
       >
         ✕ Remove node
       </button>
-    {:else if menu.nodeType === 'block'}
+    {:else if showCanvasActions && menu.nodeType === 'block'}
       <button
         class="block w-full px-3 py-1.5 bg-transparent border-none text-text text-xs cursor-pointer text-left font-[inherit] transition-colors duration-150 hover:text-accent-hover"
         style="border-radius: 6px;"
@@ -95,6 +105,13 @@
         onclick={() => onforkscenario(menu!.sessionStep!.stepIndex)}
       >
         ⎇ Fork scenario here
+      </button>
+      <button
+        class="block w-full px-3 py-1.5 bg-transparent border-none text-text text-xs cursor-pointer text-left font-[inherit] transition-colors duration-150 hover:text-danger"
+        style="border-radius: 6px;"
+        onclick={() => onremovefromhere(menu!.sessionStep!.stepIndex)}
+      >
+        ✕ Remove from here
       </button>
     {/if}
     <!-- Separator before cancel -->

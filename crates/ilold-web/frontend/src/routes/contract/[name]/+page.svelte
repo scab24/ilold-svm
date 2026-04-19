@@ -7,6 +7,7 @@
   import { composeScenarioTree, type ComposedNode } from '$lib/canvas/scenarios';
   import { promptScenarioName } from '$lib/scenarios/name';
   import { dispatchScenarioAction } from '$lib/scenarios/dispatch';
+  import { postCommand } from '$lib/api/session';
   import Legend from '$lib/components/contract/Legend.svelte';
   import FunctionSidebar from '$lib/components/contract/FunctionSidebar.svelte';
   import FloatingToolbar from '$lib/components/contract/FloatingToolbar.svelte';
@@ -33,7 +34,10 @@
   let selectedPath: any = $state(null);
   let funcPaths: Record<string, any> = $state({});
   let expandedFuncs: Set<string> = $state(new Set());
-  let mode: 'cfg' | 'sequences' = $state('cfg');
+  // Default: Seq mode is the auditor-friendly view; Session mode flips the
+  // sidebar click into "add step" and hides exploration nodes on the canvas
+  // so only the scenarios tree is visible.
+  let mode: 'cfg' | 'sequences' | 'session' = $state('sequences');
   let seqTree: any = $state(null);
   let seqAnalysis: SequenceAnalysis | null = $state(null);
   let seqExpanded: Map<string, boolean> = $state(new Map());
@@ -464,6 +468,27 @@
     });
   });
 
+  // Session mode visibility filter: hide every non-session node and every
+  // non-session-path edge so the canvas shows the scenarios tree alone.
+  // Switching mode back unhides — no state is destroyed.
+  $effect(() => {
+    const currentMode = mode;
+    // Wrapped in untrack: setNodes/setEdges would otherwise re-trigger this
+    // effect via getNodes()/getEdges() subscriptions.
+    untrack(() => {
+      setNodes(getNodes().map((n) => {
+        const isSessionNode = (n.data as any)._sessionStep === true;
+        const shouldHide = currentMode === 'session' && !isSessionNode;
+        return n.hidden === shouldHide ? n : { ...n, hidden: shouldHide };
+      }));
+      setEdges(getEdges().map((e) => {
+        const isSessionEdge = (e.data as any)?._type === 'session-path';
+        const shouldHide = currentMode === 'session' && !isSessionEdge;
+        return e.hidden === shouldHide ? e : { ...e, hidden: shouldHide };
+      }));
+    });
+  });
+
   // Highlight the function node when the session broadcasts session_highlight
   $effect(() => {
     const funcName = sessionHighlight;
@@ -535,6 +560,22 @@
 
     return () => { stale = true; };
   });
+
+  // Sidebar click dispatcher. In Session mode, the sidebar is the entry
+  // point for building a scenario — clicking a function fires a Call
+  // command and the WS session_add_node event repaints the scenario tree.
+  // In CFG/Seq modes, clicking adds the function as an exploration node.
+  async function handleSidebarAdd(funcName: string) {
+    if (mode === 'session') {
+      try {
+        await postCommand({ Call: { func: funcName } }, contract?.name);
+      } catch (e) {
+        console.warn('add step failed:', e);
+      }
+      return;
+    }
+    addFuncToCanvas(funcName);
+  }
 
   function addFuncToCanvas(funcName: string) {
     if (!callgraphRaw || canvasFuncs.has(funcName)) return;
@@ -711,6 +752,48 @@
     );
   }
 
+  // Toolbar ↶: remove the last step of the active scenario.
+  async function handleSessionBack() {
+    try {
+      await postCommand('Back', contract?.name);
+    } catch (e) {
+      console.warn('session back failed:', e);
+    }
+  }
+
+  // Toolbar 🗑: wipe every step of the active scenario (with confirm).
+  async function handleSessionClear() {
+    const active = getActiveScenario();
+    const steps = getScenarios().get(active) ?? [];
+    if (steps.length === 0) return;
+    if (!confirm(`Clear all ${steps.length} step(s) from scenario "${active}"?`)) return;
+    try {
+      await postCommand('Clear', contract?.name);
+    } catch (e) {
+      console.warn('session clear failed:', e);
+    }
+  }
+
+  // Right-click "✕ Remove from here": truncate the active scenario at
+  // `stepIndex` by firing N Back commands. N = current length - stepIndex.
+  // Using Back (which the backend already supports) avoids needing a new
+  // truncate command on the server.
+  async function handleRemoveFromHere(stepIndex: number) {
+    contextMenu = null;
+    const active = getActiveScenario();
+    const steps = getScenarios().get(active) ?? [];
+    const backCount = steps.length - stepIndex;
+    if (backCount <= 0) return;
+    for (let i = 0; i < backCount; i++) {
+      try {
+        await postCommand('Back', contract?.name);
+      } catch (e) {
+        console.warn('remove-from-here iteration failed:', e);
+        break;
+      }
+    }
+  }
+
   function handleContextMenu(event: MouseEvent, node: Node<GraphNodeData>) {
     const data = node.data;
     // "Fork scenario here" is only meaningful when the active scenario's
@@ -737,6 +820,10 @@
   async function handleNodeClick(node: Node<GraphNodeData>, event?: MouseEvent) {
     // Selection first (sync), then expand/collapse (async)
     handleNodeTap(node);
+    // In Session mode the canvas is read-only for exploration — clicks only
+    // select. Expansion would add CFG blocks / seq-next children that we
+    // deliberately hide in this mode.
+    if (mode === 'session') return;
     const d = node.data;
     if (d._type === 'function' && !d.is_external) {
       await handleFunctionTap(d.label, node.id);
@@ -1048,10 +1135,12 @@
       onsearch={toggleSearch}
       oncenter={() => flowApi?.fitView({ padding: 0.1 })}
       onseqdirection={(dir) => { seqDirection = dir; reorientAllSeqSubtrees(); }}
+      onsessionback={handleSessionBack}
+      onsessionclear={handleSessionClear}
     />
     <div class="flex-1 flex overflow-hidden h-full">
       {#if contract}
-        <FunctionSidebar {contract} {canvasFuncs} onadd={addFuncToCanvas} onremove={removeFuncFromCanvas} />
+        <FunctionSidebar {contract} {canvasFuncs} {mode} onadd={handleSidebarAdd} onremove={removeFuncFromCanvas} />
       {/if}
 
       <GraphCanvasFlow
@@ -1092,10 +1181,12 @@
       menu={contextMenu}
       {expandedFuncs}
       {seqExpanded}
+      {mode}
       onexpandcfg={(func, nodeId) => { toggleFuncExpand(func, nodeId); contextMenu = null; }}
       onremovefunc={(func) => { removeFuncFromCanvas(func); contextMenu = null; selectedNode = null; }}
       onremovenode={(nodeId) => { removeSeqNode(nodeId); contextMenu = null; selectedNode = null; }}
       onforkscenario={handleForkScenario}
+      onremovefromhere={handleRemoveFromHere}
       onclose={() => contextMenu = null}
     />
 

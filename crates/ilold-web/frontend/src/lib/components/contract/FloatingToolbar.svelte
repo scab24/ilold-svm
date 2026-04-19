@@ -10,14 +10,20 @@
     onsearch,
     oncenter,
     onseqdirection,
+    onsessionback,
+    onsessionclear,
   }: {
     contractName: string;
-    mode: 'cfg' | 'sequences';
+    mode: 'cfg' | 'sequences' | 'session';
     seqDirection: 'TB' | 'LR';
-    onmodechange: (mode: 'cfg' | 'sequences') => void;
+    onmodechange: (mode: 'cfg' | 'sequences' | 'session') => void;
     onsearch: () => void;
     oncenter: () => void;
     onseqdirection: (dir: 'TB' | 'LR') => void;
+    /** Remove the last step of the active scenario (like REPL `b`). */
+    onsessionback: () => void;
+    /** Clear every step of the active scenario (like REPL `cl`). */
+    onsessionclear: () => void;
   } = $props();
 
   let toolbarX = $state(0);
@@ -101,6 +107,16 @@
     "
     onclick={() => onmodechange('sequences')}
   >Seq</button>
+  <button
+    class="bg-transparent border text-text-muted px-2.5 py-1 cursor-pointer text-[11px] transition-colors duration-150 hover:text-accent-hover {mode === 'session' ? 'text-accent-light' : ''}"
+    style="
+      border-radius: 6px;
+      border-color: {mode === 'session' ? 'var(--color-accent)' : 'transparent'};
+      background: {mode === 'session' ? 'color-mix(in srgb, var(--color-accent) 12%, transparent)' : 'transparent'};
+    "
+    onclick={() => onmodechange('session')}
+    title="Session mode: click in the sidebar to add steps; only scenarios render on the canvas"
+  >Session</button>
 
   {#if mode === 'sequences'}
     <span class="mx-0.5" style="width: 1px; height: 18px; background: color-mix(in srgb, var(--color-border) 50%, transparent);"></span>
@@ -123,6 +139,19 @@
       onclick={() => onseqdirection('LR')} title="Horizontal"
     >→</button>
   {/if}
+
+  <span class="mx-0.5" style="width: 1px; height: 18px; background: color-mix(in srgb, var(--color-border) 50%, transparent);"></span>
+
+  <button
+    class="bg-transparent border border-transparent text-text-muted px-2.5 py-1 cursor-pointer text-[11px] transition-colors duration-150 hover:text-accent-hover"
+    style="border-radius: 6px;"
+    onclick={onsessionback} title="Back — remove last step of active scenario"
+  >↶</button>
+  <button
+    class="bg-transparent border border-transparent text-text-muted px-2.5 py-1 cursor-pointer text-[11px] transition-colors duration-150 hover:text-danger"
+    style="border-radius: 6px;"
+    onclick={onsessionclear} title="Clear — remove all steps of active scenario"
+  >🗑</button>
 
   <span class="mx-0.5" style="width: 1px; height: 18px; background: color-mix(in srgb, var(--color-border) 50%, transparent);"></span>
 
