@@ -40,6 +40,12 @@ export interface SequenceNodeData {
   _seqParent: string;
   pathCount?: number;
   readOnly?: boolean;
+  /** Solidity visibility (Public/External/Internal/Private) — drives the
+   *  ext/int/pub/priv badge on the seq-next card. */
+  visibility?: string;
+  /** Function modifier names — presence of any drives the 🔒 access-control
+   *  badge. Same semantics as FunctionNode. */
+  modifiers?: string[];
   _transition?: any;
   _chainTransitions?: any[];
   _dimmed?: boolean;

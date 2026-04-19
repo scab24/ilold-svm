@@ -1,6 +1,7 @@
 <script lang="ts">
   import { Handle, Position } from '@xyflow/svelte';
   import type { SequenceNodeData } from '$lib/stores/graph.svelte';
+  import { visibilityLabel, visibilityClass } from '$lib/utils/visibility';
 
   let { data }: { data: SequenceNodeData } = $props();
 
@@ -9,6 +10,11 @@
   let sharedVars: string[] = $derived(data._transition?.shared_state ?? []);
   let visibleVars = $derived(sharedVars.slice(0, 2));
   let overflowCount = $derived(Math.max(0, sharedVars.length - 2));
+
+  // Same visibility + access-control badges the function card uses.
+  let visLabel = $derived(visibilityLabel(data.visibility));
+  let visClass = $derived(visibilityClass(data.visibility));
+  let hasAccessControl = $derived((data.modifiers?.length ?? 0) > 0);
 </script>
 
 <div
@@ -26,6 +32,12 @@
       <span class="text-[9px] text-text-muted" title="Read-only">&#x25CE;</span>
     {/if}
     <span>{data.label}</span>
+    {#if visLabel}
+      <span class="text-[8px] px-1 rounded {visClass}">{visLabel}</span>
+    {/if}
+    {#if hasAccessControl}
+      <span class="text-[9px]" title={data.modifiers?.join(', ')}>&#x1F512;</span>
+    {/if}
     {#if data.pathCount}
       <span class="text-[9px] text-text-dim">{data.pathCount}p</span>
     {/if}
