@@ -10,6 +10,7 @@ import type {
   ScenarioSwitched,
   ScenarioDeleted,
   ScenarioForked,
+  ScenarioStoreReloaded,
   ConnectionEvent,
   ForkOrigin,
 } from '$lib/api/types';
@@ -100,6 +101,13 @@ subscribe('scenario_deleted', (msg: ScenarioDeleted) => {
 subscribe('scenario_forked', (_msg: ScenarioForked) => {
   // Computing the fork locally would require deep-cloning the source steps
   // at at_step; cheaper and safer to resync from backend.
+  resync();
+});
+
+subscribe('scenario_store_reloaded', (_msg: ScenarioStoreReloaded) => {
+  // LoadSession replaced the entire backend store. Pull the new snapshot
+  // (scenarios + forkOrigins + active) instead of reconstructing from the
+  // event payload — same rationale as scenario_forked.
   resync();
 });
 

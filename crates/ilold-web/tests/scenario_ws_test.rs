@@ -169,3 +169,41 @@ async fn canvas_patch_scenario_field_propagates_to_ws_handler() {
     assert_eq!(payload["function"], "deposit");
 }
 
+#[tokio::test]
+async fn ws_event_scenario_store_reloaded_broadcasts_after_load() {
+    let (client, port, mut ws) = start_with_ws().await;
+
+    // Build a tiny state and save it so we have a valid v2 JSON to load back.
+    post_cmd(&client, port, "Staking", call("deposit")).await;
+    let _added = next_ws_json(&mut ws).await; // session_add_node
+
+    // SaveSession does not broadcast — POST and read the JSON inline.
+    let res = client
+        .post(format!("http://127.0.0.1:{port}/api/cmd"))
+        .json(&serde_json::json!({
+            "contract": "Staking",
+            "command": "SaveSession",
+        }))
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = res.json().await.unwrap();
+    let json = body["SessionSaved"]["json"].as_str().unwrap().to_string();
+
+    // LoadSession must broadcast scenario_store_reloaded with the active name.
+    post_cmd(
+        &client,
+        port,
+        "Staking",
+        serde_json::json!({ "LoadSession": { "json": json } }),
+    )
+    .await;
+    let payload = next_ws_json(&mut ws).await;
+
+    assert_eq!(payload["type"], "scenario_store_reloaded");
+    assert_eq!(
+        payload["active"], "main",
+        "reload event must carry the post-load active scenario, got: {payload}"
+    );
+}
+

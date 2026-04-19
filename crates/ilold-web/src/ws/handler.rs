@@ -44,6 +44,8 @@ enum ServerMessage {
     ScenarioDeleted { name: String },
     #[serde(rename = "scenario_forked")]
     ScenarioForked { from: String, to: String, at_step: usize },
+    #[serde(rename = "scenario_store_reloaded")]
+    ScenarioStoreReloaded { active: String },
 }
 
 pub async fn ws_handler(
@@ -69,6 +71,9 @@ fn server_message_from_patch(patch: CanvasPatch) -> ServerMessage {
             ScenarioEvent::Deleted { name } => ServerMessage::ScenarioDeleted { name },
             ScenarioEvent::Forked { from, to, at_step } => {
                 ServerMessage::ScenarioForked { from, to, at_step }
+            }
+            ScenarioEvent::Reloaded { active } => {
+                ServerMessage::ScenarioStoreReloaded { active }
             }
         },
     }

@@ -216,11 +216,15 @@ async fn scenario_fork_emits_branch_created_journal_entry() {
 
     let saved: serde_json::Value =
         serde_json::from_str(json_str).expect("SaveSession payload was not JSON");
+    // Save format is v2 — journal lives under scenarios.<active>.journal.
+    let active = saved
+        .get("active")
+        .and_then(|v| v.as_str())
+        .expect("active scenario name");
     let entries = saved
-        .get("journal")
-        .and_then(|j| j.get("entries"))
+        .pointer(&format!("/scenarios/{active}/journal/entries"))
         .and_then(|e| e.as_array())
-        .expect("journal.entries array");
+        .expect("scenarios.<active>.journal.entries array");
 
     let branch = entries
         .iter()
@@ -430,5 +434,163 @@ async fn scenario_name_reserved_main_cannot_be_recreated() {
     assert!(
         msg.contains("already exists"),
         "unexpected error message: {msg}"
+    );
+}
+
+// ── Phase S11: save/load v2 ─────────────────────────────────────────────────
+
+fn save_session() -> serde_json::Value {
+    serde_json::json!("SaveSession")
+}
+
+fn load_session(json: &str) -> serde_json::Value {
+    serde_json::json!({ "LoadSession": { "json": json } })
+}
+
+#[tokio::test]
+async fn save_produces_v2_json_with_all_scenarios_and_active() {
+    let (client, port) = start().await;
+
+    cmd(&client, port, "Staking", call("deposit")).await;
+    cmd(&client, port, "Staking", call("deposit")).await;
+    cmd(&client, port, "Staking", scenario_fork_at("alt1", 1)).await;
+    cmd(&client, port, "Staking", scenario_switch("alt1")).await;
+
+    let r = cmd(&client, port, "Staking", save_session()).await;
+    let json_str = r
+        .get("SessionSaved")
+        .and_then(|v| v.get("json"))
+        .and_then(|v| v.as_str())
+        .expect("SessionSaved.json");
+    let parsed: serde_json::Value =
+        serde_json::from_str(json_str).expect("v2 save JSON must parse");
+
+    assert_eq!(parsed["version"], 2, "v2 save must declare version 2");
+    assert_eq!(parsed["contract"], "Staking");
+    assert_eq!(
+        parsed["active"], "alt1",
+        "active scenario at save time must be persisted"
+    );
+    let scenarios = parsed["scenarios"]
+        .as_object()
+        .expect("scenarios must be an object");
+    assert!(scenarios.contains_key("main") && scenarios.contains_key("alt1"));
+    assert_eq!(
+        parsed["order"]
+            .as_array()
+            .expect("order array")
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["main", "alt1"],
+    );
+    let alt1 = &scenarios["alt1"];
+    assert_eq!(alt1["forked_from"]["scenario"], "main");
+    assert_eq!(alt1["forked_from"]["at_step"], 1);
+}
+
+#[tokio::test]
+async fn load_v2_json_restores_all_scenarios_active_and_order() {
+    let (client, port) = start().await;
+
+    // Build state, save, then mutate the live store so we can verify load
+    // restores the captured snapshot (not the post-save state).
+    cmd(&client, port, "Staking", call("deposit")).await;
+    cmd(&client, port, "Staking", scenario_fork_at("alt1", 1)).await;
+    let saved = cmd(&client, port, "Staking", save_session()).await;
+    let json = saved["SessionSaved"]["json"].as_str().unwrap().to_string();
+
+    // Mutate post-save: add a step and a new scenario that should disappear.
+    cmd(&client, port, "Staking", call("withdraw")).await;
+    cmd(&client, port, "Staking", scenario_new("ghost")).await;
+
+    // Load → must replace the entire store with the saved snapshot.
+    cmd(&client, port, "Staking", load_session(&json)).await;
+
+    let r = cmd(&client, port, "Staking", scenario_list()).await;
+    let items = list_items(&r);
+    let names: Vec<&str> = items
+        .iter()
+        .map(|it| it.get("name").and_then(|n| n.as_str()).unwrap())
+        .collect();
+    assert_eq!(names, vec!["main", "alt1"], "ghost scenario must be gone");
+    assert_eq!(
+        find_scenario(items, "main")
+            .get("step_count")
+            .and_then(|v| v.as_u64()),
+        Some(1),
+        "main step count must reflect the snapshot, not post-save mutations"
+    );
+    assert_eq!(
+        find_scenario(items, "alt1")
+            .get("step_count")
+            .and_then(|v| v.as_u64()),
+        Some(1)
+    );
+    assert_eq!(
+        find_scenario(items, "main")
+            .get("active")
+            .and_then(|v| v.as_bool()),
+        Some(true),
+        "saved active was 'main'"
+    );
+}
+
+#[tokio::test]
+async fn load_v1_json_wraps_as_single_main_scenario() {
+    let (client, port) = start().await;
+
+    // A v1 file is a bare ExplorationSession JSON. Build one programmatically
+    // by saving a single-scenario state, then unwrapping the v2 envelope.
+    cmd(&client, port, "Staking", call("deposit")).await;
+    let saved = cmd(&client, port, "Staking", save_session()).await;
+    let v2_json = saved["SessionSaved"]["json"].as_str().unwrap();
+    let v2: serde_json::Value = serde_json::from_str(v2_json).unwrap();
+    let bare = v2["scenarios"]["main"].clone();
+    let v1_json = serde_json::to_string(&bare).unwrap();
+
+    // Replace the store with something different first to prove load resets it.
+    cmd(&client, port, "Staking", scenario_new("alt1")).await;
+    cmd(&client, port, "Staking", load_session(&v1_json)).await;
+
+    let r = cmd(&client, port, "Staking", scenario_list()).await;
+    let items = list_items(&r);
+    assert_eq!(
+        items.len(),
+        1,
+        "v1 load must collapse the store to a single scenario, got: {items:?}"
+    );
+    let only = &items[0];
+    assert_eq!(only.get("name").and_then(|v| v.as_str()), Some("main"));
+    assert_eq!(only.get("step_count").and_then(|v| v.as_u64()), Some(1));
+    assert_eq!(only.get("active").and_then(|v| v.as_bool()), Some(true));
+}
+
+#[tokio::test]
+async fn load_replaces_existing_store_destructively() {
+    let (client, port) = start().await;
+
+    // Save an empty fresh store.
+    let saved = cmd(&client, port, "Staking", save_session()).await;
+    let json = saved["SessionSaved"]["json"].as_str().unwrap().to_string();
+
+    // Build a rich state after saving.
+    cmd(&client, port, "Staking", call("deposit")).await;
+    cmd(&client, port, "Staking", call("withdraw")).await;
+    cmd(&client, port, "Staking", scenario_new("alt1")).await;
+    cmd(&client, port, "Staking", scenario_new("alt2")).await;
+
+    // Load the empty snapshot — must wipe everything except `main` (empty).
+    cmd(&client, port, "Staking", load_session(&json)).await;
+
+    let r = cmd(&client, port, "Staking", scenario_list()).await;
+    let items = list_items(&r);
+    assert_eq!(items.len(), 1, "load must drop alt1/alt2");
+    assert_eq!(
+        find_scenario(items, "main")
+            .get("step_count")
+            .and_then(|v| v.as_u64()),
+        Some(0),
+        "main must be empty per snapshot"
     );
 }
