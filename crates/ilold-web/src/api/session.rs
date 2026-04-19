@@ -223,11 +223,20 @@ pub async fn handle_command(
     let timestamp = timestamp_now();
 
     let mut scenarios_guard = state.scenarios.write().unwrap();
+    // SaveSession/LoadSession bypass the contract-switch reset: Save doesn't
+    // care about the request's contract field, and Load carries its own
+    // contract inside the JSON. Without the bypass, loading a file from a
+    // different contract would clear the store before the load runs.
+    let is_persistence = matches!(
+        req.command,
+        SessionCommand::SaveSession | SessionCommand::LoadSession { .. }
+    );
     // Contract switch: only reset if the active session has actual steps.
     // An empty session with a mismatched contract means the auto-seed picked
     // a default contract that didn't match the first real request — just
     // swap it transparently (no ClearAll, nothing was ever on the canvas).
-    let needs_reset = scenarios_guard.active_session().contract != contract_name;
+    let needs_reset = !is_persistence
+        && scenarios_guard.active_session().contract != contract_name;
     if needs_reset {
         let had_steps = !scenarios_guard.active_session().steps.is_empty();
         let active_before_reset = scenarios_guard.active().to_string();
@@ -238,9 +247,10 @@ pub async fn handle_command(
             }).ok();
         }
     }
-    // Scenario commands operate on the store itself; all other commands
-    // are delegated to the active session. Dispatch happens here (before
-    // `active_session_mut`) to avoid partial-move errors on `req.command`.
+    // Scenario / Save / Load commands operate on the store itself; all
+    // other commands are delegated to the active session. Dispatch happens
+    // here (before `active_session_mut`) to avoid partial-move errors on
+    // `req.command`.
     match req.command {
         SessionCommand::Scenario { sub } => {
             // Capture the active scenario BEFORE executing the scenario
@@ -250,6 +260,40 @@ pub async fn handle_command(
             let active_before = scenarios_guard.active().to_string();
             let result = execute_scenario(&mut scenarios_guard, sub, &timestamp, &contract_name);
             if let Some(patch) = canvas_patch_from(&result, &active_before) {
+                state.session_tx.send(patch).ok();
+            }
+            Ok(Json(result))
+        }
+        SessionCommand::SaveSession => {
+            let active_before = scenarios_guard.active().to_string();
+            let result = match scenarios_guard.save_to_json() {
+                Ok(json) => CommandResult::SessionSaved { json },
+                Err(message) => CommandResult::Error { message },
+            };
+            if let Some(patch) = canvas_patch_from(&result, &active_before) {
+                state.session_tx.send(patch).ok();
+            }
+            Ok(Json(result))
+        }
+        SessionCommand::LoadSession { json } => {
+            let result = match ScenarioStore::load_from_json(&json) {
+                Ok(loaded) => {
+                    let contract = loaded.contract.clone();
+                    let step_names: Vec<String> = loaded
+                        .active_session()
+                        .steps
+                        .iter()
+                        .map(|s| s.function.clone())
+                        .collect();
+                    *scenarios_guard = loaded;
+                    CommandResult::SessionLoaded { contract, steps: step_names }
+                }
+                Err(message) => CommandResult::Error { message },
+            };
+            // Use the post-load active so the WS Reloaded event names the
+            // scenario the frontend should switch to.
+            let active_after = scenarios_guard.active().to_string();
+            if let Some(patch) = canvas_patch_from(&result, &active_after) {
                 state.session_tx.send(patch).ok();
             }
             Ok(Json(result))

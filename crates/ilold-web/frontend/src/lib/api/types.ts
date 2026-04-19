@@ -59,6 +59,13 @@ export interface ScenarioForked {
   at_step: number;
 }
 
+/** Emitted after `LoadSession` replaces the entire ScenarioStore. The
+ *  frontend store reacts by calling resync() to fetch the new snapshot. */
+export interface ScenarioStoreReloaded {
+  type: "scenario_store_reloaded";
+  active: string;
+}
+
 // ── Scenario REST types ─────────────────────────────────────────────────────
 
 export interface ScenarioInfo {
@@ -128,6 +135,7 @@ export type ServerMessage =
   | ScenarioSwitched
   | ScenarioDeleted
   | ScenarioForked
+  | ScenarioStoreReloaded
   | SearchResult
   | SearchComplete
   | SearchError;
@@ -154,6 +162,7 @@ export interface TopicMap {
   scenario_switched: ScenarioSwitched;
   scenario_deleted: ScenarioDeleted;
   scenario_forked: ScenarioForked;
+  scenario_store_reloaded: ScenarioStoreReloaded;
   connection: ConnectionEvent;
 }
 

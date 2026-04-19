@@ -409,8 +409,13 @@ async fn session_step_persists_flow_tree_with_populated_flow_step_ids() {
         .expect("SaveSession should return a JSON string");
     let session: serde_json::Value = serde_json::from_str(json_str).unwrap();
 
-    // 3. Inspect the persisted step.
-    let steps = session["steps"].as_array().unwrap();
+    // 3. Inspect the persisted step. Save format is v2: scenarios are
+    //    keyed under `scenarios.<name>` and the active scenario name
+    //    sits at the top level — drill in to reach the bare session.
+    assert_eq!(session["version"], 2);
+    let main = &session["scenarios"]["main"];
+    assert!(!main.is_null(), "scenarios.main must be present in v2 save");
+    let steps = main["steps"].as_array().unwrap();
     assert_eq!(steps.len(), 1);
     let step = &steps[0];
 
@@ -688,8 +693,13 @@ async fn legacy_session_loads_and_degrades_gracefully() {
     let body: serde_json::Value = res.json().await.unwrap();
     let json_str = body["SessionSaved"]["json"].as_str().unwrap().to_string();
 
-    // 2. Strip Phase-2a fields from the JSON to simulate a legacy session.
-    let mut session: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+    // 2. Extract the bare `main` ExplorationSession out of the v2 wrapper
+    //    and strip Phase-2a fields from its steps. Sending it back as a
+    //    bare session (no `version`/`scenarios` wrapper) exercises the v1
+    //    fallback path in `ScenarioStore::load_from_json`.
+    let v2: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+    let mut session = v2["scenarios"]["main"].clone();
+    assert!(!session.is_null(), "v2 save must contain scenarios.main");
     {
         let steps = session["steps"].as_array_mut().unwrap();
         for step in steps {

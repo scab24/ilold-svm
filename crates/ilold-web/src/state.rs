@@ -112,6 +112,89 @@ impl ScenarioStore {
         self.active = name;
         Ok(())
     }
+
+    /// Serialize the entire store as v2 JSON (`{ version: 2, contract, active,
+    /// scenarios, order }`). All scenarios + their `forked_from` chains travel
+    /// together so a load reconstructs the full state.
+    pub fn save_to_json(&self) -> Result<String, String> {
+        let file = ScenarioStoreFile {
+            version: 2,
+            contract: self.contract.clone(),
+            active: self.active.clone(),
+            scenarios: self.sessions.clone(),
+            order: self.order.clone(),
+        };
+        serde_json::to_string_pretty(&file).map_err(|e| format!("Serialize failed: {e}"))
+    }
+
+    /// Parse a save file. Tries v2 (`ScenarioStoreFile`) first; on failure
+    /// falls back to v1 (bare `ExplorationSession`) and wraps it as a single
+    /// `main` scenario. Any structural anomaly (active not in scenarios,
+    /// empty order) is repaired so the returned store is always valid.
+    pub fn load_from_json(json: &str) -> Result<Self, String> {
+        match serde_json::from_str::<ScenarioStoreFile>(json) {
+            Ok(file) => Self::from_file(file),
+            Err(_) => match serde_json::from_str::<ExplorationSession>(json) {
+                Ok(legacy) => {
+                    let contract = legacy.contract.clone();
+                    let mut sessions = HashMap::new();
+                    sessions.insert(DEFAULT_SCENARIO.to_string(), legacy);
+                    Ok(Self {
+                        version: 2,
+                        contract,
+                        active: DEFAULT_SCENARIO.to_string(),
+                        sessions,
+                        order: vec![DEFAULT_SCENARIO.to_string()],
+                    })
+                }
+                Err(e) => Err(format!("Deserialize failed: {e}")),
+            },
+        }
+    }
+
+    fn from_file(file: ScenarioStoreFile) -> Result<Self, String> {
+        if file.scenarios.is_empty() {
+            return Err("Save file has no scenarios".into());
+        }
+        // Repair `order`: if missing names or empty, rebuild from scenarios.
+        let mut order = file.order;
+        order.retain(|n| file.scenarios.contains_key(n));
+        for name in file.scenarios.keys() {
+            if !order.contains(name) {
+                order.push(name.clone());
+            }
+        }
+        // Repair `active`: fall back to first ordered name if the recorded
+        // active was deleted out-of-band before the save.
+        let active = if file.scenarios.contains_key(&file.active) {
+            file.active
+        } else {
+            order
+                .first()
+                .cloned()
+                .ok_or_else(|| "Save file has no usable active scenario".to_string())?
+        };
+        Ok(Self {
+            version: 2,
+            contract: file.contract,
+            active,
+            sessions: file.scenarios,
+            order,
+        })
+    }
+}
+
+/// On-disk wire format for `ScenarioStore`. Decoupled from the in-memory
+/// type to keep private fields private and allow the wire format to evolve
+/// independently. v1 saves are bare `ExplorationSession` JSON — they're
+/// detected by the failed parse + retry in `ScenarioStore::load_from_json`.
+#[derive(Serialize, Deserialize)]
+struct ScenarioStoreFile {
+    version: u32,
+    contract: String,
+    active: String,
+    scenarios: HashMap<String, ExplorationSession>,
+    order: Vec<String>,
 }
 
 pub struct AppState {

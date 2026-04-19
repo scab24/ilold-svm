@@ -177,6 +177,10 @@ pub enum ScenarioEvent {
     Switched { from: String, to: String },
     Deleted { name: String },
     Forked { from: String, to: String, at_step: usize },
+    /// Emitted after a successful `LoadSession`. Carries the new active
+    /// scenario name so the frontend can update its activeScenario eagerly,
+    /// and triggers a full resync to pull every scenario + forkOrigin.
+    Reloaded { active: String },
 }
 
 /// Validates scenario name against `^[a-z][a-z0-9_-]{0,31}$`.
@@ -239,6 +243,11 @@ pub fn canvas_patch_from(result: &CommandResult, active_scenario: &str) -> Optio
                 at_step: *at_step,
             }))
         }
+        CommandResult::SessionLoaded { contract: _, steps: _ } => {
+            Some(CanvasPatch::ScenarioEvent(ScenarioEvent::Reloaded {
+                active: active_scenario.to_string(),
+            }))
+        }
         _ => None,
     }
 }
@@ -296,23 +305,9 @@ pub fn execute_command(
             let md = export_markdown(&session.journal, data.contract.functions.len());
             CommandResult::Exported { markdown: md }
         }
-        SessionCommand::SaveSession => {
-            match serde_json::to_string_pretty(session) {
-                Ok(json) => CommandResult::SessionSaved { json },
-                Err(e) => CommandResult::Error { message: format!("Serialize failed: {e}") },
-            }
-        }
-        SessionCommand::LoadSession { json } => {
-            match serde_json::from_str::<ExplorationSession>(&json) {
-                Ok(loaded) => {
-                    let contract = loaded.contract.clone();
-                    let step_names: Vec<String> = loaded.steps.iter().map(|s| s.function.clone()).collect();
-                    *session = loaded;
-                    CommandResult::SessionLoaded { contract, steps: step_names }
-                }
-                Err(e) => CommandResult::Error { message: format!("Deserialize failed: {e}") },
-            }
-        }
+        SessionCommand::SaveSession | SessionCommand::LoadSession { .. } => CommandResult::Error {
+            message: "Save/Load commands must be dispatched at the store level, not through execute_command".into(),
+        },
         SessionCommand::FunctionsAll => execute_functions_all(data),
         SessionCommand::StateVarsAll => execute_state_vars_all(data),
         SessionCommand::Scenario { .. } => CommandResult::Error {
