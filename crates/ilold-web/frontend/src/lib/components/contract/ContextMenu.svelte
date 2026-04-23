@@ -21,10 +21,21 @@
     /** Truncate the active scenario at `stepIndex` — removes this step and
      *  everything after it. Same semantics as calling REPL `b` repeatedly. */
     onremovefromhere: (stepIndex: number) => void;
+    /** Open the inline source panel for `funcName`. */
+    onviewsource: (funcName: string) => void;
+    /** Open the file in the user's IDE (VS Code / Cursor / fork) via the
+     *  `vscode://` URL scheme. */
+    onopenide: (funcName: string) => void;
     onclose: () => void;
   }
 
-  let { menu, expandedFuncs, seqExpanded, mode, onexpandcfg, onremovefunc, onremovenode, onforkscenario, onremovefromhere, onclose }: Props = $props();
+  let { menu, expandedFuncs, seqExpanded, mode, onexpandcfg, onremovefunc, onremovenode, onforkscenario, onremovefromhere, onviewsource, onopenide, onclose }: Props = $props();
+
+  // View source / Open in code are read-only operations meaningful for
+  // any canvas node that identifies a function. Shown in every mode.
+  const canViewSource = $derived(
+    menu != null && (menu.nodeType === 'function' || menu.nodeType === 'seq-next')
+  );
 
   // Canvas-action buttons (Expand CFG, Remove from canvas, Collapse, Remove
   // node) belong to exploration modes. In Session mode the canvas is
@@ -112,6 +123,22 @@
         onclick={() => onremovefromhere(menu!.sessionStep!.stepIndex)}
       >
         ✕ Remove from here
+      </button>
+    {/if}
+    {#if canViewSource}
+      <button
+        class="block w-full px-3 py-1.5 bg-transparent border-none text-text text-xs cursor-pointer text-left font-[inherit] transition-colors duration-150 hover:text-accent-hover"
+        style="border-radius: 6px;"
+        onclick={() => onviewsource(menu!.funcName)}
+      >
+        {"{}"} View source
+      </button>
+      <button
+        class="block w-full px-3 py-1.5 bg-transparent border-none text-text text-xs cursor-pointer text-left font-[inherit] transition-colors duration-150 hover:text-accent-hover"
+        style="border-radius: 6px;"
+        onclick={() => onopenide(menu!.funcName)}
+      >
+        ↗ Open in code
       </button>
     {/if}
     <!-- Separator before cancel -->

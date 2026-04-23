@@ -34,8 +34,16 @@ impl ProjectParser for SolarParser {
             })?;
 
             let file_index = source_files.len();
+            // Canonicalize to absolute so downstream consumers (the canvas
+            // source viewer → `vscode://` deep link) can open the file
+            // regardless of the user's cwd. Falls back to the original
+            // display path on error (e.g. network filesystems) so the
+            // parse never fails over a cosmetic concern.
+            let stored_path = std::fs::canonicalize(path)
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| path.display().to_string());
             source_files.push(SourceFile {
-                path: path.display().to_string(),
+                path: stored_path,
                 content: src.clone(),
             });
 
@@ -223,6 +231,25 @@ fn convert_function(f: &ast::ItemFunction<'_>, mapper: &SpanMapper) -> FunctionD
         .as_ref()
         .map(|block| convert_block_stmts(block, mapper));
 
+    // Span covers the full function (signature + body) so consumers like
+    // the canvas source viewer can slice the complete declaration. When
+    // there's no body (interfaces, abstract) the header span is all we
+    // have and stays correct.
+    let header_span = mapper.convert(f.header.span);
+    let span = match f.body.as_ref().and_then(|b| b.last()) {
+        Some(last_stmt) => {
+            let end = mapper.convert(last_stmt.span);
+            crate::model::common::SourceSpan {
+                file_index: header_span.file_index,
+                start_line: header_span.start_line,
+                start_col: header_span.start_col,
+                end_line: end.end_line,
+                end_col: end.end_col,
+            }
+        }
+        None => header_span,
+    };
+
     FunctionDef {
         name,
         kind,
@@ -234,7 +261,7 @@ fn convert_function(f: &ast::ItemFunction<'_>, mapper: &SpanMapper) -> FunctionD
         body,
         is_virtual: f.header.virtual_(),
         is_override: f.header.override_.is_some(),
-        span: mapper.convert(f.header.span),
+        span,
     }
 }
 

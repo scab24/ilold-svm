@@ -19,6 +19,7 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/contract/{name}/callgraph", get(api::contract::get_callgraph))
         .route("/api/contract/{name}/{func}/cfg", get(api::contract::get_cfg))
         .route("/api/contract/{name}/{func}/paths", get(api::contract::get_paths))
+        .route("/api/contract/{name}/{func}/source", get(api::contract::get_function_source))
         .route("/api/contract/{name}/sequences", get(api::contract::get_sequences))
         .route("/api/contract/{name}/analysis", get(api::contract::get_sequence_analysis))
         .route("/api/contract/{name}/suggestions", get(api::contract::get_search_suggestions))
