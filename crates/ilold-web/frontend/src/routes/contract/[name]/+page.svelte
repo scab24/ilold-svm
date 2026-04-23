@@ -15,7 +15,6 @@
   import StatusBar from '$lib/components/contract/StatusBar.svelte';
   import ContextMenu from '$lib/components/contract/ContextMenu.svelte';
   import FunctionSourcePanel from '$lib/components/contract/FunctionSourcePanel.svelte';
-  import NodeDetailPanel from '$lib/components/contract/NodeDetailPanel.svelte';
   import GraphCanvasFlow from '$lib/components/contract/GraphCanvasFlow.svelte';
   import SessionSidebar from '$lib/components/session/SessionSidebar.svelte';
   import {
@@ -501,7 +500,7 @@
     });
   });
 
-  // Invalidate stale NodeDetailPanel selection. Any flow that removes
+  // Invalidate stale NodeInspector selection. Any flow that removes
   // nodes (CFG collapse, removeFuncFromCanvas, removeSeqNode, DEL key,
   // Clear from the sidebar) converges here — callers don't need to
   // remember to null out selectedNode themselves. The read inside
@@ -1236,7 +1235,24 @@
       />
 
       {#if contract}
-        <SessionSidebar contract={contract.name} />
+        <SessionSidebar
+          contract={contract.name}
+          {selectedNode}
+          {selectedPath}
+          {funcPaths}
+          {expandedFuncs}
+          {seqExpanded}
+          {mode}
+          {seqAnalysis}
+          contractDetail={{ name: contract.name, functions: contract.functions }}
+          lookupBlock={(blockId) => {
+            const node = findNode(blockId);
+            if (!node || node.data._type !== 'block') return null;
+            return { statements: (node.data as any).statements ?? [], node_type: (node.data as any).node_type };
+          }}
+          onpathselect={(funcName, path) => { selectedPath = path; highlightPath(funcName, path); }}
+          onexpandcfg={(funcName, nodeId) => toggleFuncExpand(funcName, nodeId)}
+        />
       {/if}
     </div>
 
@@ -1247,27 +1263,6 @@
       activeScenario={getActiveScenario()}
       {selectionCount}
     />
-
-    {#if selectedNode && contract}
-      <NodeDetailPanel
-        {selectedNode}
-        {selectedPath}
-        {funcPaths}
-        {expandedFuncs}
-        {seqExpanded}
-        {mode}
-        {seqAnalysis}
-        contract={{ name: contract.name, functions: contract.functions }}
-        lookupBlock={(blockId) => {
-          const node = findNode(blockId);
-          if (!node || node.data._type !== 'block') return null;
-          return { statements: (node.data as any).statements ?? [], node_type: (node.data as any).node_type };
-        }}
-        onclose={() => { selectedNode = null; selectedPath = null; }}
-        onpathselect={(funcName, path) => { selectedPath = path; highlightPath(funcName, path); }}
-        onexpandcfg={(funcName, nodeId) => toggleFuncExpand(funcName, nodeId)}
-      />
-    {/if}
 
     <ContextMenu
       menu={contextMenu}

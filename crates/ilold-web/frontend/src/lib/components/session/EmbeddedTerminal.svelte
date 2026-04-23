@@ -12,7 +12,6 @@
   let resizeObserver: ResizeObserver | null = null;
 
   // Floating panel state
-  let minimized = $state(false);
   let maximized = $state(false);
   let connected = $state(false);
   let fadeIn = $state(false);
@@ -94,14 +93,10 @@
     window.addEventListener('mouseup', onUp);
   }
 
-  function toggleMinimize() {
-    minimized = !minimized;
-    if (!minimized) {
-      // Re-fit terminal after restoring
-      requestAnimationFrame(() => fitAddon?.fit());
-    }
-  }
-
+  // Yellow button used to minimise the panel into a 36px strip — users
+  // found the residual strip confusing given the TopBar `>_` toggle
+  // already controls visibility. Both yellow and red now call
+  // hideTerminal(); the terminal reappears via the TopBar toggle.
   function closePanel() {
     hideTerminal();
   }
@@ -146,7 +141,7 @@
 
   function clampToViewport() {
     posX = Math.max(0, Math.min(posX, window.innerWidth - panelWidth));
-    posY = Math.max(0, Math.min(posY, window.innerHeight - (minimized ? TITLE_BAR_H : panelHeight)));
+    posY = Math.max(0, Math.min(posY, window.innerHeight - panelHeight));
   }
 
   onMount(() => {
@@ -281,7 +276,7 @@
     left: {posX}px;
     top: {posY}px;
     width: {panelWidth}px;
-    height: {minimized ? TITLE_BAR_H : panelHeight}px;
+    height: {panelHeight}px;
     border-radius: 12px;
     border: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
     box-shadow:
@@ -317,14 +312,15 @@
           onmousedown={(e: MouseEvent) => e.stopPropagation()}
           onclick={() => closePanel()}
         ></button>
-        <!-- Minimize (yellow/warning) -->
+        <!-- Hide (yellow) — kept alongside red for the macOS traffic-light
+             aesthetic. Both close the terminal; reopen via TopBar >_. -->
         <button
           class="w-3 h-3 rounded-full border-none cursor-pointer transition-all duration-150 hover:brightness-125"
           style="background: var(--color-warning);"
-          title={minimized ? 'Restore' : 'Minimize'}
-          aria-label={minimized ? 'Restore terminal' : 'Minimize terminal'}
+          title="Hide terminal"
+          aria-label="Hide terminal"
           onmousedown={(e: MouseEvent) => e.stopPropagation()}
-          onclick={() => toggleMinimize()}
+          onclick={() => closePanel()}
         ></button>
         <!-- Maximize (green/success) -->
         <button
@@ -363,7 +359,6 @@
   <!-- Terminal body -->
   <div
     class="flex-1 min-h-0 relative"
-    class:hidden={minimized}
     style="
       background: rgba(13, 17, 23, 0.97);
     "
@@ -380,8 +375,7 @@
        both strips read as the same UI layer (same height, gradient, font
        size). Cols×rows and PTY dot stay inside the terminal because they
        describe the xterm instance, not the global app. -->
-  {#if !minimized}
-    <div
+  <div
       class="flex items-center justify-between px-3 shrink-0 select-none"
       style="
         height: 24px;
@@ -426,12 +420,10 @@
           clear
         </button>
       </div>
-    </div>
-  {/if}
+  </div>
 
   <!-- Resize handle (bottom-right corner) — diagonal grip pattern -->
-  {#if !minimized}
-    <div
+  <div
       class="absolute bottom-0 right-0 w-5 h-5 cursor-nwse-resize z-10"
       onmousedown={onResizeStart}
       role="separator"
@@ -442,6 +434,5 @@
         <line x1="9" y1="4" x2="4" y2="9" />
         <line x1="9" y1="7" x2="7" y2="9" />
       </svg>
-    </div>
-  {/if}
+  </div>
 </div>
