@@ -24,6 +24,7 @@
     addNodes, addEdges,
     removeNodesById, findNode,
     findDescendants,
+    clearGraph,
     type GraphNodeData,
   } from '$lib/stores/graph.svelte';
   import { runDagreLayout } from '$lib/utils/graph-helpers';
@@ -508,6 +509,15 @@
   onMount(async () => {
     const contractName = page.params.name;
     if (!contractName) return;
+    // Graph store is global — stale nodes from a previous contract must be
+    // wiped or they'd pollute this contract's canvas (and leave the sidebar
+    // out of sync because local Sets re-init empty on re-mount).
+    clearGraph();
+    canvasFuncs = new Set();
+    expandedFuncs = new Set();
+    seqExpanded = new Map();
+    selectedNode = null;
+    selectedPath = null;
     setSearchContext(contractName);
     try {
       contract = await getContract(contractName);
@@ -704,6 +714,30 @@
     expandedFuncs = new Set(expandedFuncs);
     seqExpanded.delete(nodeId);
     seqExpanded = new Map(seqExpanded);
+  }
+
+  // Keyboard-driven delete from the canvas (Figma/Excalidraw pattern).
+  // Dispatches each selected node to the right existing helper so all the
+  // store bookkeeping (canvasFuncs, expandedFuncs, seqExpanded, dim state)
+  // stays in one place. Session mode is guarded at the canvas prop level.
+  function handleNodesDelete(nodes: Node<GraphNodeData>[]) {
+    if (mode === 'session') return;
+    const funcsToRemove = new Set<string>();
+    const seqNodesToRemove: string[] = [];
+    for (const n of nodes) {
+      const d = n.data;
+      if (d._type === 'function') {
+        funcsToRemove.add(d.label);
+      } else if (d._type === 'block') {
+        const parent = (d as any)._parentFunc;
+        if (parent) funcsToRemove.add(parent);
+      } else if (d._type === 'seq-next') {
+        seqNodesToRemove.push(n.id);
+      }
+    }
+    for (const nid of seqNodesToRemove) removeSeqNode(nid);
+    for (const fname of funcsToRemove) removeFuncFromCanvas(fname);
+    selectedNode = null;
   }
 
   // --- Event handlers ---
@@ -1174,6 +1208,8 @@
         onnodetap={(node, event) => handleNodeClick(node, event)}
         onbackgroundtap={handleBackgroundTap}
         oncontextmenu={handleContextMenu}
+        onnodesdelete={handleNodesDelete}
+        canDeleteNodes={mode !== 'session'}
         onready={(api) => { flowApi = api; }}
       />
 
