@@ -27,9 +27,14 @@
     /** When false, Delete/Backspace do nothing on the canvas (e.g. Session
      *  mode renders the scenarios tree which must not be deleted by DEL). */
     canDeleteNodes?: boolean;
+    /** Fires whenever the set of selected nodes changes (shift+click,
+     *  lasso, pane click). Thin wrapper over xyflow's onselectionchange
+     *  that only forwards the node list — the parent usually just wants a
+     *  count for the status bar. */
+    onselectionchange?: (nodes: Node<GraphNodeData>[]) => void;
   }
 
-  let { onnodetap, onbackgroundtap, oncontextmenu, onready, onnodesdelete, canDeleteNodes = true }: Props = $props();
+  let { onnodetap, onbackgroundtap, oncontextmenu, onready, onnodesdelete, canDeleteNodes = true, onselectionchange }: Props = $props();
 
   // Explicit null disables SvelteFlow's built-in delete shortcut; otherwise
   // we listen to both Delete and Backspace (Figma/Excalidraw convention).
@@ -148,6 +153,7 @@
         oncontextmenu?.(event as MouseEvent, node as Node<GraphNodeData>);
       }}
       ondelete={({ nodes }) => onnodesdelete?.(nodes as unknown as Node<GraphNodeData>[])}
+      onselectionchange={({ nodes }) => onselectionchange?.(nodes as unknown as Node<GraphNodeData>[])}
       oninit={() => {
         const { fitView } = useSvelteFlow();
         onready?.({ fitView });

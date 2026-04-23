@@ -12,6 +12,7 @@
   import Legend from '$lib/components/contract/Legend.svelte';
   import FunctionSidebar from '$lib/components/contract/FunctionSidebar.svelte';
   import TopBar from '$lib/components/contract/TopBar.svelte';
+  import StatusBar from '$lib/components/contract/StatusBar.svelte';
   import ContextMenu from '$lib/components/contract/ContextMenu.svelte';
   import FunctionSourcePanel from '$lib/components/contract/FunctionSourcePanel.svelte';
   import NodeDetailPanel from '$lib/components/contract/NodeDetailPanel.svelte';
@@ -37,6 +38,10 @@
   let selectedPath: any = $state(null);
   let funcPaths: Record<string, any> = $state({});
   let expandedFuncs: Set<string> = $state(new Set());
+  // Driven by SvelteFlow's onselectionchange — used only for the status bar
+  // selection chip. Kept as a plain count (not the full node list) since no
+  // other consumer needs per-node selection data at this level.
+  let selectionCount: number = $state(0);
   // Default: Seq mode is the auditor-friendly view; Session mode flips the
   // sidebar click into "add step" and hides exploration nodes on the canvas
   // so only the scenarios tree is visible.
@@ -1210,6 +1215,7 @@
         oncontextmenu={handleContextMenu}
         onnodesdelete={handleNodesDelete}
         canDeleteNodes={mode !== 'session'}
+        onselectionchange={(nodes) => { selectionCount = nodes.length; }}
         onready={(api) => { flowApi = api; }}
       />
 
@@ -1217,6 +1223,14 @@
         <SessionSidebar contract={contract.name} />
       {/if}
     </div>
+
+    <StatusBar
+      {mode}
+      canvasCount={canvasFuncs.size}
+      expandedCount={expandedFuncs.size}
+      activeScenario={getActiveScenario()}
+      {selectionCount}
+    />
 
     {#if selectedNode && contract}
       <NodeDetailPanel
