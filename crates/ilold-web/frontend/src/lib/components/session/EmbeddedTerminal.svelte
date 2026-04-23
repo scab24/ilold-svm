@@ -337,15 +337,16 @@
         ></button>
       </div>
 
-      <!-- Connection status dot -->
-      <div class="flex items-center gap-1.5 ml-3">
+      <!-- PTY link status — compact dot only. The docked StatusBar already
+           exposes the main WS state; labelling this one "connected" side
+           by side would have read as duplicate info. -->
+      <div class="flex items-center gap-1.5 ml-3" title={connected ? 'PTY connected' : 'PTY disconnected'}>
         <span
           class="w-1.5 h-1.5 rounded-full inline-block"
           style="background: {connected ? 'var(--color-success-light)' : 'var(--color-danger-light)'}; box-shadow: 0 0 6px {connected ? 'var(--color-success)' : 'var(--color-danger)'};"
+          aria-label={connected ? 'PTY connected' : 'PTY disconnected'}
         ></span>
-        <span class="text-[10px] text-text-dim tracking-wide">
-          {connected ? 'connected' : 'disconnected'}
-        </span>
+        <span class="text-[9px] text-text-dim tracking-wider uppercase">PTY</span>
       </div>
     </div>
 
@@ -375,16 +376,19 @@
     <div bind:this={terminalEl} class="h-full w-full" />
   </div>
 
-  <!-- Status bar (bottom) -->
+  <!-- Status bar (bottom) — glass style matching the docked StatusBar so
+       both strips read as the same UI layer (same height, gradient, font
+       size). Cols×rows and PTY dot stay inside the terminal because they
+       describe the xterm instance, not the global app. -->
   {#if !minimized}
     <div
       class="flex items-center justify-between px-3 shrink-0 select-none"
       style="
-        height: 22px;
-        background: rgba(24, 24, 30, 0.9);
-        backdrop-filter: blur(8px);
-        -webkit-backdrop-filter: blur(8px);
-        border-top: 1px solid color-mix(in srgb, var(--color-border) 30%, transparent);
+        height: 24px;
+        background: linear-gradient(180deg, rgba(22, 22, 28, 0.92) 0%, rgba(16, 16, 22, 0.95) 100%);
+        backdrop-filter: blur(16px) saturate(1.8);
+        -webkit-backdrop-filter: blur(16px) saturate(1.8);
+        border-top: 1px solid color-mix(in srgb, var(--color-border) 40%, transparent);
       "
     >
       <div class="flex items-center gap-3">
@@ -394,6 +398,7 @@
         <span
           class="w-1 h-1 rounded-full inline-block"
           style="background: {connected ? 'var(--color-success)' : 'var(--color-danger)'};"
+          aria-label={connected ? 'PTY connected' : 'PTY disconnected'}
         ></span>
       </div>
       <div class="flex items-center gap-2">

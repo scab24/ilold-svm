@@ -501,6 +501,22 @@
     });
   });
 
+  // Invalidate stale NodeDetailPanel selection. Any flow that removes
+  // nodes (CFG collapse, removeFuncFromCanvas, removeSeqNode, DEL key,
+  // Clear from the sidebar) converges here — callers don't need to
+  // remember to null out selectedNode themselves. The read inside
+  // findNode creates a reactive dependency so the guard re-runs whenever
+  // the graph store mutates. Safe against loops: when we set
+  // selectedNode = null the effect re-runs, short-circuits on the null
+  // check, and exits without further writes.
+  $effect(() => {
+    if (!selectedNode) return;
+    if (!findNode(selectedNode.id)) {
+      selectedNode = null;
+      selectedPath = null;
+    }
+  });
+
   // Highlight the function node when the session broadcasts session_highlight
   $effect(() => {
     const funcName = sessionHighlight;
