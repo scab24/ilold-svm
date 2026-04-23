@@ -11,7 +11,7 @@
   import { postCommand } from '$lib/api/session';
   import Legend from '$lib/components/contract/Legend.svelte';
   import FunctionSidebar from '$lib/components/contract/FunctionSidebar.svelte';
-  import FloatingToolbar from '$lib/components/contract/FloatingToolbar.svelte';
+  import TopBar from '$lib/components/contract/TopBar.svelte';
   import ContextMenu from '$lib/components/contract/ContextMenu.svelte';
   import FunctionSourcePanel from '$lib/components/contract/FunctionSourcePanel.svelte';
   import NodeDetailPanel from '$lib/components/contract/NodeDetailPanel.svelte';
@@ -1153,7 +1153,7 @@
   {#if error}
     <div class="p-6 text-danger">{error}</div>
   {:else}
-    <FloatingToolbar
+    <TopBar
       contractName={contract?.name ?? '...'}
       {mode}
       {seqDirection}
