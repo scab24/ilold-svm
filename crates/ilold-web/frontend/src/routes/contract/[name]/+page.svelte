@@ -1,7 +1,8 @@
 <script lang="ts">
   import { page } from '$app/state';
   import { onMount, tick, untrack } from 'svelte';
-  import { getContract, getCallGraph, getCfg, getPaths, getSequences, getSequenceAnalysis, type ContractDetail, type CytoscapeGraph, type SequenceAnalysis } from '$lib/api/rest';
+  import { getContract, getCallGraph, getCfg, getPaths, getSequences, getSequenceAnalysis, getFunctionSource, type ContractDetail, type CytoscapeGraph, type SequenceAnalysis } from '$lib/api/rest';
+  import { openInIde } from '$lib/utils/ide-links';
   import { toggleSearch, setSearchContext, getSearchNavigate, setSearchNavigate } from '$lib/stores/search.svelte';
   import { getHighlightedFunction, getScenarios, getActiveScenario, getForkOrigins } from '$lib/stores/session.svelte';
   import { composeScenarioTree, type ComposedNode } from '$lib/canvas/scenarios';
@@ -12,6 +13,7 @@
   import FunctionSidebar from '$lib/components/contract/FunctionSidebar.svelte';
   import FloatingToolbar from '$lib/components/contract/FloatingToolbar.svelte';
   import ContextMenu from '$lib/components/contract/ContextMenu.svelte';
+  import FunctionSourcePanel from '$lib/components/contract/FunctionSourcePanel.svelte';
   import NodeDetailPanel from '$lib/components/contract/NodeDetailPanel.svelte';
   import GraphCanvasFlow from '$lib/components/contract/GraphCanvasFlow.svelte';
   import SessionSidebar from '$lib/components/session/SessionSidebar.svelte';
@@ -54,6 +56,10 @@
   } | null = $state(null);
 
   let canvasFuncs: Set<string> = $state(new Set()); // functions currently on canvas
+
+  // Inline source-viewer panel state. Null when closed. Set by the
+  // ContextMenu "View source" entry.
+  let sourcePanel: { func: string } | null = $state(null);
 
   // Session → canvas auto-paint state
   let sessionVisCount = $state(0);
@@ -774,6 +780,26 @@
     }
   }
 
+  // Right-click "{} View source": open the inline CodeMirror panel.
+  function handleViewSource(funcName: string) {
+    contextMenu = null;
+    sourcePanel = { func: funcName };
+  }
+
+  // Right-click "↗ Open in code": fetch the function's absolute path + line
+  // from the source endpoint and fire the `vscode://` deep link. If no IDE
+  // is registered the browser silently drops the request — no UI nag.
+  async function handleOpenInIde(funcName: string) {
+    contextMenu = null;
+    if (!contract) return;
+    try {
+      const res = await getFunctionSource(contract.name, funcName);
+      openInIde(res.file_path, res.span.start_line, res.span.start_col);
+    } catch (e) {
+      console.warn('open in IDE failed:', e);
+    }
+  }
+
   // Right-click "✕ Remove from here": truncate the active scenario at
   // `stepIndex` by firing N Back commands. N = current length - stepIndex.
   // Using Back (which the backend already supports) avoids needing a new
@@ -1187,8 +1213,18 @@
       onremovenode={(nodeId) => { removeSeqNode(nodeId); contextMenu = null; selectedNode = null; }}
       onforkscenario={handleForkScenario}
       onremovefromhere={handleRemoveFromHere}
+      onviewsource={handleViewSource}
+      onopenide={handleOpenInIde}
       onclose={() => contextMenu = null}
     />
+
+    {#if sourcePanel && contract}
+      <FunctionSourcePanel
+        contract={contract.name}
+        func={sourcePanel.func}
+        onclose={() => sourcePanel = null}
+      />
+    {/if}
 
     <Legend {mode} />
   {/if}

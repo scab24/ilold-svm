@@ -5,6 +5,7 @@ use axum::http::StatusCode;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
+use ilold_core::model::common::SourceSpan;
 use ilold_core::pathtree::types::PathTree;
 use ilold_core::sequence::types::SequenceTree;
 
@@ -294,6 +295,66 @@ pub async fn get_cfg(
         .collect();
 
     Ok(Json(CytoscapeGraph { nodes, edges }))
+}
+
+// ============================================================================
+// Function source (for the canvas "View source" panel + IDE deep link)
+// ============================================================================
+
+#[derive(Serialize)]
+pub struct FunctionSourceResponse {
+    /// Absolute path to the Solidity file — used as-is for the `vscode://`
+    /// deep link on the frontend.
+    pub file_path: String,
+    /// Source text sliced to the function's line range (inclusive, 1-based).
+    pub source: String,
+    /// Original span; frontend uses `start_line` / `start_col` for the IDE
+    /// jump, and nothing else today.
+    pub span: SourceSpan,
+}
+
+pub async fn get_function_source(
+    State(state): State<Arc<AppState>>,
+    Path((contract_name, func_name)): Path<(String, String)>,
+) -> Result<Json<FunctionSourceResponse>, StatusCode> {
+    let contract = state.project.contracts.iter()
+        .find(|c| c.name == contract_name)
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    // `resolve_function` walks the inheritance chain, so a function declared
+    // in a parent contract resolves to the parent's FunctionDef (with its
+    // own span + file_index).
+    let (_owning, func) = state.project.resolve_function(contract, &func_name)
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    let file = state.project.source_files.get(func.span.file_index)
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    let source = slice_lines(
+        &file.content,
+        func.span.start_line as usize,
+        func.span.end_line as usize,
+    );
+
+    Ok(Json(FunctionSourceResponse {
+        file_path: file.path.clone(),
+        source,
+        span: func.span,
+    }))
+}
+
+/// Return the text between `start_1based` and `end_1based` lines (inclusive).
+/// Returns an empty string for malformed ranges (`start > end`) so a bad
+/// span from the parser never panics the handler.
+fn slice_lines(src: &str, start_1based: usize, end_1based: usize) -> String {
+    if start_1based == 0 || end_1based < start_1based {
+        return String::new();
+    }
+    src.lines()
+        .skip(start_1based - 1)
+        .take(end_1based - start_1based + 1)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 // ============================================================================

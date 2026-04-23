@@ -139,6 +139,27 @@ export async function getPaths(contractName: string, funcName: string) {
   return res.json();
 }
 
+export interface FunctionSourceResponse {
+  file_path: string;
+  source: string;
+  span: {
+    file_index: number;
+    start_line: number;
+    start_col: number;
+    end_line: number;
+    end_col: number;
+  };
+}
+
+export async function getFunctionSource(
+  contractName: string,
+  funcName: string,
+): Promise<FunctionSourceResponse> {
+  const res = await fetch(`${BASE}/api/contract/${contractName}/${funcName}/source`);
+  if (!res.ok) throw new Error(`Source for ${funcName} not found`);
+  return res.json();
+}
+
 export interface SequenceAnalysis {
   functions: {
     name: string;
