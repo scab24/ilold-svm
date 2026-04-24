@@ -1,9 +1,13 @@
 <script lang="ts">
   import { page } from '$app/state';
-  import { onMount, tick, untrack } from 'svelte';
-  import { getContract, getCallGraph, getCfg, getPaths, getSequences, getSequenceAnalysis, getFunctionSource, type ContractDetail, type CytoscapeGraph, type SequenceAnalysis } from '$lib/api/rest';
+  import { onMount, onDestroy, tick, untrack } from 'svelte';
+  import { getContract, getCallGraph, getCfg, getPaths, getSequences, getSequenceAnalysis, getFunctionSource, getProjectMap, type ContractDetail, type CytoscapeGraph, type SequenceAnalysis, type MapContract } from '$lib/api/rest';
+  import { goto } from '$app/navigation';
+  import { toggleTerminal } from '$lib/stores/terminal.svelte';
   import { openInIde } from '$lib/utils/ide-links';
-  import { toggleSearch, setSearchContext, getSearchNavigate, setSearchNavigate } from '$lib/stores/search.svelte';
+  import { setSearchContext, getSearchNavigate, setSearchNavigate } from '$lib/stores/search.svelte';
+  import { togglePalette, setPaletteCommands, clearPaletteCommands } from '$lib/stores/palette.svelte';
+  import type { Command } from '$lib/commands/registry';
   import { getHighlightedFunction, getScenarios, getActiveScenario, getForkOrigins } from '$lib/stores/session.svelte';
   import { composeScenarioTree, type ComposedNode } from '$lib/canvas/scenarios';
   import { promptScenarioName } from '$lib/scenarios/name';
@@ -61,6 +65,11 @@
   } | null = $state(null);
 
   let canvasFuncs: Set<string> = $state(new Set()); // functions currently on canvas
+
+  // Project map (all contracts in the workspace) — fetched once on mount so
+  // the Cmd+K palette can offer cross-contract navigation without every
+  // keystroke hitting the REST endpoint.
+  let projectMap: MapContract[] = $state([]);
 
   // Inline source-viewer panel state. Null when closed. Set by the
   // ContextMenu "View source" entry.
@@ -545,6 +554,12 @@
       callgraphRaw = callgraphData;
       try { seqTree = await getSequences(contractName); } catch {}
       try { seqAnalysis = await getSequenceAnalysis(contractName); } catch {}
+      // Fire-and-forget — palette commands render fine without it, cross-
+      // contract nav just stays empty until the list lands.
+      try {
+        const pm = await getProjectMap();
+        projectMap = pm.contracts;
+      } catch {}
     } catch (e) {
       error = `Contract "${contractName}" not found`;
     }
@@ -1200,7 +1215,120 @@
     }));
   }
 
+  // ── Cmd+K palette: publish context commands ──────────────────────────
+  // Rebuilds whenever any input state changes (contract, scenarios,
+  // active scenario, mode, canvas state, project map). The palette store
+  // is global, so on route unmount we clear the list to avoid leaking
+  // stale handlers back to the next page.
+  $effect(() => {
+    if (!contract) {
+      setPaletteCommands([]);
+      return;
+    }
+    const ctr = contract;
+    const cmds: Command[] = [];
 
+    // Modes — always present. Icon hints the layout.
+    cmds.push(
+      { id: 'mode:cfg', label: 'Mode: CFG', category: 'Mode', icon: '⊟', keywords: ['cfg', 'control flow'], run: () => switchMode('cfg') },
+      { id: 'mode:sequences', label: 'Mode: Sequences', category: 'Mode', icon: '⇵', keywords: ['seq', 'calls'], run: () => switchMode('sequences') },
+      { id: 'mode:session', label: 'Mode: Session', category: 'Mode', icon: '⎇', keywords: ['scenario', 'session'], run: () => switchMode('session') },
+    );
+
+    // Canvas / terminal actions.
+    cmds.push(
+      { id: 'canvas:center', label: 'Center canvas', category: 'Action', icon: '⊙', keywords: ['fit', 'zoom', 'reset view'], run: () => { flowApi?.fitView({ padding: 0.1 }); } },
+      { id: 'canvas:clear', label: 'Clear canvas', category: 'Action', icon: '✕', keywords: ['reset', 'wipe'], run: () => {
+        const names = Array.from(canvasFuncs);
+        for (const n of names) removeFuncFromCanvas(n);
+      } },
+      { id: 'terminal:toggle', label: 'Toggle terminal', category: 'Action', icon: '>_', keywords: ['console', 'repl', 'pty'], run: () => toggleTerminal() },
+    );
+
+    // Session controls — only meaningful while there is an active scenario
+    // with at least one step. We still expose them otherwise so users can
+    // discover the shortcut; the handlers already guard empty scenarios.
+    cmds.push(
+      { id: 'session:back', label: 'Back — remove last step', category: 'Action', icon: '↶', keywords: ['undo', 'step'], run: () => handleSessionBack() },
+      { id: 'session:clear', label: 'Clear scenario', category: 'Action', icon: '🗑', keywords: ['reset scenario'], run: () => handleSessionClear() },
+    );
+
+    // Scenario lifecycle. "Switch to X" and "Delete X" per existing
+    // scenario; "New scenario" always available.
+    cmds.push({
+      id: 'scenario:new',
+      label: 'New scenario',
+      category: 'Scenario',
+      icon: '+',
+      keywords: ['create', 'scenario'],
+      run: async () => {
+        const name = promptScenarioName();
+        if (!name) return;
+        await dispatchScenarioAction({ New: { name } }, ctr.name, 'new');
+      },
+    });
+    const activeScn = getActiveScenario();
+    for (const [name] of getScenarios()) {
+      if (name !== activeScn) {
+        cmds.push({
+          id: `scenario:switch:${name}`,
+          label: `Switch to scenario: ${name}`,
+          category: 'Scenario',
+          icon: '⎇',
+          run: () => dispatchScenarioAction({ Switch: { name } }, ctr.name, 'switch'),
+        });
+        cmds.push({
+          id: `scenario:delete:${name}`,
+          label: `Delete scenario: ${name}`,
+          category: 'Scenario',
+          icon: '✕',
+          run: () => dispatchScenarioAction({ Delete: { name } }, ctr.name, 'delete'),
+        });
+      }
+    }
+
+    // Functions — own + inherited. Jump = add to canvas (Session mode
+    // turns it into an add-step, which matches the sidebar click).
+    const allFuncs = [
+      ...(ctr.functions ?? []).map((f) => ({ name: f.name, source: 'own' as const })),
+      ...(ctr.inherited_functions ?? []).map((f) => ({ name: f.name, source: 'inherited' as const })),
+    ];
+    for (const f of allFuncs) {
+      cmds.push({
+        id: `func:${f.source}:${f.name}`,
+        label: f.name,
+        category: 'Function',
+        icon: 'ƒ',
+        detail: f.source === 'inherited' ? 'inherited' : undefined,
+        keywords: ['jump', 'function', 'canvas'],
+        run: () => handleSidebarAdd(f.name),
+      });
+    }
+
+    // Cross-contract navigation. Skip the current one — the user is
+    // already here.
+    for (const c of projectMap) {
+      if (c.name === ctr.name) continue;
+      cmds.push({
+        id: `contract:${c.name}`,
+        label: c.name,
+        category: 'Contract',
+        icon: '◈',
+        detail: c.kind,
+        keywords: ['contract', 'navigate', 'open'],
+        run: () => goto(`/contract/${encodeURIComponent(c.name)}`),
+      });
+    }
+
+    setPaletteCommands(cmds);
+  });
+
+  // Clear published commands on unmount so the palette doesn't render
+  // stale handlers if the user lands on a page that doesn't publish its
+  // own list.
+  onDestroy(() => {
+    clearPaletteCommands();
+  });
 </script>
 
 <div class="fixed inset-0 flex flex-col bg-dark">
@@ -1212,7 +1340,7 @@
       {mode}
       {seqDirection}
       onmodechange={switchMode}
-      onsearch={toggleSearch}
+      onsearch={togglePalette}
       oncenter={() => flowApi?.fitView({ padding: 0.1 })}
       onseqdirection={(dir) => { seqDirection = dir; reorientAllSeqSubtrees(); }}
       onsessionback={handleSessionBack}
