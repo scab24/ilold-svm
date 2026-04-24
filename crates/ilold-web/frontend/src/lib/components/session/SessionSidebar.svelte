@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import EmbeddedTerminal from './EmbeddedTerminal.svelte';
   import SessionTimeline from './SessionTimeline.svelte';
   import StatePanel from './StatePanel.svelte';
@@ -51,7 +52,10 @@
   let prevSelectedId = $state<string | null>(null);
   $effect(() => {
     const currentId = selectedNode?.id ?? null;
-    if (currentId && !prevSelectedId) {
+    // Read the tracker via untrack so writing it at the end doesn't
+    // re-trigger this effect — only selectedNode changes should flow in.
+    const prev = untrack(() => prevSelectedId);
+    if (currentId && !prev) {
       activeTab = 'inspector';
     }
     prevSelectedId = currentId;

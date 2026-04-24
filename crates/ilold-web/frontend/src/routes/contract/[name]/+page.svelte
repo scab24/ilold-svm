@@ -1147,7 +1147,7 @@
     seqExpanded = new Map(seqExpanded);
   }
 
-  function switchMode(newMode: 'cfg' | 'sequences') {
+  function switchMode(newMode: 'cfg' | 'sequences' | 'session') {
     // Remove expanded nodes from graph store
     const toRemove = new Set<string>();
     for (const n of getNodes()) {
