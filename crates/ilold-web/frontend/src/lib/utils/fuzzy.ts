@@ -43,3 +43,30 @@ export function scoreWithKeywords(
   }
   return best;
 }
+
+// Compute character match positions for a label / query pair so the
+// palette can render the matched chars in bold (VSCode-style highlight).
+// Tries the contiguous-substring match first because it's the most
+// "expected" highlight; falls back to subsequence positions which still
+// look correct, just less compact.
+export function matchPositions(label: string, query: string): number[] {
+  if (!query) return [];
+  const l = label.toLowerCase();
+  const q = query.toLowerCase();
+  const idx = l.indexOf(q);
+  if (idx >= 0) {
+    const out: number[] = [];
+    for (let i = 0; i < q.length; i++) out.push(idx + i);
+    return out;
+  }
+  // Subsequence fallback.
+  const out: number[] = [];
+  let qi = 0;
+  for (let i = 0; i < l.length && qi < q.length; i++) {
+    if (l[i] === q[qi]) {
+      out.push(i);
+      qi++;
+    }
+  }
+  return qi === q.length ? out : [];
+}

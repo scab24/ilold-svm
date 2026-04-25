@@ -565,51 +565,58 @@
     }
   });
 
-  // Listen for search result navigation
+  // Listen for search result navigation. Only `getSearchNavigate()` is
+  // tracked — everything else is accessed via untrack so mutations inside
+  // the IIFE (canvasFuncs, funcPaths, expandedFuncs, edges via
+  // highlightPath) don't re-enter this effect and trigger an
+  // effect_update_depth_exceeded loop. The effect re-runs exactly when
+  // the palette publishes a new navigation target; subsequent state
+  // writes are handled inside the async task.
   $effect(() => {
     const nav = getSearchNavigate();
-    if (!nav || !contract) return;
-    if (nav.contract !== contract.name) return;
+    if (!nav) return;
+    untrack(() => {
+      if (!contract) return;
+      if (nav.contract !== contract.name) return;
 
-    let stale = false;
+      let stale = false;
 
-    (async () => {
-      try {
-        if (!canvasFuncs.has(nav.func)) {
-          addFuncToCanvas(nav.func);
-          await tick();
-        }
-        if (stale || !contract) return;
-
-        if (!funcPaths[nav.func]) {
-          funcPaths[nav.func] = await getPaths(contract.name, nav.func);
-          funcPaths = { ...funcPaths };
-        }
-        if (stale || !contract) return;
-
-        if (!expandedFuncs.has(nav.func)) {
-          await toggleFuncExpand(nav.func);
-        }
-        if (stale) return;
-
-        const funcNode = getNodes().find(
-          n => n.data._type === 'function' && n.data.label === nav.func
-        );
-        if (funcNode) {
-          selectedNode = { ...funcNode.data, id: funcNode.id };
-          const path = funcPaths[nav.func]?.paths?.find((p: any) => p.id === nav.pathId);
-          if (path) highlightPath(nav.func, path);
-          if (flowApi) {
+      (async () => {
+        try {
+          if (!canvasFuncs.has(nav.func)) {
+            addFuncToCanvas(nav.func);
             await tick();
-            flowApi.fitView({ nodes: [{ id: funcNode.id }], padding: 0.5, duration: 400 });
           }
-        }
-      } finally {
-        if (!stale) setSearchNavigate(null);
-      }
-    })();
+          if (stale || !contract) return;
 
-    return () => { stale = true; };
+          if (!funcPaths[nav.func]) {
+            funcPaths[nav.func] = await getPaths(contract.name, nav.func);
+            funcPaths = { ...funcPaths };
+          }
+          if (stale || !contract) return;
+
+          if (!expandedFuncs.has(nav.func)) {
+            await toggleFuncExpand(nav.func);
+          }
+          if (stale) return;
+
+          const funcNode = getNodes().find(
+            n => n.data._type === 'function' && n.data.label === nav.func
+          );
+          if (funcNode) {
+            selectedNode = { ...funcNode.data, id: funcNode.id };
+            const path = funcPaths[nav.func]?.paths?.find((p: any) => p.id === nav.pathId);
+            if (path) highlightPath(nav.func, path);
+            if (flowApi) {
+              await tick();
+              flowApi.fitView({ nodes: [{ id: funcNode.id }], padding: 0.5, duration: 400 });
+            }
+          }
+        } finally {
+          if (!stale) setSearchNavigate(null);
+        }
+      })();
+    });
   });
 
   // Sidebar click dispatcher. In Session mode, the sidebar is the entry
@@ -1289,13 +1296,16 @@
 
     // Functions — own + inherited. Jump = add to canvas (Session mode
     // turns it into an add-step, which matches the sidebar click).
+    // Solidity allows overloading by signature so names may repeat; we
+    // include the index in the id to keep every row uniquely keyed even
+    // when two rows end up with the same label.
     const allFuncs = [
       ...(ctr.functions ?? []).map((f) => ({ name: f.name, source: 'own' as const })),
       ...(ctr.inherited_functions ?? []).map((f) => ({ name: f.name, source: 'inherited' as const })),
     ];
-    for (const f of allFuncs) {
+    allFuncs.forEach((f, i) => {
       cmds.push({
-        id: `func:${f.source}:${f.name}`,
+        id: `func:${f.source}:${i}:${f.name}`,
         label: f.name,
         category: 'Function',
         icon: 'ƒ',
@@ -1303,12 +1313,15 @@
         keywords: ['jump', 'function', 'canvas'],
         run: () => handleSidebarAdd(f.name),
       });
-    }
+    });
 
-    // Cross-contract navigation. Skip the current one — the user is
-    // already here.
+    // Cross-contract navigation. Skip the current one and dedupe by name
+    // — ProjectMap may list the same interface twice (keyed each would
+    // throw on duplicate ids).
+    const seenContracts = new Set<string>([ctr.name]);
     for (const c of projectMap) {
-      if (c.name === ctr.name) continue;
+      if (seenContracts.has(c.name)) continue;
+      seenContracts.add(c.name);
       cmds.push({
         id: `contract:${c.name}`,
         label: c.name,

@@ -20,20 +20,30 @@
 
   // Publish project-level commands: navigate into any contract. The
   // contract page replaces this list with its richer set on mount.
+  // ProjectMap may report the same name twice (e.g. an interface that
+  // appears as its own entry and as an inherited reference elsewhere),
+  // so we dedupe by name before mapping to Commands — Svelte's keyed
+  // each block would otherwise error on the duplicate id.
   $effect(() => {
     if (!projectMap) {
       setPaletteCommands([]);
       return;
     }
-    const cmds: Command[] = projectMap.contracts.map((c) => ({
-      id: `contract:${c.name}`,
-      label: c.name,
-      category: 'Contract' as const,
-      icon: '◈',
-      detail: c.kind,
-      keywords: ['contract', 'open', 'navigate'],
-      run: () => goto(`/contract/${encodeURIComponent(c.name)}`),
-    }));
+    const seen = new Set<string>();
+    const cmds: Command[] = [];
+    for (const c of projectMap.contracts) {
+      if (seen.has(c.name)) continue;
+      seen.add(c.name);
+      cmds.push({
+        id: `contract:${c.name}`,
+        label: c.name,
+        category: 'Contract' as const,
+        icon: '◈',
+        detail: c.kind,
+        keywords: ['contract', 'open', 'navigate'],
+        run: () => goto(`/contract/${encodeURIComponent(c.name)}`),
+      });
+    }
     setPaletteCommands(cmds);
   });
 
