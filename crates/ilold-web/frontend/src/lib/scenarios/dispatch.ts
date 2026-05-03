@@ -14,6 +14,8 @@ export async function dispatchScenarioAction(
   try {
     await postCommand({ Scenario: { sub: action } }, contract);
   } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e);
     console.warn(`scenario ${label} failed:`, e);
+    alert(`Scenario ${label} failed:\n\n${reason}`);
   }
 }

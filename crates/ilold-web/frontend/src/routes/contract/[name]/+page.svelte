@@ -470,10 +470,10 @@
           target: ce.target,
           sourceHandle: 'r',
           targetHandle: 'l',
-          // 'smoothstep' draws curved right-angle corners, which reads as a
-          // branch emerging from the origin — distinct from the straight
-          // within-scenario edges.
-          type: isFork ? 'smoothstep' : 'default',
+          // Same bezier curve for both fork and within-scenario edges so the
+          // canvas reads as one unified tree; forks stay visually distinct
+          // via the accent color + dashed pattern + animated dashes.
+          type: 'default',
           animated: isFork,
           style: `stroke: ${color}; ${isFork ? 'stroke-dasharray: 4 4;' : ''}`,
           markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12, color },
@@ -930,7 +930,7 @@
     if (d._type === 'function' && !d.is_external) {
       await handleFunctionTap(d.label, node.id);
     } else if (d._type === 'seq-next') {
-      await handleSeqNodeTap((d as any)._funcName || d.label, node.id, (d as any)._seqParent);
+      await handleSeqNodeTap((d as any)._funcName || d.label, node.id, (d as any)._seqParent, event);
     }
   }
 
@@ -942,10 +942,13 @@
     }
   }
 
-  async function handleSeqNodeTap(funcName: string, nodeId: string, seqParent: string) {
-    // Tapping a seq-next "commits" to one sibling path: collapse the
-    // auto-expanded sub-trees of all siblings at this level.
-    if (seqParent) {
+  async function handleSeqNodeTap(funcName: string, nodeId: string, seqParent: string, event?: MouseEvent) {
+    // Plain click commits to one sibling path: collapse the auto-expanded
+    // sub-trees of all siblings at this level. Shift+click skips the
+    // collapse so the user can keep multiple branches open in parallel —
+    // matches the "Shift+click → add branch" hint shown in Legend.
+    const keepSiblings = event?.shiftKey === true;
+    if (seqParent && !keepSiblings) {
       const siblings = getNodes().filter(
         n => n.data._type === 'seq-next'
           && (n.data as any)._seqParent === seqParent
