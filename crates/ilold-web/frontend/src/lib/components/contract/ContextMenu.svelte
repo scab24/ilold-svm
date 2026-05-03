@@ -44,6 +44,8 @@
   const showCanvasActions = $derived(mode !== 'session');
 </script>
 
+<svelte:window onkeydown={(e) => { if (menu && e.key === 'Escape') onclose(); }} />
+
 {#if menu}
   <div
     class="fixed z-60 p-1.5 min-w-[170px]"

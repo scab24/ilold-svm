@@ -98,7 +98,7 @@
   <div class="timeline-body flex-1 overflow-y-auto py-1.5" bind:this={scrollContainer}>
     {#if steps.length === 0}
       <div class="py-8 px-4 text-text-dim text-[11px] text-center leading-relaxed" style="font-style: italic;">
-        No steps yet. Use the command bar to call a function.
+        No steps yet. Click a function in the sidebar or run `c &lt;name&gt;` in the terminal.
       </div>
     {:else}
       <ol class="list-none m-0 p-0 px-1">

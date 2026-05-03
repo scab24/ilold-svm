@@ -632,12 +632,18 @@
   // point for building a scenario — clicking a function fires a Call
   // command and the WS session_add_node event repaints the scenario tree.
   // In CFG/Seq modes, clicking adds the function as an exploration node.
+  function notifyFailure(label: string, e: unknown) {
+    const reason = e instanceof Error ? e.message : String(e);
+    console.warn(`${label} failed:`, e);
+    alert(`${label} failed:\n\n${reason}`);
+  }
+
   async function handleSidebarAdd(funcName: string) {
     if (mode === 'session') {
       try {
         await postCommand({ Call: { func: funcName } }, contract?.name);
       } catch (e) {
-        console.warn('add step failed:', e);
+        notifyFailure('add step', e);
       }
       return;
     }
@@ -826,6 +832,7 @@
   function handleBackgroundTap() {
     selectedNode = null;
     selectedPath = null;
+    contextMenu = null;
     resetAllDimmed();
   }
 
@@ -848,7 +855,7 @@
     try {
       await postCommand('Back', contract?.name);
     } catch (e) {
-      console.warn('session back failed:', e);
+      notifyFailure('session back', e);
     }
   }
 
@@ -861,7 +868,7 @@
     try {
       await postCommand('Clear', contract?.name);
     } catch (e) {
-      console.warn('session clear failed:', e);
+      notifyFailure('session clear', e);
     }
   }
 
@@ -881,7 +888,7 @@
       const res = await getFunctionSource(contract.name, funcName);
       openInIde(res.file_path, res.span.start_line, res.span.start_col);
     } catch (e) {
-      console.warn('open in IDE failed:', e);
+      notifyFailure('open in IDE', e);
     }
   }
 
@@ -899,7 +906,7 @@
       try {
         await postCommand('Back', contract?.name);
       } catch (e) {
-        console.warn('remove-from-here iteration failed:', e);
+        notifyFailure('remove-from-here iteration', e);
         break;
       }
     }
