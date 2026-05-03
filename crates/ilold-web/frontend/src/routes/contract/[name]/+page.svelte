@@ -461,21 +461,30 @@
       });
       addNodes(composedNodes);
 
+      const nodeScenarios = new Map<string, string[]>(
+        tree.nodes.map((n) => [n.id, n._scenariosPassingThrough]),
+      );
+
       const composedEdges: Edge[] = tree.edges.map((ce) => {
         const isFork = ce._forkEdge === true;
-        const color = isFork ? 'var(--color-accent)' : 'var(--color-text-muted)';
+        const sourceScns = nodeScenarios.get(ce.source) ?? [];
+        const targetScns = nodeScenarios.get(ce.target) ?? [];
+        const onActivePath = sourceScns.includes(active) && targetScns.includes(active);
+
+        const color = onActivePath
+          ? (isFork ? 'var(--color-accent)' : 'var(--color-accent-hover)')
+          : 'var(--color-text-dim)';
+        const opacity = onActivePath ? 1 : 0.4;
+
         return {
           id: ce.id,
           source: ce.source,
           target: ce.target,
           sourceHandle: 'r',
           targetHandle: 'l',
-          // Same bezier curve for both fork and within-scenario edges so the
-          // canvas reads as one unified tree; forks stay visually distinct
-          // via the accent color + dashed pattern + animated dashes.
           type: 'default',
-          animated: isFork,
-          style: `stroke: ${color}; ${isFork ? 'stroke-dasharray: 4 4;' : ''}`,
+          animated: isFork && onActivePath,
+          style: `stroke: ${color}; opacity: ${opacity}; ${isFork ? 'stroke-dasharray: 4 4;' : ''}`,
           markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12, color },
           labelBgStyle: { fill: 'var(--color-surface)', fillOpacity: 0.85 },
           labelBgPadding: [3, 5] as [number, number],
