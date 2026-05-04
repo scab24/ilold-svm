@@ -101,15 +101,27 @@ pub fn collect_sol_files(path: &PathBuf) -> Result<Vec<PathBuf>> {
     }
     if path.is_dir() {
         let mut files = Vec::new();
-        for entry in std::fs::read_dir(path)? {
-            let entry = entry?;
-            let p = entry.path();
-            if p.extension().is_some_and(|ext| ext == "sol") {
-                files.push(p);
-            }
-        }
+        walk_sol_files(path, &mut files)?;
         files.sort();
         return Ok(files);
     }
     anyhow::bail!("Path does not exist: {}", path.display());
+}
+
+fn walk_sol_files(dir: &PathBuf, out: &mut Vec<PathBuf>) -> Result<()> {
+    const SKIP: &[&str] = &["out", "cache", "node_modules", "lib", "target", ".git", ".svelte-kit"];
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let p = entry.path();
+        if p.is_dir() {
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if name.starts_with('.') || SKIP.contains(&name) {
+                continue;
+            }
+            walk_sol_files(&p, out)?;
+        } else if p.extension().is_some_and(|ext| ext == "sol") {
+            out.push(p);
+        }
+    }
+    Ok(())
 }

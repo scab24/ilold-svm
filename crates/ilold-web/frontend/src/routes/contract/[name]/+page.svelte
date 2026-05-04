@@ -1,9 +1,13 @@
 <script lang="ts">
   import { page } from '$app/state';
-  import { onMount, tick, untrack } from 'svelte';
-  import { getContract, getCallGraph, getCfg, getPaths, getSequences, getSequenceAnalysis, getFunctionSource, type ContractDetail, type CytoscapeGraph, type SequenceAnalysis } from '$lib/api/rest';
+  import { onMount, onDestroy, tick, untrack } from 'svelte';
+  import { getContract, getCallGraph, getCfg, getPaths, getSequences, getSequenceAnalysis, getFunctionSource, getProjectMap, type ContractDetail, type CytoscapeGraph, type SequenceAnalysis, type MapContract } from '$lib/api/rest';
+  import { goto } from '$app/navigation';
+  import { toggleTerminal } from '$lib/stores/terminal.svelte';
   import { openInIde } from '$lib/utils/ide-links';
-  import { toggleSearch, setSearchContext, getSearchNavigate, setSearchNavigate } from '$lib/stores/search.svelte';
+  import { setSearchContext, getSearchNavigate, setSearchNavigate } from '$lib/stores/search.svelte';
+  import { togglePalette, setPaletteCommands, clearPaletteCommands } from '$lib/stores/palette.svelte';
+  import type { Command } from '$lib/commands/registry';
   import { getHighlightedFunction, getScenarios, getActiveScenario, getForkOrigins } from '$lib/stores/session.svelte';
   import { composeScenarioTree, type ComposedNode } from '$lib/canvas/scenarios';
   import { promptScenarioName } from '$lib/scenarios/name';
@@ -11,10 +15,10 @@
   import { postCommand } from '$lib/api/session';
   import Legend from '$lib/components/contract/Legend.svelte';
   import FunctionSidebar from '$lib/components/contract/FunctionSidebar.svelte';
-  import FloatingToolbar from '$lib/components/contract/FloatingToolbar.svelte';
+  import TopBar from '$lib/components/contract/TopBar.svelte';
+  import StatusBar from '$lib/components/contract/StatusBar.svelte';
   import ContextMenu from '$lib/components/contract/ContextMenu.svelte';
   import FunctionSourcePanel from '$lib/components/contract/FunctionSourcePanel.svelte';
-  import NodeDetailPanel from '$lib/components/contract/NodeDetailPanel.svelte';
   import GraphCanvasFlow from '$lib/components/contract/GraphCanvasFlow.svelte';
   import SessionSidebar from '$lib/components/session/SessionSidebar.svelte';
   import {
@@ -24,6 +28,7 @@
     addNodes, addEdges,
     removeNodesById, findNode,
     findDescendants,
+    clearGraph,
     type GraphNodeData,
   } from '$lib/stores/graph.svelte';
   import { runDagreLayout } from '$lib/utils/graph-helpers';
@@ -36,6 +41,10 @@
   let selectedPath: any = $state(null);
   let funcPaths: Record<string, any> = $state({});
   let expandedFuncs: Set<string> = $state(new Set());
+  // Driven by SvelteFlow's onselectionchange — used only for the status bar
+  // selection chip. Kept as a plain count (not the full node list) since no
+  // other consumer needs per-node selection data at this level.
+  let selectionCount: number = $state(0);
   // Default: Seq mode is the auditor-friendly view; Session mode flips the
   // sidebar click into "add step" and hides exploration nodes on the canvas
   // so only the scenarios tree is visible.
@@ -56,6 +65,11 @@
   } | null = $state(null);
 
   let canvasFuncs: Set<string> = $state(new Set()); // functions currently on canvas
+
+  // Project map (all contracts in the workspace) — fetched once on mount so
+  // the Cmd+K palette can offer cross-contract navigation without every
+  // keystroke hitting the REST endpoint.
+  let projectMap: MapContract[] = $state([]);
 
   // Inline source-viewer panel state. Null when closed. Set by the
   // ContextMenu "View source" entry.
@@ -447,21 +461,30 @@
       });
       addNodes(composedNodes);
 
+      const nodeScenarios = new Map<string, string[]>(
+        tree.nodes.map((n) => [n.id, n._scenariosPassingThrough]),
+      );
+
       const composedEdges: Edge[] = tree.edges.map((ce) => {
         const isFork = ce._forkEdge === true;
-        const color = isFork ? 'var(--color-accent)' : 'var(--color-text-muted)';
+        const sourceScns = nodeScenarios.get(ce.source) ?? [];
+        const targetScns = nodeScenarios.get(ce.target) ?? [];
+        const onActivePath = sourceScns.includes(active) && targetScns.includes(active);
+
+        const color = onActivePath
+          ? (isFork ? 'var(--color-accent)' : 'var(--color-accent-hover)')
+          : 'var(--color-text-dim)';
+        const opacity = onActivePath ? 1 : 0.4;
+
         return {
           id: ce.id,
           source: ce.source,
           target: ce.target,
           sourceHandle: 'r',
           targetHandle: 'l',
-          // 'smoothstep' draws curved right-angle corners, which reads as a
-          // branch emerging from the origin — distinct from the straight
-          // within-scenario edges.
-          type: isFork ? 'smoothstep' : 'default',
-          animated: isFork,
-          style: `stroke: ${color}; ${isFork ? 'stroke-dasharray: 4 4;' : ''}`,
+          type: 'default',
+          animated: isFork && onActivePath,
+          style: `stroke: ${color}; opacity: ${opacity}; ${isFork ? 'stroke-dasharray: 4 4;' : ''}`,
           markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12, color },
           labelBgStyle: { fill: 'var(--color-surface)', fillOpacity: 0.85 },
           labelBgPadding: [3, 5] as [number, number],
@@ -495,6 +518,22 @@
     });
   });
 
+  // Invalidate stale NodeInspector selection. Any flow that removes
+  // nodes (CFG collapse, removeFuncFromCanvas, removeSeqNode, DEL key,
+  // Clear from the sidebar) converges here — callers don't need to
+  // remember to null out selectedNode themselves. The read inside
+  // findNode creates a reactive dependency so the guard re-runs whenever
+  // the graph store mutates. Safe against loops: when we set
+  // selectedNode = null the effect re-runs, short-circuits on the null
+  // check, and exits without further writes.
+  $effect(() => {
+    if (!selectedNode) return;
+    if (!findNode(selectedNode.id)) {
+      selectedNode = null;
+      selectedPath = null;
+    }
+  });
+
   // Highlight the function node when the session broadcasts session_highlight
   $effect(() => {
     const funcName = sessionHighlight;
@@ -508,6 +547,15 @@
   onMount(async () => {
     const contractName = page.params.name;
     if (!contractName) return;
+    // Graph store is global — stale nodes from a previous contract must be
+    // wiped or they'd pollute this contract's canvas (and leave the sidebar
+    // out of sync because local Sets re-init empty on re-mount).
+    clearGraph();
+    canvasFuncs = new Set();
+    expandedFuncs = new Set();
+    seqExpanded = new Map();
+    selectedNode = null;
+    selectedPath = null;
     setSearchContext(contractName);
     try {
       contract = await getContract(contractName);
@@ -515,68 +563,87 @@
       callgraphRaw = callgraphData;
       try { seqTree = await getSequences(contractName); } catch {}
       try { seqAnalysis = await getSequenceAnalysis(contractName); } catch {}
+      // Fire-and-forget — palette commands render fine without it, cross-
+      // contract nav just stays empty until the list lands.
+      try {
+        const pm = await getProjectMap();
+        projectMap = pm.contracts;
+      } catch {}
     } catch (e) {
       error = `Contract "${contractName}" not found`;
     }
   });
 
-  // Listen for search result navigation
+  // Listen for search result navigation. Only `getSearchNavigate()` is
+  // tracked — everything else is accessed via untrack so mutations inside
+  // the IIFE (canvasFuncs, funcPaths, expandedFuncs, edges via
+  // highlightPath) don't re-enter this effect and trigger an
+  // effect_update_depth_exceeded loop. The effect re-runs exactly when
+  // the palette publishes a new navigation target; subsequent state
+  // writes are handled inside the async task.
   $effect(() => {
     const nav = getSearchNavigate();
-    if (!nav || !contract) return;
-    if (nav.contract !== contract.name) return;
+    if (!nav) return;
+    untrack(() => {
+      if (!contract) return;
+      if (nav.contract !== contract.name) return;
 
-    let stale = false;
+      let stale = false;
 
-    (async () => {
-      try {
-        if (!canvasFuncs.has(nav.func)) {
-          addFuncToCanvas(nav.func);
-          await tick();
-        }
-        if (stale || !contract) return;
-
-        if (!funcPaths[nav.func]) {
-          funcPaths[nav.func] = await getPaths(contract.name, nav.func);
-          funcPaths = { ...funcPaths };
-        }
-        if (stale || !contract) return;
-
-        if (!expandedFuncs.has(nav.func)) {
-          await toggleFuncExpand(nav.func);
-        }
-        if (stale) return;
-
-        const funcNode = getNodes().find(
-          n => n.data._type === 'function' && n.data.label === nav.func
-        );
-        if (funcNode) {
-          selectedNode = { ...funcNode.data, id: funcNode.id };
-          const path = funcPaths[nav.func]?.paths?.find((p: any) => p.id === nav.pathId);
-          if (path) highlightPath(nav.func, path);
-          if (flowApi) {
+      (async () => {
+        try {
+          if (!canvasFuncs.has(nav.func)) {
+            addFuncToCanvas(nav.func);
             await tick();
-            flowApi.fitView({ nodes: [{ id: funcNode.id }], padding: 0.5, duration: 400 });
           }
-        }
-      } finally {
-        if (!stale) setSearchNavigate(null);
-      }
-    })();
+          if (stale || !contract) return;
 
-    return () => { stale = true; };
+          if (!funcPaths[nav.func]) {
+            funcPaths[nav.func] = await getPaths(contract.name, nav.func);
+            funcPaths = { ...funcPaths };
+          }
+          if (stale || !contract) return;
+
+          if (!expandedFuncs.has(nav.func)) {
+            await toggleFuncExpand(nav.func);
+          }
+          if (stale) return;
+
+          const funcNode = getNodes().find(
+            n => n.data._type === 'function' && n.data.label === nav.func
+          );
+          if (funcNode) {
+            selectedNode = { ...funcNode.data, id: funcNode.id };
+            const path = funcPaths[nav.func]?.paths?.find((p: any) => p.id === nav.pathId);
+            if (path) highlightPath(nav.func, path);
+            if (flowApi) {
+              await tick();
+              flowApi.fitView({ nodes: [{ id: funcNode.id }], padding: 0.5, duration: 400 });
+            }
+          }
+        } finally {
+          if (!stale) setSearchNavigate(null);
+        }
+      })();
+    });
   });
 
   // Sidebar click dispatcher. In Session mode, the sidebar is the entry
   // point for building a scenario — clicking a function fires a Call
   // command and the WS session_add_node event repaints the scenario tree.
   // In CFG/Seq modes, clicking adds the function as an exploration node.
+  function notifyFailure(label: string, e: unknown) {
+    const reason = e instanceof Error ? e.message : String(e);
+    console.warn(`${label} failed:`, e);
+    alert(`${label} failed:\n\n${reason}`);
+  }
+
   async function handleSidebarAdd(funcName: string) {
     if (mode === 'session') {
       try {
         await postCommand({ Call: { func: funcName } }, contract?.name);
       } catch (e) {
-        console.warn('add step failed:', e);
+        notifyFailure('add step', e);
       }
       return;
     }
@@ -706,6 +773,30 @@
     seqExpanded = new Map(seqExpanded);
   }
 
+  // Keyboard-driven delete from the canvas (Figma/Excalidraw pattern).
+  // Dispatches each selected node to the right existing helper so all the
+  // store bookkeeping (canvasFuncs, expandedFuncs, seqExpanded, dim state)
+  // stays in one place. Session mode is guarded at the canvas prop level.
+  function handleNodesDelete(nodes: Node<GraphNodeData>[]) {
+    if (mode === 'session') return;
+    const funcsToRemove = new Set<string>();
+    const seqNodesToRemove: string[] = [];
+    for (const n of nodes) {
+      const d = n.data;
+      if (d._type === 'function') {
+        funcsToRemove.add(d.label);
+      } else if (d._type === 'block') {
+        const parent = (d as any)._parentFunc;
+        if (parent) funcsToRemove.add(parent);
+      } else if (d._type === 'seq-next') {
+        seqNodesToRemove.push(n.id);
+      }
+    }
+    for (const nid of seqNodesToRemove) removeSeqNode(nid);
+    for (const fname of funcsToRemove) removeFuncFromCanvas(fname);
+    selectedNode = null;
+  }
+
   // --- Event handlers ---
 
   async function handleNodeTap(node: Node<GraphNodeData>) {
@@ -741,6 +832,7 @@
   function handleBackgroundTap() {
     selectedNode = null;
     selectedPath = null;
+    contextMenu = null;
     resetAllDimmed();
   }
 
@@ -763,7 +855,7 @@
     try {
       await postCommand('Back', contract?.name);
     } catch (e) {
-      console.warn('session back failed:', e);
+      notifyFailure('session back', e);
     }
   }
 
@@ -776,7 +868,7 @@
     try {
       await postCommand('Clear', contract?.name);
     } catch (e) {
-      console.warn('session clear failed:', e);
+      notifyFailure('session clear', e);
     }
   }
 
@@ -796,7 +888,7 @@
       const res = await getFunctionSource(contract.name, funcName);
       openInIde(res.file_path, res.span.start_line, res.span.start_col);
     } catch (e) {
-      console.warn('open in IDE failed:', e);
+      notifyFailure('open in IDE', e);
     }
   }
 
@@ -814,7 +906,7 @@
       try {
         await postCommand('Back', contract?.name);
       } catch (e) {
-        console.warn('remove-from-here iteration failed:', e);
+        notifyFailure('remove-from-here iteration', e);
         break;
       }
     }
@@ -854,7 +946,7 @@
     if (d._type === 'function' && !d.is_external) {
       await handleFunctionTap(d.label, node.id);
     } else if (d._type === 'seq-next') {
-      await handleSeqNodeTap((d as any)._funcName || d.label, node.id, (d as any)._seqParent);
+      await handleSeqNodeTap((d as any)._funcName || d.label, node.id, (d as any)._seqParent, event);
     }
   }
 
@@ -866,10 +958,13 @@
     }
   }
 
-  async function handleSeqNodeTap(funcName: string, nodeId: string, seqParent: string) {
-    // Tapping a seq-next "commits" to one sibling path: collapse the
-    // auto-expanded sub-trees of all siblings at this level.
-    if (seqParent) {
+  async function handleSeqNodeTap(funcName: string, nodeId: string, seqParent: string, event?: MouseEvent) {
+    // Plain click commits to one sibling path: collapse the auto-expanded
+    // sub-trees of all siblings at this level. Shift+click skips the
+    // collapse so the user can keep multiple branches open in parallel —
+    // matches the "Shift+click → add branch" hint shown in Legend.
+    const keepSiblings = event?.shiftKey === true;
+    if (seqParent && !keepSiblings) {
       const siblings = getNodes().filter(
         n => n.data._type === 'seq-next'
           && (n.data as any)._seqParent === seqParent
@@ -1093,7 +1188,7 @@
     seqExpanded = new Map(seqExpanded);
   }
 
-  function switchMode(newMode: 'cfg' | 'sequences') {
+  function switchMode(newMode: 'cfg' | 'sequences' | 'session') {
     // Remove expanded nodes from graph store
     const toRemove = new Set<string>();
     for (const n of getNodes()) {
@@ -1146,19 +1241,138 @@
     }));
   }
 
+  // ── Cmd+K palette: publish context commands ──────────────────────────
+  // Rebuilds whenever any input state changes (contract, scenarios,
+  // active scenario, mode, canvas state, project map). The palette store
+  // is global, so on route unmount we clear the list to avoid leaking
+  // stale handlers back to the next page.
+  $effect(() => {
+    if (!contract) {
+      setPaletteCommands([]);
+      return;
+    }
+    const ctr = contract;
+    const cmds: Command[] = [];
 
+    // Modes — always present. Icon hints the layout.
+    cmds.push(
+      { id: 'mode:cfg', label: 'Mode: CFG', category: 'Mode', icon: '⊟', keywords: ['cfg', 'control flow'], run: () => switchMode('cfg') },
+      { id: 'mode:sequences', label: 'Mode: Sequences', category: 'Mode', icon: '⇵', keywords: ['seq', 'calls'], run: () => switchMode('sequences') },
+      { id: 'mode:session', label: 'Mode: Session', category: 'Mode', icon: '⎇', keywords: ['scenario', 'session'], run: () => switchMode('session') },
+    );
+
+    // Canvas / terminal actions.
+    cmds.push(
+      { id: 'canvas:center', label: 'Center canvas', category: 'Action', icon: '⊙', keywords: ['fit', 'zoom', 'reset view'], run: () => { flowApi?.fitView({ padding: 0.1 }); } },
+      { id: 'canvas:clear', label: 'Clear canvas', category: 'Action', icon: '✕', keywords: ['reset', 'wipe'], run: () => {
+        const names = Array.from(canvasFuncs);
+        for (const n of names) removeFuncFromCanvas(n);
+      } },
+      { id: 'terminal:toggle', label: 'Toggle terminal', category: 'Action', icon: '>_', keywords: ['console', 'repl', 'pty'], run: () => toggleTerminal() },
+    );
+
+    // Session controls — only meaningful while there is an active scenario
+    // with at least one step. We still expose them otherwise so users can
+    // discover the shortcut; the handlers already guard empty scenarios.
+    cmds.push(
+      { id: 'session:back', label: 'Back — remove last step', category: 'Action', icon: '↶', keywords: ['undo', 'step'], run: () => handleSessionBack() },
+      { id: 'session:clear', label: 'Clear scenario', category: 'Action', icon: '🗑', keywords: ['reset scenario'], run: () => handleSessionClear() },
+    );
+
+    // Scenario lifecycle. "Switch to X" and "Delete X" per existing
+    // scenario; "New scenario" always available.
+    cmds.push({
+      id: 'scenario:new',
+      label: 'New scenario',
+      category: 'Scenario',
+      icon: '+',
+      keywords: ['create', 'scenario'],
+      run: async () => {
+        const name = promptScenarioName();
+        if (!name) return;
+        await dispatchScenarioAction({ New: { name } }, ctr.name, 'new');
+      },
+    });
+    const activeScn = getActiveScenario();
+    for (const [name] of getScenarios()) {
+      if (name !== activeScn) {
+        cmds.push({
+          id: `scenario:switch:${name}`,
+          label: `Switch to scenario: ${name}`,
+          category: 'Scenario',
+          icon: '⎇',
+          run: () => dispatchScenarioAction({ Switch: { name } }, ctr.name, 'switch'),
+        });
+        cmds.push({
+          id: `scenario:delete:${name}`,
+          label: `Delete scenario: ${name}`,
+          category: 'Scenario',
+          icon: '✕',
+          run: () => dispatchScenarioAction({ Delete: { name } }, ctr.name, 'delete'),
+        });
+      }
+    }
+
+    // Functions — own + inherited. Jump = add to canvas (Session mode
+    // turns it into an add-step, which matches the sidebar click).
+    // Solidity allows overloading by signature so names may repeat; we
+    // include the index in the id to keep every row uniquely keyed even
+    // when two rows end up with the same label.
+    const allFuncs = [
+      ...(ctr.functions ?? []).map((f) => ({ name: f.name, source: 'own' as const })),
+      ...(ctr.inherited_functions ?? []).map((f) => ({ name: f.name, source: 'inherited' as const })),
+    ];
+    allFuncs.forEach((f, i) => {
+      cmds.push({
+        id: `func:${f.source}:${i}:${f.name}`,
+        label: f.name,
+        category: 'Function',
+        icon: 'ƒ',
+        detail: f.source === 'inherited' ? 'inherited' : undefined,
+        keywords: ['jump', 'function', 'canvas'],
+        run: () => handleSidebarAdd(f.name),
+      });
+    });
+
+    // Cross-contract navigation. Skip the current one and dedupe by name
+    // — ProjectMap may list the same interface twice (keyed each would
+    // throw on duplicate ids).
+    const seenContracts = new Set<string>([ctr.name]);
+    for (const c of projectMap) {
+      if (seenContracts.has(c.name)) continue;
+      seenContracts.add(c.name);
+      cmds.push({
+        id: `contract:${c.name}`,
+        label: c.name,
+        category: 'Contract',
+        icon: '◈',
+        detail: c.kind,
+        keywords: ['contract', 'navigate', 'open'],
+        run: () => goto(`/contract/${encodeURIComponent(c.name)}`),
+      });
+    }
+
+    setPaletteCommands(cmds);
+  });
+
+  // Clear published commands on unmount so the palette doesn't render
+  // stale handlers if the user lands on a page that doesn't publish its
+  // own list.
+  onDestroy(() => {
+    clearPaletteCommands();
+  });
 </script>
 
 <div class="fixed inset-0 flex flex-col bg-dark">
   {#if error}
     <div class="p-6 text-danger">{error}</div>
   {:else}
-    <FloatingToolbar
+    <TopBar
       contractName={contract?.name ?? '...'}
       {mode}
       {seqDirection}
       onmodechange={switchMode}
-      onsearch={toggleSearch}
+      onsearch={togglePalette}
       oncenter={() => flowApi?.fitView({ padding: 0.1 })}
       onseqdirection={(dir) => { seqDirection = dir; reorientAllSeqSubtrees(); }}
       onsessionback={handleSessionBack}
@@ -1174,34 +1388,41 @@
         onnodetap={(node, event) => handleNodeClick(node, event)}
         onbackgroundtap={handleBackgroundTap}
         oncontextmenu={handleContextMenu}
+        onnodesdelete={handleNodesDelete}
+        canDeleteNodes={mode !== 'session'}
+        onselectionchange={(nodes) => { selectionCount = nodes.length; }}
         onready={(api) => { flowApi = api; }}
       />
 
       {#if contract}
-        <SessionSidebar contract={contract.name} />
+        <SessionSidebar
+          contract={contract.name}
+          {selectedNode}
+          {selectedPath}
+          {funcPaths}
+          {expandedFuncs}
+          {seqExpanded}
+          {mode}
+          {seqAnalysis}
+          contractDetail={{ name: contract.name, functions: contract.functions }}
+          lookupBlock={(blockId) => {
+            const node = findNode(blockId);
+            if (!node || node.data._type !== 'block') return null;
+            return { statements: (node.data as any).statements ?? [], node_type: (node.data as any).node_type };
+          }}
+          onpathselect={(funcName, path) => { selectedPath = path; highlightPath(funcName, path); }}
+          onexpandcfg={(funcName, nodeId) => toggleFuncExpand(funcName, nodeId)}
+        />
       {/if}
     </div>
 
-    {#if selectedNode && contract}
-      <NodeDetailPanel
-        {selectedNode}
-        {selectedPath}
-        {funcPaths}
-        {expandedFuncs}
-        {seqExpanded}
-        {mode}
-        {seqAnalysis}
-        contract={{ name: contract.name, functions: contract.functions }}
-        lookupBlock={(blockId) => {
-          const node = findNode(blockId);
-          if (!node || node.data._type !== 'block') return null;
-          return { statements: (node.data as any).statements ?? [], node_type: (node.data as any).node_type };
-        }}
-        onclose={() => { selectedNode = null; selectedPath = null; }}
-        onpathselect={(funcName, path) => { selectedPath = path; highlightPath(funcName, path); }}
-        onexpandcfg={(funcName, nodeId) => toggleFuncExpand(funcName, nodeId)}
-      />
-    {/if}
+    <StatusBar
+      {mode}
+      canvasCount={canvasFuncs.size}
+      expandedCount={expandedFuncs.size}
+      activeScenario={getActiveScenario()}
+      {selectionCount}
+    />
 
     <ContextMenu
       menu={contextMenu}

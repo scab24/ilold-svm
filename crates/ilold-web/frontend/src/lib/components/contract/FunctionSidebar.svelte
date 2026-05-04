@@ -1,6 +1,16 @@
 <script lang="ts">
   import type { ContractDetail } from '$lib/api/rest';
+  import { visibilityLabel } from '$lib/utils/visibility';
 
+  // Sidebar that lists every function declared in the contract (plus
+  // inherited ones), with a live search + visibility/access filters so it
+  // scales to large codebases (Aave has ~300 functions per pool).
+  //
+  // Click semantics (mode-aware):
+  // - Session mode: click dispatches "add step to active scenario"
+  // - CFG/Seq mode: click always adds to canvas (idempotent). To remove,
+  //   the row shows an explicit ✕ on hover when the function is already
+  //   on canvas. A top-level `Clear · N` button wipes the canvas at once.
   let {
     contract,
     canvasFuncs,
@@ -10,80 +20,460 @@
   }: {
     contract: ContractDetail;
     canvasFuncs: Set<string>;
-    /** In Session mode, clicking a function ALWAYS dispatches add (as a
-     *  session step) regardless of canvas membership, and the ✓ indicator
-     *  is suppressed because the canvas layer is hidden. */
     mode: 'cfg' | 'sequences' | 'session';
     onadd: (func: string) => void;
     onremove: (func: string) => void;
   } = $props();
 
   let sidebarOpen = $state(true);
+  let query = $state('');
 
-  // Auditors only care about entry points — public + external functions.
-  // Internal/private functions aren't callable from outside so they're noise here.
-  const entryPoints = $derived(
-    contract.functions.filter(
-      (f) => f.visibility === 'Public' || f.visibility === 'External',
-    ),
-  );
+  // Visibility filter — multi-select. Defaults to entry points only
+  // (Public + External) to preserve the previous default UX; auditors can
+  // expand to Internal/Private with one click.
+  type Visibility = 'Public' | 'External' | 'Internal' | 'Private';
+  const ALL_VISIBILITIES: Visibility[] = ['External', 'Public', 'Internal', 'Private'];
+  let visFilter = $state<Set<Visibility>>(new Set<Visibility>(['Public', 'External']));
+  let onlyAccessControl = $state(false);
+
+  // Merge own + inherited; tag each row with its source so we can group
+  // under a divider.
+  type Row = {
+    name: string;
+    visibility: string;
+    path_count: number;
+    modifiers: string[];
+    source: 'own' | 'inherited';
+  };
+  const allRows = $derived<Row[]>([
+    ...(contract.functions ?? []).map((f): Row => ({
+      name: f.name,
+      visibility: f.visibility,
+      path_count: f.path_count,
+      modifiers: f.modifiers ?? [],
+      source: 'own',
+    })),
+    ...(contract.inherited_functions ?? []).map((f): Row => ({
+      name: f.name,
+      visibility: f.visibility,
+      path_count: f.path_count,
+      modifiers: f.modifiers ?? [],
+      source: 'inherited',
+    })),
+  ]);
+
+  const filtered = $derived.by(() => {
+    const q = query.trim().toLowerCase();
+    return allRows.filter((r) => {
+      if (!visFilter.has(r.visibility as Visibility)) return false;
+      if (onlyAccessControl && r.modifiers.length === 0) return false;
+      if (q && !r.name.toLowerCase().includes(q)) return false;
+      return true;
+    });
+  });
+
+  const ownFiltered = $derived(filtered.filter((r) => r.source === 'own'));
+  const inheritedFiltered = $derived(filtered.filter((r) => r.source === 'inherited'));
+  const totalCount = $derived(allRows.length);
+  const visibleCount = $derived(filtered.length);
+  const canvasCount = $derived(canvasFuncs.size);
+  const canClear = $derived(mode !== 'session' && canvasCount > 0);
+
+  function toggleVisibility(v: Visibility) {
+    const next = new Set(visFilter);
+    if (next.has(v)) next.delete(v);
+    else next.add(v);
+    visFilter = next;
+  }
+
+  function resetFilters() {
+    query = '';
+    visFilter = new Set<Visibility>(['Public', 'External']);
+    onlyAccessControl = false;
+  }
+
+  // Snapshot to Array before iterating because `onremove` mutates the
+  // parent's `canvasFuncs` reactive Set — iterating the live Set would
+  // skip entries.
+  function clearCanvas() {
+    if (!canClear) return;
+    const toRemove = Array.from(canvasFuncs);
+    for (const name of toRemove) onremove(name);
+  }
+
+  function visShort(v: string): string {
+    return visibilityLabel(v) ?? '';
+  }
 </script>
 
 <div
-  class="flex flex-col shrink-0 transition-[width] duration-200 {sidebarOpen ? 'w-[180px]' : 'w-8'}"
-  style="
-    background: linear-gradient(180deg, rgba(30, 30, 40, 0.9) 0%, rgba(20, 20, 28, 0.95) 100%);
-    border-right: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
-  "
+  class="sidebar flex flex-col shrink-0 transition-[width] duration-200 {sidebarOpen ? 'w-[240px]' : 'w-8'}"
 >
-  <!-- Header — glass effect -->
-  <div
-    class="flex items-center justify-between px-2.5 py-2"
-    style="
-      border-bottom: 1px solid color-mix(in srgb, var(--color-border) 40%, transparent);
-      background: linear-gradient(180deg, rgba(30, 30, 40, 0.85) 0%, rgba(24, 24, 30, 0.9) 100%);
-      backdrop-filter: blur(16px) saturate(1.8);
-      -webkit-backdrop-filter: blur(16px) saturate(1.8);
-    "
-  >
+  <!-- Header -->
+  <div class="header flex items-center justify-between px-2.5 py-2">
     {#if sidebarOpen}
-      <span class="text-[10px] text-text-muted uppercase tracking-wider font-semibold">Functions</span>
+      <span class="text-[10px] text-text-muted uppercase tracking-wider font-semibold">
+        Functions <span class="text-text-dim font-normal">· {visibleCount}/{totalCount}</span>
+      </span>
     {/if}
     <button
-      class="bg-transparent border-none text-text-muted cursor-pointer text-[11px] px-1 py-0.5 transition-colors duration-150 hover:text-accent-hover"
-      style="border-radius: 6px;"
+      class="collapse-btn bg-transparent border-none text-text-muted cursor-pointer text-[11px] px-1 py-0.5 transition-colors duration-150 hover:text-accent-hover"
       onclick={() => sidebarOpen = !sidebarOpen}
+      aria-label={sidebarOpen ? 'Collapse sidebar' : 'Expand sidebar'}
     >{sidebarOpen ? '◂' : '▸'}</button>
   </div>
 
   {#if sidebarOpen}
-    <div class="flex-1 overflow-y-auto p-1.5">
-      {#each entryPoints as func}
-        {@const onCanvas = canvasFuncs.has(func.name)}
-        {@const inSession = mode === 'session'}
-        {@const showActive = onCanvas && !inSession}
+    <!-- Search input -->
+    <div class="px-2 pt-2 pb-1">
+      <div class="search-wrap">
+        <span class="search-icon" aria-hidden="true">⌕</span>
+        <input
+          type="text"
+          class="search-input"
+          placeholder="Search functions..."
+          bind:value={query}
+          aria-label="Search functions"
+        />
+        {#if query}
+          <button
+            class="search-clear"
+            onclick={() => query = ''}
+            title="Clear search"
+            aria-label="Clear search"
+          >✕</button>
+        {/if}
+      </div>
+    </div>
+
+    <!-- Filter chips + canvas clear -->
+    <div class="filters px-2 pb-2">
+      {#each ALL_VISIBILITIES as v}
         <button
-          class="flex items-center gap-1.5 w-full px-2 py-[6px] bg-transparent border-none text-text-muted text-[11px] font-mono cursor-pointer text-left transition-colors duration-150 hover:text-text {showActive ? 'text-accent-hover' : ''}"
-          style="
-            border-radius: 6px;
-            background: {showActive ? 'color-mix(in srgb, var(--color-accent) 8%, transparent)' : 'transparent'};
-          "
-          onclick={() => (inSession || !onCanvas) ? onadd(func.name) : onremove(func.name)}
-          title={inSession ? 'Add step to active scenario' : (onCanvas ? 'Remove from canvas' : 'Add to canvas')}
-        >
-          <span class="flex-1 overflow-hidden text-ellipsis whitespace-nowrap">{func.name}</span>
-          <span
-            class="text-[9px] text-text-dim px-1.5 py-px font-mono"
-            style="border-radius: 8px; background: color-mix(in srgb, var(--color-border) 40%, transparent);"
-          >{func.path_count}p</span>
-          {#if showActive}
-            <span
-              class="text-[10px]"
-              style="color: var(--color-accent); text-shadow: 0 0 6px var(--color-accent);"
-            >✓</span>
-          {/if}
-        </button>
+          class="chip"
+          class:active={visFilter.has(v)}
+          onclick={() => toggleVisibility(v)}
+          title="Toggle {v} visibility"
+        >{visShort(v)}</button>
       {/each}
+      <button
+        class="chip"
+        class:active={onlyAccessControl}
+        onclick={() => onlyAccessControl = !onlyAccessControl}
+        title="Only functions with modifiers (access control)"
+        aria-pressed={onlyAccessControl}
+      >🔒</button>
+      {#if canClear}
+        <button
+          class="chip chip-clear"
+          onclick={clearCanvas}
+          title="Remove every function from the canvas"
+          aria-label="Clear canvas"
+        >Clear · {canvasCount}</button>
+      {/if}
+    </div>
+
+    <!-- Function list -->
+    <div class="flex-1 overflow-y-auto p-1.5">
+      {#if visibleCount === 0}
+        <div class="empty-state">
+          {#if query || onlyAccessControl || visFilter.size < ALL_VISIBILITIES.length}
+            <div class="empty-title">No match</div>
+            <button class="reset-btn" onclick={resetFilters}>Reset filters</button>
+          {:else}
+            <div class="empty-title">No functions</div>
+          {/if}
+        </div>
+      {:else}
+        {#if ownFiltered.length > 0}
+          {#each ownFiltered as row (row.source + ':' + row.name)}
+            {@render functionRow(row)}
+          {/each}
+        {/if}
+
+        {#if inheritedFiltered.length > 0}
+          {#if ownFiltered.length > 0}
+            <div class="section-divider">Inherited</div>
+          {/if}
+          {#each inheritedFiltered as row (row.source + ':' + row.name)}
+            {@render functionRow(row)}
+          {/each}
+        {/if}
+      {/if}
     </div>
   {/if}
 </div>
+
+{#snippet functionRow(row: Row)}
+  {@const onCanvas = canvasFuncs.has(row.name)}
+  {@const inSession = mode === 'session'}
+  {@const showActive = onCanvas && !inSession}
+  <div
+    class="row-wrap"
+    class:active={showActive}
+    class:inherited={row.source === 'inherited'}
+  >
+    <button
+      class="row-main"
+      onclick={() => onadd(row.name)}
+      title={inSession
+        ? 'Add step to active scenario'
+        : (onCanvas ? 'On canvas — click ✕ to remove' : 'Add to canvas')}
+    >
+      <span class="row-name">{row.name}</span>
+      <span class="row-vis {visShort(row.visibility)}">{visShort(row.visibility)}</span>
+      {#if row.modifiers.length > 0}
+        <span class="row-lock" title={row.modifiers.join(', ')}>🔒</span>
+      {/if}
+      <span class="row-paths">{row.path_count}p</span>
+    </button>
+    {#if showActive}
+      <button
+        class="row-toggle"
+        onclick={(e) => { e.stopPropagation(); onremove(row.name); }}
+        title="Remove from canvas"
+        aria-label="Remove {row.name} from canvas"
+      >
+        <span class="icon-check" aria-hidden="true">✓</span>
+        <span class="icon-remove" aria-hidden="true">✕</span>
+      </button>
+    {/if}
+  </div>
+{/snippet}
+
+<style>
+  .sidebar {
+    background: linear-gradient(180deg, rgba(30, 30, 40, 0.9) 0%, rgba(20, 20, 28, 0.95) 100%);
+    border-right: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+  }
+  .header {
+    border-bottom: 1px solid color-mix(in srgb, var(--color-border) 40%, transparent);
+    background: linear-gradient(180deg, rgba(30, 30, 40, 0.85) 0%, rgba(24, 24, 30, 0.9) 100%);
+    backdrop-filter: blur(16px) saturate(1.8);
+    -webkit-backdrop-filter: blur(16px) saturate(1.8);
+  }
+  .collapse-btn { border-radius: 6px; }
+
+  /* ── Search ──────────────────────────────────────────────────────────── */
+  .search-wrap {
+    position: relative;
+    display: flex;
+    align-items: center;
+  }
+  .search-icon {
+    position: absolute;
+    left: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--color-text-dim);
+    font-size: 13px;
+    line-height: 1;
+    pointer-events: none;
+  }
+  .search-input {
+    width: 100%;
+    appearance: none;
+    background: color-mix(in srgb, var(--color-surface) 80%, transparent);
+    border: 1px solid color-mix(in srgb, var(--color-border) 50%, transparent);
+    color: var(--color-text);
+    font-family: var(--font-mono, monospace);
+    font-size: 11px;
+    padding: 5px 24px 5px 24px;
+    border-radius: 6px;
+    outline: none;
+    transition: border-color 120ms ease, background 120ms ease;
+  }
+  .search-input::placeholder { color: var(--color-text-dim); }
+  .search-input:focus {
+    border-color: color-mix(in srgb, var(--color-accent) 60%, transparent);
+    background: color-mix(in srgb, var(--color-surface) 95%, transparent);
+  }
+  .search-clear {
+    position: absolute;
+    right: 4px;
+    top: 50%;
+    transform: translateY(-50%);
+    background: transparent;
+    border: none;
+    color: var(--color-text-dim);
+    cursor: pointer;
+    padding: 2px 5px;
+    border-radius: 4px;
+    font-size: 10px;
+    line-height: 1;
+    transition: color 120ms ease, background 120ms ease;
+  }
+  .search-clear:hover {
+    color: var(--color-text);
+    background: color-mix(in srgb, var(--color-border) 40%, transparent);
+  }
+
+  /* ── Filter chips ────────────────────────────────────────────────────── */
+  .filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .chip {
+    appearance: none;
+    background: color-mix(in srgb, var(--color-surface) 70%, transparent);
+    border: 1px solid color-mix(in srgb, var(--color-border) 40%, transparent);
+    color: var(--color-text-dim);
+    font-family: var(--font-mono, monospace);
+    font-size: 9px;
+    font-weight: 600;
+    padding: 2px 7px;
+    border-radius: 999px;
+    cursor: pointer;
+    transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+  }
+  .chip:hover { color: var(--color-text-muted); }
+  .chip.active {
+    color: var(--color-accent-light);
+    background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+    border-color: color-mix(in srgb, var(--color-accent) 60%, transparent);
+  }
+  .chip-clear {
+    margin-left: auto;
+    color: var(--color-danger);
+    border-color: color-mix(in srgb, var(--color-danger) 40%, transparent);
+    background: color-mix(in srgb, var(--color-danger) 10%, transparent);
+  }
+  .chip-clear:hover {
+    color: var(--color-danger);
+    background: color-mix(in srgb, var(--color-danger) 22%, transparent);
+    border-color: color-mix(in srgb, var(--color-danger) 70%, transparent);
+  }
+
+  /* ── Section divider (own vs inherited) ──────────────────────────────── */
+  .section-divider {
+    font-size: 9px;
+    font-weight: 700;
+    color: var(--color-text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 10px 8px 4px;
+  }
+
+  /* ── Empty state ─────────────────────────────────────────────────────── */
+  .empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    padding: 24px 12px;
+    text-align: center;
+  }
+  .empty-title {
+    font-size: 11px;
+    color: var(--color-text-muted);
+    font-family: var(--font-mono, monospace);
+  }
+  .reset-btn {
+    appearance: none;
+    background: transparent;
+    border: 1px solid color-mix(in srgb, var(--color-border) 50%, transparent);
+    color: var(--color-accent-hover);
+    font-family: inherit;
+    font-size: 10px;
+    padding: 3px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: color 120ms ease, background 120ms ease;
+  }
+  .reset-btn:hover {
+    background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  }
+
+  /* ── Function rows ───────────────────────────────────────────────────── */
+  .row-wrap {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    border-radius: 6px;
+    transition: background 120ms ease;
+  }
+  .row-wrap:hover {
+    background: color-mix(in srgb, var(--color-accent) 6%, transparent);
+  }
+  .row-wrap.active {
+    background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+  }
+  .row-wrap.inherited { opacity: 0.85; }
+
+  .row-main {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    padding: 5px 8px;
+    background: transparent;
+    border: none;
+    color: var(--color-text-muted);
+    font-family: var(--font-mono, monospace);
+    font-size: 11px;
+    cursor: pointer;
+    text-align: left;
+    border-radius: 6px;
+  }
+  .row-wrap:hover .row-main { color: var(--color-text); }
+  .row-wrap.active .row-main { color: var(--color-accent-hover); }
+
+  .row-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* Visibility pill — tinted per value for quick scan */
+  .row-vis {
+    font-size: 8px;
+    font-weight: 600;
+    padding: 1px 5px;
+    border-radius: 3px;
+    text-transform: lowercase;
+    font-family: inherit;
+  }
+  .row-vis.pub { background: color-mix(in srgb, var(--color-accent-dark) 40%, transparent); color: var(--color-accent-hover); }
+  .row-vis.ext { background: color-mix(in srgb, var(--color-warning) 20%, transparent); color: var(--color-warning); }
+  .row-vis.int, .row-vis.priv {
+    background: color-mix(in srgb, var(--color-border) 60%, transparent);
+    color: var(--color-text-muted);
+  }
+
+  .row-lock { font-size: 10px; line-height: 1; }
+
+  .row-paths {
+    font-size: 9px;
+    color: var(--color-text-dim);
+    padding: 0 5px;
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--color-border) 35%, transparent);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Canvas membership toggle — shows ✓ at rest, swaps to ✕ on row hover
+     so the "remove" affordance is discoverable but not noisy. */
+  .row-toggle {
+    appearance: none;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    padding: 4px 6px;
+    margin-right: 2px;
+    border-radius: 4px;
+    line-height: 1;
+    color: var(--color-accent);
+    transition: color 120ms ease, background 120ms ease;
+  }
+  .row-toggle .icon-check { font-size: 10px; text-shadow: 0 0 6px var(--color-accent); }
+  .row-toggle .icon-remove { display: none; font-size: 10px; }
+  .row-wrap:hover .row-toggle .icon-check { display: none; }
+  .row-wrap:hover .row-toggle .icon-remove { display: inline; }
+  .row-toggle:hover {
+    color: var(--color-danger);
+    background: color-mix(in srgb, var(--color-danger) 15%, transparent);
+  }
+</style>

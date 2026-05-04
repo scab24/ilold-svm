@@ -19,9 +19,26 @@
     onbackgroundtap?: () => void;
     oncontextmenu?: (event: MouseEvent, node: Node<GraphNodeData>) => void;
     onready?: (api: { fitView: (opts?: any) => Promise<boolean> }) => void;
+    /** Fires when the user presses Delete/Backspace with nodes selected.
+     *  The parent is responsible for mutating the graph store — without a
+     *  handler SvelteFlow would only remove nodes from its local binding
+     *  and the store $effect would put them back. */
+    onnodesdelete?: (nodes: Node<GraphNodeData>[]) => void;
+    /** When false, Delete/Backspace do nothing on the canvas (e.g. Session
+     *  mode renders the scenarios tree which must not be deleted by DEL). */
+    canDeleteNodes?: boolean;
+    /** Fires whenever the set of selected nodes changes (shift+click,
+     *  lasso, pane click). Thin wrapper over xyflow's onselectionchange
+     *  that only forwards the node list — the parent usually just wants a
+     *  count for the status bar. */
+    onselectionchange?: (nodes: Node<GraphNodeData>[]) => void;
   }
 
-  let { onnodetap, onbackgroundtap, oncontextmenu, onready }: Props = $props();
+  let { onnodetap, onbackgroundtap, oncontextmenu, onready, onnodesdelete, canDeleteNodes = true, onselectionchange }: Props = $props();
+
+  // Explicit null disables SvelteFlow's built-in delete shortcut; otherwise
+  // we listen to both Delete and Backspace (Figma/Excalidraw convention).
+  const deleteKeysProp = $derived<string[] | null>(canDeleteNodes ? ['Delete', 'Backspace'] : null);
 
   // ── Custom node type registry ─────────────────────────────
   const nodeTypes: NodeTypes = {
@@ -135,6 +152,8 @@
         (event as MouseEvent).preventDefault();
         oncontextmenu?.(event as MouseEvent, node as Node<GraphNodeData>);
       }}
+      ondelete={({ nodes }) => onnodesdelete?.(nodes as unknown as Node<GraphNodeData>[])}
+      onselectionchange={({ nodes }) => onselectionchange?.(nodes as unknown as Node<GraphNodeData>[])}
       oninit={() => {
         const { fitView } = useSvelteFlow();
         onready?.({ fitView });
@@ -146,6 +165,7 @@
       selectionOnDrag={selectionOnDragProp}
       selectionMode="partial"
       multiSelectionKeyCode="Shift"
+      deleteKey={deleteKeysProp}
     >
       <Background />
       <Controls />
@@ -193,5 +213,17 @@
   :global(.svelte-flow .svelte-flow__edge-text) {
     font-size: 11px;
     fill: var(--color-accent-hover);
+  }
+
+  /* xyflow only ships selection styling for its built-in node types
+     (input/default/output/group). Our canvas uses custom node types
+     (function/block/sequence), so click-to-select would mark the node as
+     selected internally but leave no visible feedback — which also meant
+     users couldn't tell they could press Delete/Backspace. This rule
+     applies a clear accent outline to any selected custom node. */
+  :global(.svelte-flow__node.selected) {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 3px;
+    border-radius: 10px;
   }
 </style>

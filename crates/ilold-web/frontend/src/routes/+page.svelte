@@ -1,7 +1,10 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
+  import { goto } from '$app/navigation';
   import { getProjectMap, type ProjectMap, type MapContract } from '$lib/api/rest';
-  import { toggleSearch, setSearchContext } from '$lib/stores/search.svelte';
+  import { setSearchContext } from '$lib/stores/search.svelte';
+  import { togglePalette, setPaletteCommands, clearPaletteCommands } from '$lib/stores/palette.svelte';
+  import type { Command } from '$lib/commands/registry';
 
   let projectMap: ProjectMap | null = $state(null);
   let error: string | null = $state(null);
@@ -14,6 +17,37 @@
       error = 'Failed to connect. Is "ilold serve" running?';
     }
   });
+
+  // Publish project-level commands: navigate into any contract. The
+  // contract page replaces this list with its richer set on mount.
+  // ProjectMap may report the same name twice (e.g. an interface that
+  // appears as its own entry and as an inherited reference elsewhere),
+  // so we dedupe by name before mapping to Commands — Svelte's keyed
+  // each block would otherwise error on the duplicate id.
+  $effect(() => {
+    if (!projectMap) {
+      setPaletteCommands([]);
+      return;
+    }
+    const seen = new Set<string>();
+    const cmds: Command[] = [];
+    for (const c of projectMap.contracts) {
+      if (seen.has(c.name)) continue;
+      seen.add(c.name);
+      cmds.push({
+        id: `contract:${c.name}`,
+        label: c.name,
+        category: 'Contract' as const,
+        icon: '◈',
+        detail: c.kind,
+        keywords: ['contract', 'open', 'navigate'],
+        run: () => goto(`/contract/${encodeURIComponent(c.name)}`),
+      });
+    }
+    setPaletteCommands(cmds);
+  });
+
+  onDestroy(() => clearPaletteCommands());
 
   let contracts: any[] = $state([]);
   let interfaces: any[] = $state([]);
@@ -39,7 +73,7 @@
       <span class="text-xs text-text-muted">{projectMap.contracts.length} contracts · {projectMap.relationships.length} cross-contract calls</span>
     {/if}
     <div class="ml-auto flex gap-1">
-      <button class="bg-hover border border-border-subtle text-accent-hover px-3 py-1 rounded-sm cursor-pointer text-xs hover:border-accent" onclick={toggleSearch}>🔍 Search</button>
+      <button class="bg-hover border border-border-subtle text-accent-hover px-3 py-1 rounded-sm cursor-pointer text-xs hover:border-accent" onclick={togglePalette}>⌘K Search</button>
     </div>
   </div>
 

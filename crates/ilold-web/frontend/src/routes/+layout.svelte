@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import SearchPanel from '$lib/SearchPanel.svelte';
-  import { toggleSearch } from '$lib/stores/search.svelte';
+  import CommandPalette from '$lib/CommandPalette.svelte';
+  import { togglePalette } from '$lib/stores/palette.svelte';
   import '../app.css';
 
   let { children } = $props();
@@ -10,7 +10,7 @@
     function handleKeydown(e: KeyboardEvent) {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
         e.preventDefault();
-        toggleSearch();
+        togglePalette();
       }
     }
     window.addEventListener('keydown', handleKeydown);
@@ -18,5 +18,5 @@
   });
 </script>
 
-<SearchPanel />
+<CommandPalette />
 {@render children()}

@@ -1,15 +1,65 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import EmbeddedTerminal from './EmbeddedTerminal.svelte';
   import SessionTimeline from './SessionTimeline.svelte';
   import StatePanel from './StatePanel.svelte';
+  import NodeInspector from '$lib/components/contract/NodeInspector.svelte';
   import { getScenarios, getActiveScenario } from '$lib/stores/session.svelte';
   import { promptScenarioName } from '$lib/scenarios/name';
   import { dispatchScenarioAction } from '$lib/scenarios/dispatch';
 
-  let { contract }: { contract: string } = $props();
+  // Inspector props are optional so existing callers don't break, but
+  // +page.svelte passes them all as part of F4 to replace the floating
+  // NodeDetailPanel. When `selectedNode` is null the Inspector shows an
+  // empty state in-place instead of the panel disappearing — the tab
+  // itself stays available.
+  let {
+    contract,
+    selectedNode = null,
+    selectedPath = null,
+    funcPaths = {},
+    expandedFuncs = new Set<string>(),
+    seqExpanded = new Map<string, boolean>(),
+    mode = 'sequences',
+    seqAnalysis = null,
+    contractDetail = null,
+    lookupBlock = () => null,
+    onpathselect = () => {},
+    onexpandcfg = () => {},
+  }: {
+    contract: string;
+    selectedNode?: any;
+    selectedPath?: any;
+    funcPaths?: Record<string, any>;
+    expandedFuncs?: Set<string>;
+    seqExpanded?: Map<string, boolean>;
+    mode?: 'cfg' | 'sequences' | 'session';
+    seqAnalysis?: any;
+    contractDetail?: { name: string; functions?: any[] } | null;
+    lookupBlock?: (blockId: string) => { statements: string[]; node_type: string } | null;
+    onpathselect?: (funcName: string, path: any) => void;
+    onexpandcfg?: (funcName: string, nodeId?: string) => void;
+  } = $props();
 
   let open = $state(true);
-  let activeTab: 'timeline' | 'state' = $state('timeline');
+  let activeTab: 'timeline' | 'state' | 'inspector' = $state('timeline');
+
+  // Auto-switch to the Inspector tab the moment the user selects a node
+  // on the canvas. Mirrors Figma / VSCode — selection should reveal the
+  // details without the user having to hunt for a tab. We only switch on
+  // the null → non-null transition so re-selecting a different node
+  // doesn't keep yanking the user back to this tab mid-navigation.
+  let prevSelectedId = $state<string | null>(null);
+  $effect(() => {
+    const currentId = selectedNode?.id ?? null;
+    // Read the tracker via untrack so writing it at the end doesn't
+    // re-trigger this effect — only selectedNode changes should flow in.
+    const prev = untrack(() => prevSelectedId);
+    if (currentId && !prev) {
+      activeTab = 'inspector';
+    }
+    prevSelectedId = currentId;
+  });
 
   // Reactive view of scenarios (ordered map + active name, both from session store)
   const scenarioEntries = $derived(Array.from(getScenarios().entries()));
@@ -175,13 +225,35 @@
       >
         State
       </button>
+      <button
+        class="flex-1 py-2 bg-transparent border-none text-[10px] font-semibold uppercase tracking-wider cursor-pointer transition-colors duration-150 {activeTab === 'inspector' ? 'text-accent' : 'text-text-muted hover:text-text'}"
+        style="border-bottom: 2px solid {activeTab === 'inspector' ? 'var(--color-accent)' : 'transparent'};"
+        onclick={() => activeTab = 'inspector'}
+        title={selectedNode ? `Inspect: ${selectedNode._funcName || selectedNode.label}` : 'Inspector — select a node to populate'}
+      >
+        Inspector{#if selectedNode}<span class="ml-1 text-accent-light">●</span>{/if}
+      </button>
     </div>
 
     <div class="flex-1 overflow-y-auto min-h-0 px-1">
       {#if activeTab === 'timeline'}
         <SessionTimeline {contract} />
-      {:else}
+      {:else if activeTab === 'state'}
         <StatePanel {contract} />
+      {:else if contractDetail}
+        <NodeInspector
+          {selectedNode}
+          {selectedPath}
+          {funcPaths}
+          {expandedFuncs}
+          {seqExpanded}
+          {mode}
+          {seqAnalysis}
+          contract={contractDetail}
+          {lookupBlock}
+          {onpathselect}
+          {onexpandcfg}
+        />
       {/if}
     </div>
   </div>

@@ -204,7 +204,7 @@ export function getConnectionState(): ConnectionState {
  * Limitation: no request-ID correlation from the backend. Overlapping searches
  * will cross-deliver results until the first auto-unsubscribes. Mitigations:
  * 1. Auto-unsub on search_complete keeps the overlap window small
- * 2. SearchPanel debounces at 300ms — one active search at a time
+ * 2. CommandPalette debounces at 250ms — one active search at a time
  * 3. Raw subscribe('search_result') gets ALL results — filter if needed
  */
 export function search(

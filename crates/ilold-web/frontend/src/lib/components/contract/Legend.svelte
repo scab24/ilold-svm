@@ -1,5 +1,5 @@
 <script lang="ts">
-  let { mode }: { mode: 'cfg' | 'sequences' } = $props();
+  let { mode }: { mode: 'cfg' | 'sequences' | 'session' } = $props();
 </script>
 
 <div
