@@ -6,9 +6,11 @@ members = [
     "crates/ilold-web",
 ]
 
-# Shared dependency versions — referenced via { workspace = true } in member crates
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+
 [workspace.dependencies]
-# Pinned: no API stability guarantee between patch versions
 solar = { version = "=0.1.8", package = "solar-compiler", default-features = false }
 petgraph = "0.8"
 serde = { version = "1", features = ["derive"] }

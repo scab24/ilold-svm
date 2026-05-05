@@ -200,7 +200,7 @@ fn repl_loop(
                         contract = new_name.clone();
                         steps.clear();
                         scenario_name = "main".into();
-                        if let Some(ref state) = state {
+                        if let Some(state) = state.as_ref() {
                             // Local mode: use AppState directly
                             if let Some(c) = state.project.contracts.iter().find(|c| c.name == new_name) {
                                 functions = state.project
@@ -212,7 +212,7 @@ fn repl_loop(
                                     comp.functions = functions.clone();
                                 }
                             }
-                        } else if let Some(ref fbc) = functions_by_contract {
+                        } else if let Some(fbc) = functions_by_contract.as_ref() {
                             // --attach mode: use cached per-contract function map
                             if let Some(funcs) = fbc.get(&new_name) {
                                 functions = funcs.clone();
@@ -385,7 +385,7 @@ fn handle_input(
         }
 
         "ct" | "contracts" => {
-            if let Some(ref state) = state {
+            if let Some(state) = state {
                 print_contracts(state, contract);
             } else {
                 // --attach mode: fetch contract list from server
@@ -414,7 +414,7 @@ fn handle_input(
                 println!("  Usage: use <contract>");
                 return InputResult::Continue;
             }
-            if let Some(ref state) = state {
+            if let Some(state) = state {
                 // Local mode
                 match state.project.find_contract(Some(arg)) {
                     Ok(c) => {

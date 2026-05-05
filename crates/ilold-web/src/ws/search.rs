@@ -35,10 +35,10 @@ pub fn search_paths(state: &AppState, query: &SearchQuery) -> Vec<SearchResult> 
     let mut results = Vec::new();
 
     for ((contract, function), path_tree) in &state.path_trees {
-        if let Some(ref filter_contract) = query.contract {
+        if let Some(filter_contract) = query.contract.as_ref() {
             if contract != filter_contract { continue; }
         }
-        if let Some(ref filter_function) = query.function {
+        if let Some(filter_function) = query.function.as_ref() {
             if function != filter_function { continue; }
         }
 
