@@ -5,7 +5,7 @@ edition.workspace = true
 description = "Anchor IDL parser and (later) Solana execution backend for Ilold."
 
 [dependencies]
-anchor-lang-idl = { git = "https://github.com/solana-foundation/anchor", tag = "v1.0.2", features = ["build"] }
+anchor-lang-idl = { git = "https://github.com/solana-foundation/anchor", tag = "v1.0.2", features = ["build", "convert"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

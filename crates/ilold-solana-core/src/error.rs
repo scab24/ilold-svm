@@ -10,8 +10,8 @@ pub enum SolanaError {
         source: std::io::Error,
     },
 
-    #[error("failed to parse IDL JSON: {0}")]
-    IdlParseFailed(#[from] serde_json::Error),
+    #[error("failed to parse or convert IDL JSON: {message}")]
+    IdlParseFailed { message: String },
 
     #[error("IDL spec '{0}' is not a recognized version")]
     UnsupportedIdlSpec(String),

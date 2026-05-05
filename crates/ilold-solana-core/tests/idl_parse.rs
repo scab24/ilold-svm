@@ -68,7 +68,7 @@ fn parse_idl_dir_reads_all_jsons_sorted() {
 #[test]
 fn parse_idl_invalid_json_returns_parse_error() {
     let err = parse_idl("not valid json {{{").unwrap_err();
-    assert!(matches!(err, SolanaError::IdlParseFailed(_)));
+    assert!(matches!(err, SolanaError::IdlParseFailed { .. }));
 }
 
 #[test]

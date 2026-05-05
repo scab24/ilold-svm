@@ -1,11 +1,14 @@
 use std::path::{Path, PathBuf};
 
+use anchor_lang_idl::convert::convert_idl;
 use anchor_lang_idl::types::Idl;
 
 use crate::error::SolanaError;
 
 pub fn parse_idl(json: &str) -> Result<Idl, SolanaError> {
-    serde_json::from_str(json).map_err(SolanaError::IdlParseFailed)
+    convert_idl(json.as_bytes()).map_err(|e| SolanaError::IdlParseFailed {
+        message: e.to_string(),
+    })
 }
 
 pub fn parse_idl_dir(dir: &Path) -> Result<Vec<(PathBuf, Idl)>, SolanaError> {

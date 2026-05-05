@@ -96,9 +96,11 @@ source = "git+https://github.com/solana-foundation/anchor?tag=v1.0.2#1314a6b83b1
 dependencies = [
  "anchor-lang-idl-spec",
  "anyhow",
+ "heck 0.3.3",
  "regex",
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -650,7 +652,7 @@ version = "4.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1110bd8a634a1ab8cb04345d8d878267d57c3cf1b38d91b71af6686408bbca6a"
 dependencies = [
- "heck",
+ "heck 0.5.0",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -1418,6 +1420,15 @@ dependencies = [
  "foldhash 0.2.0",
  "serde",
  "serde_core",
+]
+
+[[package]]
+name = "heck"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6d621efb26863f0e9924c6ac577e8275e5e6b77455db64ffa6c65c904e9e132c"
+dependencies = [
+ "unicode-segmentation",
 ]
 
 [[package]]
@@ -3495,7 +3506,7 @@ version = "0.26.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4c6bee85a5a24955dc440386795aa378cd9cf82acd5f764469152d2270e581be"
 dependencies = [
- "heck",
+ "heck 0.5.0",
  "proc-macro2",
  "quote",
  "rustversion",
@@ -3508,7 +3519,7 @@ version = "0.27.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7695ce3845ea4b33927c055a39dc438a45b059f7c1b3d91d38d10355fb8cbca7"
 dependencies = [
- "heck",
+ "heck 0.5.0",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -4437,7 +4448,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ea61de684c3ea68cb082b7a88508a8b27fcc8b797d738bfc99a82facf1d752dc"
 dependencies = [
  "anyhow",
- "heck",
+ "heck 0.5.0",
  "wit-parser",
 ]
 
@@ -4448,7 +4459,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b7c566e0f4b284dd6561c786d9cb0142da491f46a9fbed79ea69cdad5db17f21"
 dependencies = [
  "anyhow",
- "heck",
+ "heck 0.5.0",
  "indexmap",
  "prettyplease",
  "syn 2.0.117",
