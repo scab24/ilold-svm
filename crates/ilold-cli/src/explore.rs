@@ -78,14 +78,15 @@ pub async fn run(paths: Vec<PathBuf>, port: u16, max_seq_depth: usize, attach: O
     println!("Analyzing {} file(s)...", paths.len());
     let (state, actual_port) = ilold_web::start_server(paths, port, max_seq_depth).await?;
 
-    let contract_name = state.project.find_contract(None)
+    let s = state.unwrap_solidity();
+    let contract_name = s.project.find_contract(None)
         .map(|c| c.name.clone())
         .unwrap_or_else(|_| "unknown".into());
 
-    let function_names: Vec<String> = state.project.contracts.iter()
+    let function_names: Vec<String> = s.project.contracts.iter()
         .find(|c| c.name == contract_name)
         .map(|c| {
-            state.project
+            s.project
                 .accessible_functions(c)
                 .iter()
                 .map(|af| af.function.name.clone())
@@ -93,7 +94,7 @@ pub async fn run(paths: Vec<PathBuf>, port: u16, max_seq_depth: usize, attach: O
         })
         .unwrap_or_default();
 
-    let contract_names: Vec<String> = state.project.contracts.iter()
+    let contract_names: Vec<String> = s.project.contracts.iter()
         .map(|c| c.name.clone())
         .filter(|n| !n.is_empty())
         .collect();
@@ -201,9 +202,9 @@ fn repl_loop(
                         steps.clear();
                         scenario_name = "main".into();
                         if let Some(state) = state.as_ref() {
-                            // Local mode: use AppState directly
-                            if let Some(c) = state.project.contracts.iter().find(|c| c.name == new_name) {
-                                functions = state.project
+                            let s = state.unwrap_solidity();
+                            if let Some(c) = s.project.contracts.iter().find(|c| c.name == new_name) {
+                                functions = s.project
                                     .accessible_functions(c)
                                     .iter()
                                     .map(|af| af.function.name.clone())
@@ -416,7 +417,8 @@ fn handle_input(
             }
             if let Some(state) = state {
                 // Local mode
-                match state.project.find_contract(Some(arg)) {
+                let s = state.unwrap_solidity();
+                match s.project.find_contract(Some(arg)) {
                     Ok(c) => {
                         let name = c.name.clone();
                         if name == contract {
@@ -1094,13 +1096,14 @@ fn handle_finding_interactive(
 
 fn print_contracts(state: &std::sync::Arc<ilold_web::state::AppState>, current: &str) {
     use ilold_core::model::contract::ContractKind;
+    let s = state.unwrap_solidity();
     println!();
-    let max_name = state.project.contracts.iter()
+    let max_name = s.project.contracts.iter()
         .filter(|c| !c.name.is_empty())
         .map(|c| c.name.chars().count())
         .max().unwrap_or(0);
 
-    for c in &state.project.contracts {
+    for c in &s.project.contracts {
         if c.name.is_empty() { continue; }
         let badge = match c.kind {
             ContractKind::Contract => c_accent("[C]"),

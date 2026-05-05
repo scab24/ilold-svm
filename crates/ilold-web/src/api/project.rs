@@ -1,10 +1,11 @@
 use std::sync::Arc;
 
 use axum::extract::State;
+use axum::http::StatusCode;
 use axum::Json;
 use serde::Serialize;
 
-use crate::state::AppState;
+use crate::state::{require_solidity_msg, AppState};
 
 #[derive(Serialize)]
 pub struct ProjectSummary {
@@ -21,8 +22,11 @@ pub struct ContractSummary {
     pub inherits: Vec<String>,
 }
 
-pub async fn get_project(State(state): State<Arc<AppState>>) -> Json<ProjectSummary> {
-    let contracts = state
+pub async fn get_project(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<ProjectSummary>, (StatusCode, String)> {
+    let s = require_solidity_msg(&state)?;
+    let contracts = s
         .project
         .contracts
         .iter()
@@ -35,10 +39,10 @@ pub async fn get_project(State(state): State<Arc<AppState>>) -> Json<ProjectSumm
         })
         .collect();
 
-    Json(ProjectSummary {
-        files: state.project.source_files.len(),
+    Ok(Json(ProjectSummary {
+        files: s.project.source_files.len(),
         contracts,
-    })
+    }))
 }
 
 // ============================================================================
@@ -87,18 +91,21 @@ pub struct MapRelationship {
     pub kind: String,
 }
 
-pub async fn get_project_map(State(state): State<Arc<AppState>>) -> Json<ProjectMap> {
+pub async fn get_project_map(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<ProjectMap>, (StatusCode, String)> {
+    let s = require_solidity_msg(&state)?;
     let mut contracts = Vec::new();
     let mut relationships = Vec::new();
 
-    for contract in &state.project.contracts {
+    for contract in &s.project.contracts {
         let functions: Vec<MapFunction> = contract
             .functions
             .iter()
             .filter(|f| !f.name.is_empty())
             .map(|f| {
                 let key = (contract.name.clone(), f.name.clone());
-                let pt = state.path_trees.get(&key);
+                let pt = s.path_trees.get(&key);
                 let has_ext = pt
                     .map(|p| p.paths.iter().any(|path| !path.annotations.external_calls.is_empty()))
                     .unwrap_or(false);
@@ -132,8 +139,7 @@ pub async fn get_project_map(State(state): State<Arc<AppState>>) -> Json<Project
             state_vars,
         });
 
-        // Extract cross-contract relationships from call graph
-        if let Some(cg) = state.call_graphs.get(&contract.name) {
+        if let Some(cg) = s.call_graphs.get(&contract.name) {
             for edge_idx in cg.edge_indices() {
                 let (src, dst) = cg.edge_endpoints(edge_idx).unwrap();
                 let src_node = &cg[src];
@@ -153,8 +159,8 @@ pub async fn get_project_map(State(state): State<Arc<AppState>>) -> Json<Project
         }
     }
 
-    Json(ProjectMap {
+    Ok(Json(ProjectMap {
         contracts,
         relationships,
-    })
+    }))
 }

@@ -107,7 +107,10 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
 
                 match parsed {
                     ClientMessage::Search(query) => {
-                        let results = search::search_paths(&state, &query);
+                        let results = match state.solidity() {
+                            Some(s) => search::search_paths(s, &query),
+                            None => Vec::new(),
+                        };
                         let total = results.len();
 
                         for result in results {

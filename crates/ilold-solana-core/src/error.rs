@@ -16,7 +16,7 @@ pub enum SolanaError {
     #[error("IDL spec '{0}' is not a recognized version")]
     UnsupportedIdlSpec(String),
 
-    #[error("IDL type '{0}' uses generics, which are not supported in MVP")]
+    #[error("IDL type '{0}' uses generics, which are not supported")]
     UnsupportedGeneric(String),
 
     #[error("IDL address '{0}' is not a valid base58 pubkey")]

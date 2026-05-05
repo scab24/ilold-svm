@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::state::AppState;
+use crate::state::SolidityState;
 
 #[derive(Debug, Deserialize)]
 pub struct SearchQuery {
@@ -30,7 +30,7 @@ pub struct SearchComplete {
     pub total: usize,
 }
 
-pub fn search_paths(state: &AppState, query: &SearchQuery) -> Vec<SearchResult> {
+pub fn search_paths(state: &SolidityState, query: &SearchQuery) -> Vec<SearchResult> {
     let q = query.query.to_lowercase();
     let mut results = Vec::new();
 

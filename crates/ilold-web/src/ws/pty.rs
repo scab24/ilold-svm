@@ -15,7 +15,7 @@ pub async fn ws_pty_handler(
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
     let port = state.port;
-    let contract_path = state.contract_path.clone();
+    let contract_path = state.project_root.clone();
     ws.on_upgrade(move |socket| handle_pty_session(socket, port, contract_path))
 }
 

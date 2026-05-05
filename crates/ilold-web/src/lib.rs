@@ -46,15 +46,17 @@ fn build_router(state: Arc<AppState>) -> Router {
 
 pub async fn serve(paths: Vec<PathBuf>, port: u16, max_seq_depth: usize) -> anyhow::Result<()> {
     println!("Analyzing {} file(s)...", paths.len());
-    let contract_path = paths.first().map(|p| p.parent().unwrap_or(p).to_path_buf()).unwrap_or_default();
+    let project_root = paths.first().map(|p| p.parent().unwrap_or(p).to_path_buf()).unwrap_or_default();
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await?;
     let actual_port = listener.local_addr()?.port();
-    let state = Arc::new(AppState::from_paths(&paths, max_seq_depth, actual_port, contract_path)?);
-    println!(
-        "Ready: {} contracts, {} functions analyzed\n",
-        state.project.contracts.len(),
-        state.cfgs.len(),
-    );
+    let state = Arc::new(AppState::from_paths(&paths, max_seq_depth, actual_port, project_root)?);
+    if let Some(s) = state.solidity() {
+        println!(
+            "Ready: {} contracts, {} functions analyzed\n",
+            s.project.contracts.len(),
+            s.cfgs.len(),
+        );
+    }
 
     let app = build_router(state);
     println!("Server running at http://localhost:{actual_port}");
@@ -67,10 +69,10 @@ pub async fn start_server(
     port: u16,
     max_seq_depth: usize,
 ) -> anyhow::Result<(Arc<AppState>, u16)> {
-    let contract_path = paths.first().map(|p| p.parent().unwrap_or(p).to_path_buf()).unwrap_or_default();
+    let project_root = paths.first().map(|p| p.parent().unwrap_or(p).to_path_buf()).unwrap_or_default();
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await?;
     let actual_port = listener.local_addr()?.port();
-    let state = Arc::new(AppState::from_paths(&paths, max_seq_depth, actual_port, contract_path)?);
+    let state = Arc::new(AppState::from_paths(&paths, max_seq_depth, actual_port, project_root)?);
     let app = build_router(state.clone());
 
     tokio::spawn(async move {

@@ -18,7 +18,7 @@ use ilold_core::narrative::trace::FlowTree;
 use ilold_core::narrative::types::{FunctionNarrative, SequenceNarrative};
 use ilold_core::slicing::{build_slice_result, SliceDirection, SliceResult};
 
-use crate::state::{AppState, ScenarioStore};
+use crate::state::{require_solidity_msg, AppState, ScenarioStore};
 
 #[derive(Deserialize)]
 pub struct CommandRequest {
@@ -30,26 +30,27 @@ fn build_analysis_data<'a>(
     state: &'a AppState,
     contract_name: &str,
 ) -> Result<AnalysisData<'a>, (StatusCode, String)> {
-    let contract = state.project.contracts.iter()
+    let s = require_solidity_msg(state)?;
+    let contract = s.project.contracts.iter()
         .find(|c| c.name == contract_name)
         .ok_or((StatusCode::NOT_FOUND, format!("Contract '{}' not found", contract_name)))?;
 
-    let seq_analysis = state.sequence_analyses.get(contract_name)
+    let seq_analysis = s.sequence_analyses.get(contract_name)
         .ok_or((StatusCode::NOT_FOUND, "No analysis for contract".into()))?;
 
-    let classifs = state.classifications.get(contract_name)
+    let classifs = s.classifications.get(contract_name)
         .ok_or((StatusCode::NOT_FOUND, "No classifications for contract".into()))?;
 
     Ok(AnalysisData {
-        project: &state.project,
+        project: &s.project,
         contract,
-        cfgs: &state.cfgs,
-        path_trees: &state.path_trees,
+        cfgs: &s.cfgs,
+        path_trees: &s.path_trees,
         behaviors: &seq_analysis.functions,
         transitions: &seq_analysis.transitions,
         classifications: classifs,
-        all_sequence_analyses: &state.sequence_analyses,
-        all_classifications: &state.classifications,
+        all_sequence_analyses: &s.sequence_analyses,
+        all_classifications: &s.classifications,
     })
 }
 
@@ -65,7 +66,8 @@ fn resolve_contract(state: &AppState, explicit: Option<&str>) -> Result<String, 
     }
     drop(scenarios_guard);
 
-    state.project.find_contract(None)
+    let s = require_solidity_msg(state)?;
+    s.project.find_contract(None)
         .map(|c| c.name.clone())
         .map_err(|e| (StatusCode::BAD_REQUEST, e))
 }
@@ -454,7 +456,8 @@ pub async fn get_function_slice(
         guard.active_session().contract.clone()
     };
 
-    let contract = state.project.contracts.iter()
+    let s = require_solidity_msg(&state)?;
+    let contract = s.project.contracts.iter()
         .find(|c| c.name == contract_name)
         .ok_or((
             StatusCode::NOT_FOUND,
@@ -472,7 +475,7 @@ pub async fn get_function_slice(
         .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
 
     Ok(Json(build_slice_result(
-        &state.project,
+        &s.project,
         contract,
         function,
         &variable,
@@ -546,13 +549,14 @@ pub async fn get_scenarios(
 /// to paint all scenarios at once (e.g. on reconnect / initial load).
 pub async fn get_all_scenarios(
     State(state): State<Arc<AppState>>,
-) -> Json<AllScenariosResponse> {
+) -> Result<Json<AllScenariosResponse>, (StatusCode, String)> {
+    let s = require_solidity_msg(&state)?;
     let guard = state.scenarios.read().unwrap();
     let active = guard.active().to_string();
     let mut scenarios: Vec<ScenarioSnapshot> = Vec::with_capacity(guard.len());
     for name in guard.names() {
         let Some(session) = guard.get(name) else { continue };
-        let classifs = state.classifications.get(&session.contract);
+        let classifs = s.classifications.get(&session.contract);
         let steps = session
             .steps
             .iter()
@@ -578,7 +582,7 @@ pub async fn get_all_scenarios(
             forked_from: session.forked_from.clone(),
         });
     }
-    Json(AllScenariosResponse { active, scenarios })
+    Ok(Json(AllScenariosResponse { active, scenarios }))
 }
 
 /// Parse a comma-separated `expand` query value into a set of step_ids.

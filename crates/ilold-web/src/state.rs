@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::RwLock;
 
+use axum::http::StatusCode;
 use tokio::sync::broadcast;
 
 use ilold_core::callgraph::builder::build_call_graph;
@@ -20,6 +21,7 @@ use ilold_core::pathtree::walker::build_path_tree;
 use ilold_core::sequence::analysis::{analyze_project, analyze_sequences, SequenceAnalysis};
 use ilold_core::sequence::builder::build_sequence_tree;
 use ilold_core::sequence::types::SequenceTree;
+use ilold_solana_core::model::SolanaProject;
 
 use serde::{Deserialize, Serialize};
 
@@ -197,7 +199,7 @@ struct ScenarioStoreFile {
     order: Vec<String>,
 }
 
-pub struct AppState {
+pub struct SolidityState {
     pub project: Project,
     pub cfgs: HashMap<(String, String), CfgGraph>,
     pub path_trees: HashMap<(String, String), PathTree>,
@@ -205,11 +207,56 @@ pub struct AppState {
     pub sequence_trees: HashMap<String, SequenceTree>,
     pub sequence_analyses: HashMap<String, SequenceAnalysis>,
     pub classifications: HashMap<String, Vec<(String, AccessLevel)>>,
+}
+
+pub struct SolanaState {
+    pub project: SolanaProject,
+}
+
+pub enum Backend {
+    Solidity(SolidityState),
+    Solana(SolanaState),
+}
+
+pub struct AppState {
+    pub backend: Backend,
     pub annotations: RwLock<Vec<Annotation>>,
     pub scenarios: RwLock<ScenarioStore>,
     pub session_tx: broadcast::Sender<CanvasPatch>,
     pub port: u16,
-    pub contract_path: PathBuf,
+    pub project_root: PathBuf,
+}
+
+impl AppState {
+    pub fn solidity(&self) -> Option<&SolidityState> {
+        match &self.backend {
+            Backend::Solidity(s) => Some(s),
+            Backend::Solana(_) => None,
+        }
+    }
+
+    pub fn solana(&self) -> Option<&SolanaState> {
+        match &self.backend {
+            Backend::Solana(s) => Some(s),
+            Backend::Solidity(_) => None,
+        }
+    }
+}
+
+impl AppState {
+    pub fn unwrap_solidity(&self) -> &SolidityState {
+        self.solidity().expect("Solidity backend required")
+    }
+}
+
+pub fn require_solidity(state: &AppState) -> Result<&SolidityState, StatusCode> {
+    state.solidity().ok_or(StatusCode::BAD_REQUEST)
+}
+
+pub fn require_solidity_msg(state: &AppState) -> Result<&SolidityState, (StatusCode, String)> {
+    state
+        .solidity()
+        .ok_or_else(|| (StatusCode::BAD_REQUEST, "endpoint is Solidity-only".to_string()))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -243,7 +290,7 @@ pub enum AnnotationStatus {
 }
 
 impl AppState {
-    pub fn from_paths(paths: &[PathBuf], max_seq_depth: usize, port: u16, contract_path: PathBuf) -> anyhow::Result<Self> {
+    pub fn from_paths(paths: &[PathBuf], max_seq_depth: usize, port: u16, project_root: PathBuf) -> anyhow::Result<Self> {
         let parser = SolarParser;
         let mut project = parser.parse(paths)?;
         project.rebuild_index();
@@ -304,18 +351,20 @@ impl AppState {
             .unwrap_or_else(|| "unknown".to_string());
 
         Ok(Self {
-            project,
-            cfgs,
-            path_trees,
-            call_graphs,
-            sequence_trees,
-            sequence_analyses,
-            classifications,
+            backend: Backend::Solidity(SolidityState {
+                project,
+                cfgs,
+                path_trees,
+                call_graphs,
+                sequence_trees,
+                sequence_analyses,
+                classifications,
+            }),
             annotations: RwLock::new(Vec::new()),
             scenarios: RwLock::new(ScenarioStore::new_for_contract(default_contract)),
             session_tx,
             port,
-            contract_path,
+            project_root,
         })
     }
 }

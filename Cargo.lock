@@ -1807,6 +1807,7 @@ dependencies = [
  "axum",
  "futures-util",
  "ilold-core",
+ "ilold-solana-core",
  "portable-pty",
  "reqwest",
  "serde",

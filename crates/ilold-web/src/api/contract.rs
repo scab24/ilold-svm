@@ -9,7 +9,7 @@ use ilold_core::model::common::SourceSpan;
 use ilold_core::pathtree::types::PathTree;
 use ilold_core::sequence::types::SequenceTree;
 
-use crate::state::AppState;
+use crate::state::{require_solidity, AppState};
 
 // ============================================================================
 // Contract detail
@@ -58,7 +58,8 @@ pub async fn get_contract(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
 ) -> Result<Json<ContractDetail>, StatusCode> {
-    let contract = state
+    let s = require_solidity(&state)?;
+    let contract = s
         .project
         .contracts
         .iter()
@@ -70,7 +71,7 @@ pub async fn get_contract(
         .iter()
         .map(|f| {
             let key = (contract.name.clone(), f.name.clone());
-            let pt = state.path_trees.get(&key);
+            let pt = s.path_trees.get(&key);
             FunctionSummary {
                 name: f.name.clone(),
                 kind: format!("{:?}", f.kind),
@@ -100,14 +101,14 @@ pub async fn get_contract(
         })
         .collect();
 
-    let inherited_functions: Vec<FunctionSummary> = state.project
+    let inherited_functions: Vec<FunctionSummary> = s.project
         .accessible_functions(contract)
         .into_iter()
         .filter(|af| af.is_inherited)
         .map(|af| {
             let f = af.function;
             let key = (af.origin.clone(), f.name.clone());
-            let pt = state.path_trees.get(&key);
+            let pt = s.path_trees.get(&key);
             FunctionSummary {
                 name: f.name.clone(),
                 kind: format!("{:?}", f.kind),
@@ -128,7 +129,7 @@ pub async fn get_contract(
     let own_var_names: std::collections::HashSet<String> = contract.state_vars.iter()
         .map(|sv| sv.name.clone())
         .collect();
-    let inherited_state_vars: Vec<StateVarSummary> = state.project
+    let inherited_state_vars: Vec<StateVarSummary> = s.project
         .inherited_state_vars(contract)
         .into_iter()
         .filter(|sv| !own_var_names.contains(&sv.name))
@@ -196,7 +197,8 @@ pub async fn get_callgraph(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
 ) -> Result<Json<CytoscapeGraph>, StatusCode> {
-    let cg = state
+    let s = require_solidity(&state)?;
+    let cg = s
         .call_graphs
         .get(&name)
         .ok_or(StatusCode::NOT_FOUND)?;
@@ -247,15 +249,16 @@ pub async fn get_cfg(
     State(state): State<Arc<AppState>>,
     Path((contract_name, func_name)): Path<(String, String)>,
 ) -> Result<Json<CytoscapeGraph>, StatusCode> {
-    let contract = state.project.contracts.iter()
+    let s = require_solidity(&state)?;
+    let contract = s.project.contracts.iter()
         .find(|c| c.name == contract_name)
         .ok_or(StatusCode::NOT_FOUND)?;
 
-    let (owning, _func) = state.project.resolve_function(contract, &func_name)
+    let (owning, _func) = s.project.resolve_function(contract, &func_name)
         .ok_or(StatusCode::NOT_FOUND)?;
 
     let key = (owning.name.clone(), func_name);
-    let cfg = state.cfgs.get(&key).ok_or(StatusCode::NOT_FOUND)?;
+    let cfg = s.cfgs.get(&key).ok_or(StatusCode::NOT_FOUND)?;
 
     let nodes: Vec<CytoscapeNode> = cfg
         .node_indices()
@@ -317,17 +320,18 @@ pub async fn get_function_source(
     State(state): State<Arc<AppState>>,
     Path((contract_name, func_name)): Path<(String, String)>,
 ) -> Result<Json<FunctionSourceResponse>, StatusCode> {
-    let contract = state.project.contracts.iter()
+    let s = require_solidity(&state)?;
+    let contract = s.project.contracts.iter()
         .find(|c| c.name == contract_name)
         .ok_or(StatusCode::NOT_FOUND)?;
 
     // `resolve_function` walks the inheritance chain, so a function declared
     // in a parent contract resolves to the parent's FunctionDef (with its
     // own span + file_index).
-    let (_owning, func) = state.project.resolve_function(contract, &func_name)
+    let (_owning, func) = s.project.resolve_function(contract, &func_name)
         .ok_or(StatusCode::NOT_FOUND)?;
 
-    let file = state.project.source_files.get(func.span.file_index)
+    let file = s.project.source_files.get(func.span.file_index)
         .ok_or(StatusCode::NOT_FOUND)?;
 
     let source = slice_lines(
@@ -365,16 +369,19 @@ pub async fn get_paths(
     State(state): State<Arc<AppState>>,
     Path((contract_name, func_name)): Path<(String, String)>,
 ) -> Result<Json<PathTree>, StatusCode> {
-    let contract = state.project.contracts.iter()
+    let s = require_solidity(&state)?;
+    let contract = s
+        .project
+        .contracts
+        .iter()
         .find(|c| c.name == contract_name)
         .ok_or(StatusCode::NOT_FOUND)?;
 
-    let (owning, _func) = state.project.resolve_function(contract, &func_name)
+    let (owning, _func) = s.project.resolve_function(contract, &func_name)
         .ok_or(StatusCode::NOT_FOUND)?;
 
     let key = (owning.name.clone(), func_name);
-    state
-        .path_trees
+    s.path_trees
         .get(&key)
         .cloned()
         .map(Json)
@@ -395,8 +402,8 @@ pub async fn get_sequences(
     Path(name): Path<String>,
     Query(_query): Query<SequenceQuery>,
 ) -> Result<Json<SequenceTree>, StatusCode> {
-    state
-        .sequence_trees
+    let s = require_solidity(&state)?;
+    s.sequence_trees
         .get(&name)
         .cloned()
         .map(Json)
@@ -413,7 +420,8 @@ pub async fn get_sequence_analysis(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
 ) -> Result<Json<SequenceAnalysis>, StatusCode> {
-    let analysis = analyze_sequences(&state.path_trees, &name);
+    let s = require_solidity(&state)?;
+    let analysis = analyze_sequences(&s.path_trees, &name);
     Ok(Json(analysis))
 }
 
@@ -440,21 +448,22 @@ pub async fn get_search_suggestions(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
 ) -> Result<Json<SearchSuggestions>, StatusCode> {
-    let contract = state
+    let s = require_solidity(&state)?;
+    let contract = s
         .project
         .contracts
         .iter()
         .find(|c| c.name == name)
         .ok_or(StatusCode::NOT_FOUND)?;
 
-    let accessible = state.project.accessible_functions(contract);
+    let accessible = s.project.accessible_functions(contract);
     let functions: Vec<String> = accessible
         .iter()
         .filter(|af| !af.function.name.is_empty())
         .map(|af| af.function.name.clone())
         .collect();
 
-    let state_vars: Vec<String> = state.project
+    let state_vars: Vec<String> = s.project
         .inherited_state_vars(contract)
         .into_iter()
         .map(|sv| sv.name)
@@ -477,7 +486,7 @@ pub async fn get_search_suggestions(
 
     // Collect unique external calls from all paths keyed by any origin
     let mut ext_calls = std::collections::HashSet::new();
-    for ((c, _), pt) in &state.path_trees {
+    for ((c, _), pt) in &s.path_trees {
         if !origins.contains(c) { continue; }
         for path in &pt.paths {
             for call in &path.annotations.external_calls {
