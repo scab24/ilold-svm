@@ -16,6 +16,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "aho-corasick"
+version = "1.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ddd31a130427c27518df266943a5308ed92d4b226cc639f5a8f1002816174301"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -78,6 +87,27 @@ checksum = "a6df77fea9d6a2a75c0ef8d2acbdfd92286cc599983d3175ccdc170d3433d249"
 dependencies = [
  "serde",
  "winnow 0.7.15",
+]
+
+[[package]]
+name = "anchor-lang-idl"
+version = "0.1.2"
+source = "git+https://github.com/solana-foundation/anchor?tag=v1.0.2#1314a6b83b16e6a31947b372d57988fd0e81559c"
+dependencies = [
+ "anchor-lang-idl-spec",
+ "anyhow",
+ "regex",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "anchor-lang-idl-spec"
+version = "0.1.0"
+source = "git+https://github.com/solana-foundation/anchor?tag=v1.0.2#1314a6b83b16e6a31947b372d57988fd0e81559c"
+dependencies = [
+ "anyhow",
+ "serde",
 ]
 
 [[package]]
@@ -1722,6 +1752,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ilold-solana-core"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang-idl",
+ "anyhow",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "ilold-web"
 version = "0.1.0"
 dependencies = [
@@ -2694,6 +2735,29 @@ dependencies = [
  "unicase",
  "unicode-segmentation",
  "unicode-width",
+]
+
+[[package]]
+name = "regex"
+version = "1.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e10754a14b9137dd7b1e3e5b0493cc9171fdd105e0ab477f51b72e7f3ac0e276"
+dependencies = [
+ "aho-corasick",
+ "memchr",
+ "regex-automata",
+ "regex-syntax",
+]
+
+[[package]]
+name = "regex-automata"
+version = "0.4.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6e1dd4122fc1595e8162618945476892eefca7b88c52820e74af6262213cae8f"
+dependencies = [
+ "aho-corasick",
+ "memchr",
+ "regex-syntax",
 ]
 
 [[package]]
