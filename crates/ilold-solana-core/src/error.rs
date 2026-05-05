@@ -33,4 +33,13 @@ pub enum SolanaError {
 
     #[error("project at '{path}' is neither Anchor nor Solidity (no Anchor.toml, foundry.toml or *.sol found)")]
     UnknownProjectType { path: PathBuf },
+
+    #[error("Borsh decode failed: {0}")]
+    DecodeFailed(String),
+
+    #[error("unknown account discriminator: {hex}")]
+    UnknownDiscriminator { hex: String },
+
+    #[error("IDL references unknown type '{0}'")]
+    UnknownType(String),
 }
