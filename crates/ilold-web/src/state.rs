@@ -290,6 +290,27 @@ pub enum AnnotationStatus {
 }
 
 impl AppState {
+    pub fn from_solana(
+        project: SolanaProject,
+        port: u16,
+        project_root: PathBuf,
+    ) -> Self {
+        let (session_tx, _) = broadcast::channel(64);
+        let default_program = project
+            .programs
+            .first()
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| "unknown".to_string());
+        Self {
+            backend: Backend::Solana(SolanaState { project }),
+            annotations: RwLock::new(Vec::new()),
+            scenarios: RwLock::new(ScenarioStore::new_for_contract(default_program)),
+            session_tx,
+            port,
+            project_root,
+        }
+    }
+
     pub fn from_paths(paths: &[PathBuf], max_seq_depth: usize, port: u16, project_root: PathBuf) -> anyhow::Result<Self> {
         let parser = SolarParser;
         let mut project = parser.parse(paths)?;

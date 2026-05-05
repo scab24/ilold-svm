@@ -7,6 +7,8 @@ use std::sync::Arc;
 
 use axum::routing::{delete, get, post, put};
 use axum::Router;
+use ilold_solana_core::ingest::DetectedProject;
+use ilold_solana_core::model::{ProgramDef, SolanaProject};
 use tower_http::cors::CorsLayer;
 
 use state::AppState;
@@ -80,4 +82,47 @@ pub async fn start_server(
     });
 
     Ok((state, actual_port))
+}
+
+pub async fn serve_solana(detected: DetectedProject, port: u16) -> anyhow::Result<()> {
+    println!("Analyzing {} IDL(s)...", detected.idl_paths.len());
+    let project = build_solana_project(&detected)?;
+    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await?;
+    let actual_port = listener.local_addr()?.port();
+    let state = Arc::new(AppState::from_solana(project, actual_port, detected.root.clone()));
+    if let Some(s) = state.solana() {
+        println!("Ready: {} program(s) analyzed\n", s.project.programs.len());
+    }
+    let app = build_router(state);
+    println!("Server running at http://localhost:{actual_port}");
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+
+pub async fn start_solana_server(
+    detected: DetectedProject,
+    port: u16,
+) -> anyhow::Result<(Arc<AppState>, u16)> {
+    let project = build_solana_project(&detected)?;
+    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await?;
+    let actual_port = listener.local_addr()?.port();
+    let state = Arc::new(AppState::from_solana(project, actual_port, detected.root.clone()));
+    let app = build_router(state.clone());
+
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.ok();
+    });
+
+    Ok((state, actual_port))
+}
+
+fn build_solana_project(detected: &DetectedProject) -> anyhow::Result<SolanaProject> {
+    let mut programs = Vec::with_capacity(detected.idl_paths.len());
+    for idl_path in &detected.idl_paths {
+        let json = std::fs::read_to_string(idl_path)?;
+        let idl = ilold_solana_core::idl::parse_idl(&json)?;
+        let program = ProgramDef::from_idl(idl)?;
+        programs.push(program);
+    }
+    Ok(SolanaProject::new(programs))
 }

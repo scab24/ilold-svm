@@ -5,7 +5,7 @@ use axum::http::StatusCode;
 use axum::Json;
 use serde::Serialize;
 
-use crate::state::{require_solidity_msg, AppState};
+use crate::state::{require_solidity_msg, AppState, Backend};
 
 #[derive(Serialize)]
 pub struct ProjectSummary {
@@ -51,8 +51,31 @@ pub async fn get_project(
 
 #[derive(Serialize)]
 pub struct ProjectMap {
+    pub kind: &'static str,
     pub contracts: Vec<MapContract>,
+    pub programs: Vec<MapProgram>,
     pub relationships: Vec<MapRelationship>,
+}
+
+#[derive(Serialize)]
+pub struct MapProgram {
+    pub name: String,
+    pub program_id: String,
+    pub instructions: Vec<MapInstruction>,
+    pub account_types: Vec<MapAccountType>,
+}
+
+#[derive(Serialize)]
+pub struct MapInstruction {
+    pub name: String,
+    pub args_count: usize,
+    pub accounts_count: usize,
+    pub has_pdas: bool,
+}
+
+#[derive(Serialize)]
+pub struct MapAccountType {
+    pub name: String,
 }
 
 #[derive(Serialize)]
@@ -93,8 +116,49 @@ pub struct MapRelationship {
 
 pub async fn get_project_map(
     State(state): State<Arc<AppState>>,
-) -> Result<Json<ProjectMap>, (StatusCode, String)> {
-    let s = require_solidity_msg(&state)?;
+) -> Json<ProjectMap> {
+    match &state.backend {
+        Backend::Solidity(_) => Json(build_solidity_map(&state)),
+        Backend::Solana(s) => Json(build_solana_map(s)),
+    }
+}
+
+fn build_solana_map(s: &crate::state::SolanaState) -> ProjectMap {
+    let programs: Vec<MapProgram> = s
+        .project
+        .programs
+        .iter()
+        .map(|p| MapProgram {
+            name: p.name.clone(),
+            program_id: p.program_id.to_string(),
+            instructions: p
+                .instructions
+                .iter()
+                .map(|ix| MapInstruction {
+                    name: ix.name.clone(),
+                    args_count: ix.args.len(),
+                    accounts_count: ix.accounts.len(),
+                    has_pdas: ix.accounts.iter().any(|a| a.pda.is_some()),
+                })
+                .collect(),
+            account_types: p
+                .account_types
+                .iter()
+                .map(|a| MapAccountType { name: a.name.clone() })
+                .collect(),
+        })
+        .collect();
+
+    ProjectMap {
+        kind: "solana",
+        contracts: Vec::new(),
+        programs,
+        relationships: Vec::new(),
+    }
+}
+
+fn build_solidity_map(state: &Arc<AppState>) -> ProjectMap {
+    let s = state.unwrap_solidity();
     let mut contracts = Vec::new();
     let mut relationships = Vec::new();
 
@@ -159,8 +223,10 @@ pub async fn get_project_map(
         }
     }
 
-    Ok(Json(ProjectMap {
+    ProjectMap {
+        kind: "solidity",
         contracts,
+        programs: Vec::new(),
         relationships,
-    }))
+    }
 }
