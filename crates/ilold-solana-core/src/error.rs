@@ -21,4 +21,10 @@ pub enum SolanaError {
 
     #[error("IDL address '{0}' is not a valid base58 pubkey")]
     InvalidProgramId(String),
+
+    #[error("expected 8-byte discriminator for '{name}', got {len}")]
+    InvalidDiscriminatorLength { name: String, len: usize },
+
+    #[error("PDA seed references arg '{path}' which is not declared on the instruction")]
+    SeedArgUnresolved { path: String },
 }
