@@ -2,32 +2,18 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::cfg::types::CfgGraph;
+use crate::exploration::assign_operator::AssignOperator;
 use crate::journal::types::AuditJournal;
-use crate::model::common::StateVar;
-use crate::model::contract::ContractDef;
-use crate::model::expression::AssignOperator;
-use crate::model::function::FunctionDef;
-use crate::model::project::Project;
-use crate::narrative::trace::{build_flow_tree_with_mutations, FlowConfig, FlowTree};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExplorationSession {
     pub contract: String,
     pub steps: Vec<ExplorationStep>,
     pub journal: AuditJournal,
-    /// Set when this scenario was created via `scenario fork`. Records the
-    /// source scenario and the at-step boundary so the frontend can render
-    /// the fork as a branch from the origin instead of a parallel timeline.
-    /// `None` for the default `main` scenario and for any scenario loaded
-    /// from a pre-fork-origin save file (serde defaults to `None`).
     #[serde(default)]
     pub forked_from: Option<ForkOrigin>,
 }
 
-/// Where a scenario was forked from. The `at_step` is the boundary: the
-/// scenario's steps `[0..at_step)` are the inherited prefix (a clone of the
-/// origin's steps at fork time), and steps `[at_step..]` are its own.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ForkOrigin {
     pub scenario: String,
@@ -39,9 +25,11 @@ pub struct ExplorationStep {
     pub function: String,
     pub mutations: Vec<StateMutation>,
     #[serde(default)]
-    pub flow_tree: Option<FlowTree>,
+    pub flow_tree: Option<serde_json::Value>,
     #[serde(default)]
     pub trace_config: TraceConfig,
+    #[serde(default)]
+    pub runtime_trace: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -95,73 +83,6 @@ impl ExplorationSession {
             journal: AuditJournal::new(project, contract, ""),
             forked_from: None,
         }
-    }
-
-    /// Append a step, building and persisting its FlowTree. Each harvested
-    /// mutation carries a `flow_step_id` into that tree.
-    #[allow(clippy::too_many_arguments)]
-    pub fn add_step_with_internals(
-        &mut self,
-        function: &FunctionDef,
-        cfg: &CfgGraph,
-        state_vars: &[StateVar],
-        project: &Project,
-        owning_contract: &ContractDef,
-        all_cfgs: &HashMap<(String, String), CfgGraph>,
-        timestamp: &str,
-        trace_config: TraceConfig,
-    ) -> &ExplorationStep {
-        let step_index = self.steps.len();
-
-        let flow_config = FlowConfig {
-            max_depth: trace_config.depth,
-            include_reverts: trace_config.include_reverts,
-            expand_set: trace_config.expand_set.iter().copied().collect(),
-        };
-
-        let (flow_tree, raw_mutations) = build_flow_tree_with_mutations(
-            owning_contract,
-            function,
-            cfg,
-            project,
-            all_cfgs,
-            &flow_config,
-        );
-
-        // Walker is scope-agnostic; keep only writes whose base name is a
-        // state var and convert into the session-level mutation type.
-        let mutations: Vec<StateMutation> = raw_mutations
-            .into_iter()
-            .filter_map(|fm| {
-                let base = crate::util::target_base_name(&fm.target);
-                if !state_vars.iter().any(|sv| sv.name == base) {
-                    return None;
-                }
-                Some(StateMutation {
-                    variable: fm.target,
-                    operator: fm.operator,
-                    value_expr: fm.value,
-                    step_index,
-                    via: fm.via,
-                    flow_step_id: Some(fm.flow_step_id),
-                    scope: MutationScope::State,
-                })
-            })
-            .collect();
-
-        self.steps.push(ExplorationStep {
-            function: function.name.clone(),
-            mutations,
-            flow_tree: Some(flow_tree),
-            trace_config,
-        });
-
-        self.journal.record(crate::journal::types::JournalEntry::SequenceExplored {
-            steps: self.steps.iter().map(|s| s.function.clone()).collect(),
-            timestamp: timestamp.into(),
-        });
-
-        self.steps.last().unwrap()
     }
 
     pub fn remove_last_step(&mut self) -> bool {
@@ -247,12 +168,14 @@ mod tests {
             mutations: vec![],
             flow_tree: None,
             trace_config: TraceConfig::default(),
+            runtime_trace: None,
         });
         s.steps.push(ExplorationStep {
             function: "withdraw".into(),
             mutations: vec![],
             flow_tree: None,
             trace_config: TraceConfig::default(),
+            runtime_trace: None,
         });
         assert_eq!(s.current_sequence(), vec!["deposit", "withdraw"]);
         s.clear();
@@ -286,6 +209,7 @@ mod tests {
             ],
             flow_tree: None,
             trace_config: TraceConfig::default(),
+            runtime_trace: None,
         });
         s.steps.push(ExplorationStep {
             function: "withdraw".into(),
@@ -302,6 +226,7 @@ mod tests {
             ],
             flow_tree: None,
             trace_config: TraceConfig::default(),
+            runtime_trace: None,
         });
 
         let summaries = s.variable_summary();

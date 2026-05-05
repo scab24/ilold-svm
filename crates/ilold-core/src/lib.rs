@@ -11,6 +11,6 @@ pub mod sequence;
 pub mod classify;
 pub mod narrative;
 pub mod slicing;
-pub mod journal;
+pub use ilold_session_core::journal;
 pub mod exploration;
 pub mod util;

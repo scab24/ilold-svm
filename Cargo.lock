@@ -1705,11 +1705,20 @@ dependencies = [
 name = "ilold-core"
 version = "0.1.0"
 dependencies = [
+ "ilold-session-core",
  "petgraph",
  "serde",
  "serde_json",
  "solar-compiler",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "ilold-session-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

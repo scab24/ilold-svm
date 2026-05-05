@@ -335,7 +335,7 @@ pub async fn get_step_detail(
 pub async fn get_session_step_trace(
     State(state): State<Arc<AppState>>,
     Path(step_index): Path<usize>,
-) -> Result<Json<FlowTree>, (StatusCode, String)> {
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let scenarios_guard = state.scenarios.read().unwrap();
     let session = scenarios_guard.active_session();
 

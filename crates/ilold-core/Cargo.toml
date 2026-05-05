@@ -5,6 +5,7 @@ edition.workspace = true
 description = "Core library for Ilold: smart contract execution path analysis engine"
 
 [dependencies]
+ilold-session-core = { path = "../ilold-session-core" }
 solar = { workspace = true }
 petgraph = { workspace = true }
 serde = { workspace = true }

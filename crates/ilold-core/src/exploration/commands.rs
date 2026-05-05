@@ -441,7 +441,8 @@ fn execute_call(
     let access = crate::classify::entry_points::classify_function(function_def, owning_contract);
 
     let combined_state_vars = data.project.inherited_state_vars(data.contract);
-    session.add_step_with_internals(
+    crate::exploration::add_step_solidity::add_solidity_step(
+        session,
         function_def,
         cfg,
         &combined_state_vars,
@@ -727,7 +728,8 @@ pub fn get_sequence_narrative(
     for (i, step) in narrative.steps.iter_mut().enumerate() {
         if let Some(session_step) = session.steps.get(i) {
             step.flow_summary = session_step.flow_tree.as_ref()
-                .map(|tree| compute_flow_summary(tree, i));
+                .and_then(|v| serde_json::from_value::<FlowTree>(v.clone()).ok())
+                .map(|tree| compute_flow_summary(&tree, i));
         }
     }
 

@@ -50,8 +50,11 @@ pub fn build_variable_timeline(
             }
 
             let reached_when = match (mutation.flow_step_id, &step.flow_tree) {
-                (Some(flow_id), Some(tree)) => {
-                    collect_path_conditions(tree, flow_id).unwrap_or_default()
+                (Some(flow_id), Some(tree_value)) => {
+                    serde_json::from_value::<crate::narrative::trace::FlowTree>(tree_value.clone())
+                        .ok()
+                        .and_then(|tree| collect_path_conditions(&tree, flow_id))
+                        .unwrap_or_default()
                 }
                 _ => Vec::new(),
             };
@@ -117,6 +120,7 @@ mod tests {
             mutations,
             flow_tree: None,
             trace_config: TraceConfig::default(),
+            runtime_trace: None,
         }
     }
 

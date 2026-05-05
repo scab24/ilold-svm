@@ -4,6 +4,7 @@ members = [
     "crates/ilold-core",
     "crates/ilold-cli",
     "crates/ilold-web",
+    "crates/ilold-session-core",
 ]
 
 [workspace.package]
