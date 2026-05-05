@@ -1756,6 +1756,7 @@ dependencies = [
  "crossterm",
  "dirs",
  "ilold-core",
+ "ilold-solana-core",
  "ilold-web",
  "nu-ansi-term",
  "ratatui",
