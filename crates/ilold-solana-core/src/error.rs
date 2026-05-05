@@ -27,4 +27,10 @@ pub enum SolanaError {
 
     #[error("PDA seed references arg '{path}' which is not declared on the instruction")]
     SeedArgUnresolved { path: String },
+
+    #[error("project at '{path}' contains both Anchor.toml and Solidity sources")]
+    MixedProject { path: PathBuf },
+
+    #[error("project at '{path}' is neither Anchor nor Solidity (no Anchor.toml, foundry.toml or *.sol found)")]
+    UnknownProjectType { path: PathBuf },
 }
