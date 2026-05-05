@@ -42,4 +42,10 @@ pub enum SolanaError {
 
     #[error("IDL references unknown type '{0}'")]
     UnknownType(String),
+
+    #[error("VM boot failed: {0}")]
+    VmBootFailed(String),
+
+    #[error("VM operation failed: {0}")]
+    VmOperationFailed(String),
 }
