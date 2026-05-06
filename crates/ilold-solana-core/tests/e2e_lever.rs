@@ -70,6 +70,7 @@ fn add_solana_step_runs_switch_power_against_real_program() {
         &mut vm,
         serde_json::json!({"name": "claude"}),
         accounts,
+        &[],
         "2026-05-06T00:00:00Z",
     )
     .expect("add_solana_step");

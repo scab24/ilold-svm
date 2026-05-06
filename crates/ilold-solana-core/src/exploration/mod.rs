@@ -8,5 +8,6 @@ pub use commands::{
     SolanaCommandResult, UserEntry,
 };
 pub use execute::{
-    execute_funcs, execute_inspect, execute_pda, execute_session, execute_state, execute_users,
+    execute_back, execute_call, execute_clear, execute_funcs, execute_inspect, execute_pda,
+    execute_session, execute_state, execute_users,
 };

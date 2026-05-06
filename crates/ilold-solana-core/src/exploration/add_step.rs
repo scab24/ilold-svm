@@ -9,6 +9,7 @@ use ilold_session_core::runtime_trace::{AccountDiff, RuntimeTrace};
 use serde_json::Value;
 use solana_account::{Account, ReadableAccount};
 use solana_address::Address;
+use solana_keypair::Keypair;
 
 use crate::error::SolanaError;
 use crate::execute::{build_instruction, build_transaction, VmHost};
@@ -22,6 +23,7 @@ pub fn add_solana_step<'a>(
     vm: &mut VmHost,
     args: Value,
     accounts: HashMap<String, Address>,
+    extra_signers: &[&Keypair],
     timestamp: &str,
 ) -> Result<&'a ExplorationStep, SolanaError> {
     let step_index = session.steps.len();
@@ -37,7 +39,7 @@ pub fn add_solana_step<'a>(
         .collect();
 
     let blockhash = vm.svm().latest_blockhash();
-    let tx = build_transaction(instruction.clone(), vm.payer(), blockhash)?;
+    let tx = build_transaction(instruction.clone(), vm.payer(), extra_signers, blockhash)?;
     let result = vm.svm_mut().send_transaction(tx);
 
     let (runtime_trace, mutations) = match result {

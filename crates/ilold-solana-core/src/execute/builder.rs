@@ -76,9 +76,17 @@ pub fn build_instruction(
 pub fn build_transaction(
     ix: Instruction,
     payer: &Keypair,
+    extra_signers: &[&Keypair],
     blockhash: Hash,
 ) -> Result<VersionedTransaction, SolanaError> {
     let msg = Message::new_with_blockhash(&[ix], Some(&payer.pubkey()), &blockhash);
-    VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &[payer])
+    let payer_pk = payer.pubkey();
+    let mut signers: Vec<&Keypair> = vec![payer];
+    for kp in extra_signers {
+        if kp.pubkey() != payer_pk && !signers.iter().any(|s| s.pubkey() == kp.pubkey()) {
+            signers.push(*kp);
+        }
+    }
+    VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &signers)
         .map_err(|e| SolanaError::EncodeFailed(format!("transaction sign: {e:?}")))
 }

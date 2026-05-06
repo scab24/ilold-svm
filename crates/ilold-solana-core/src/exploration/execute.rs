@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use anchor_lang_idl::types::IdlTypeDefTy;
 use ilold_session_core::exploration::session::ExplorationSession;
+use serde_json::Value;
 use solana_address::Address;
 use solana_keypair::Keypair;
 use solana_signer::Signer;
@@ -10,6 +11,7 @@ use crate::decode::borsh::decode_defined_fields;
 use crate::execute::VmHost;
 use crate::model::{AccountTypeDef, ProgramDef, SeedSpec};
 
+use super::add_step::add_solana_step;
 use super::commands::{
     AccountSummary, InstructionEntry, PdaEntry, SolanaCommandResult, UserEntry,
 };
@@ -185,6 +187,147 @@ pub fn execute_inspect(
         data_len: acc.data.len(),
         decoded,
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn execute_call(
+    program: &ProgramDef,
+    ix_name: &str,
+    args: Value,
+    accounts_input: HashMap<String, String>,
+    signer_names: Vec<String>,
+    users: &HashMap<String, Keypair>,
+    session: &mut ExplorationSession,
+    vm: &mut VmHost,
+    timestamp: &str,
+) -> SolanaCommandResult {
+    let ix = match program.instructions.iter().find(|i| i.name == ix_name) {
+        Some(i) => i.clone(),
+        None => {
+            return SolanaCommandResult::Error {
+                message: format!("instruction '{ix_name}' not found"),
+            };
+        }
+    };
+
+    let mut accounts: HashMap<String, Address> = HashMap::new();
+    for (key, raw) in accounts_input {
+        if let Some(kp) = users.get(&raw) {
+            accounts.insert(key, kp.pubkey());
+            continue;
+        }
+        match raw.parse::<Address>() {
+            Ok(addr) => {
+                accounts.insert(key, addr);
+            }
+            Err(_) => {
+                return SolanaCommandResult::Error {
+                    message: format!(
+                        "account '{key}': '{raw}' is neither a known user nor a valid pubkey"
+                    ),
+                };
+            }
+        }
+    }
+
+    let mut extra_signers: Vec<&Keypair> = Vec::new();
+    for name in &signer_names {
+        match users.get(name) {
+            Some(kp) => extra_signers.push(kp),
+            None => {
+                return SolanaCommandResult::Error {
+                    message: format!("signer '{name}' not found in users registry"),
+                };
+            }
+        }
+    }
+
+    let payer_pk = vm.payer_pubkey();
+    for spec in &ix.accounts {
+        if !spec.signer {
+            continue;
+        }
+        let resolved_pk = accounts
+            .get(&spec.path)
+            .or_else(|| accounts.get(&spec.name))
+            .copied();
+        let pk = match resolved_pk {
+            Some(p) => p,
+            None => continue,
+        };
+        let in_signers = extra_signers.iter().any(|kp| kp.pubkey() == pk);
+        if pk != payer_pk && !in_signers {
+            return SolanaCommandResult::Error {
+                message: format!(
+                    "account '{}' is marked signer but no matching keypair was provided",
+                    spec.name
+                ),
+            };
+        }
+    }
+
+    if let Err(e) = add_solana_step(
+        session,
+        program,
+        &ix,
+        vm,
+        args,
+        accounts,
+        &extra_signers,
+        timestamp,
+    ) {
+        return SolanaCommandResult::Error {
+            message: format!("{e:?}"),
+        };
+    }
+
+    let step_index = session.steps.len() - 1;
+    let step = session.steps.last().expect("step pushed");
+    let trace = step.runtime_trace.clone().unwrap_or(Value::Null);
+    let logs_excerpt: Vec<String> = trace
+        .get("logs")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .take(10)
+                .collect()
+        })
+        .unwrap_or_default();
+    let account_diffs_count = trace
+        .get("account_diffs")
+        .and_then(|v| v.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+    let compute_units = trace
+        .get("compute_units")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    SolanaCommandResult::StepAdded {
+        step_index,
+        instruction: step.function.clone(),
+        logs_excerpt,
+        account_diffs_count,
+        compute_units,
+    }
+}
+
+pub fn execute_back(session: &mut ExplorationSession) -> SolanaCommandResult {
+    if session.remove_last_step() {
+        SolanaCommandResult::StepRemoved {
+            remaining: session.steps.len(),
+        }
+    } else {
+        SolanaCommandResult::Error {
+            message: "no steps to undo".into(),
+        }
+    }
+}
+
+pub fn execute_clear(session: &mut ExplorationSession) -> SolanaCommandResult {
+    session.clear();
+    SolanaCommandResult::Cleared
 }
 
 fn describe_seed(seed: &SeedSpec) -> String {
