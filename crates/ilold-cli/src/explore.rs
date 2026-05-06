@@ -11,6 +11,7 @@ use reedline::{
 
 use ilold_core::classify::entry_points::AccessLevel;
 use ilold_core::exploration::commands::CommandResult;
+use ilold_solana_core::exploration::SolanaCommandResult;
 
 use crate::colors::*;
 use crate::fmt;
@@ -380,6 +381,18 @@ fn handle_input(
     state: &Option<std::sync::Arc<ilold_web::state::AppState>>,
     backend: BackendKind,
 ) -> InputResult {
+    if backend == BackendKind::Solana {
+        return handle_solana_input(
+            line,
+            handle,
+            client,
+            base_url,
+            contract,
+            steps,
+            scenario_name,
+            completer,
+        );
+    }
     // Allow shortcuts like `st0`, `st1`, `step2` without requiring a space.
     let normalized = split_numeric_suffix(line);
     let parts: Vec<&str> = normalized.splitn(2, ' ').collect();
@@ -1008,6 +1021,582 @@ fn handle_input(
             println!("  Unknown command: {}. Type {} for help.", c_danger(cmd.as_str()), c_accent("?"));
             InputResult::Continue
         }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_solana_input(
+    line: &str,
+    handle: &tokio::runtime::Handle,
+    client: &reqwest::Client,
+    base_url: &str,
+    contract: &str,
+    steps: &mut Vec<String>,
+    scenario_name: &mut String,
+    completer: &std::sync::Arc<std::sync::Mutex<IloldCompleter>>,
+) -> InputResult {
+    let parts: Vec<&str> = line.splitn(2, ' ').collect();
+    let cmd = parts[0].to_lowercase();
+    let arg = parts.get(1).map(|s| s.trim()).unwrap_or("");
+
+    match cmd.as_str() {
+        "?" | "help" | "h" => {
+            print_help();
+            InputResult::Continue
+        }
+        "quit" | "q" | "exit" => InputResult::Quit,
+        "funcs" | "functions" | "f" => {
+            dispatch_solana(
+                handle,
+                client,
+                base_url,
+                contract,
+                serde_json::json!("Funcs"),
+                steps,
+            )
+        }
+        "state" => dispatch_solana(
+            handle,
+            client,
+            base_url,
+            contract,
+            serde_json::json!("State"),
+            steps,
+        ),
+        "session" | "s" => {
+            let r = dispatch_solana(
+                handle,
+                client,
+                base_url,
+                contract,
+                serde_json::json!("Session"),
+                steps,
+            );
+            *scenario_name = sync_active_scenario(handle, client, base_url, contract)
+                .unwrap_or_else(|| scenario_name.clone());
+            r
+        }
+        "back" => dispatch_solana(
+            handle,
+            client,
+            base_url,
+            contract,
+            serde_json::json!("Back"),
+            steps,
+        ),
+        "clear" => dispatch_solana(
+            handle,
+            client,
+            base_url,
+            contract,
+            serde_json::json!("Clear"),
+            steps,
+        ),
+        "users" => {
+            if arg.starts_with("new") {
+                let rest = arg.trim_start_matches("new").trim();
+                if rest.is_empty() {
+                    println!("  Usage: users new <name> [<lamports>]");
+                    return InputResult::Continue;
+                }
+                let parts: Vec<&str> = rest.split_whitespace().collect();
+                let name = parts[0].to_string();
+                let lamports: u64 = parts
+                    .get(1)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(10_000_000_000);
+                let body = serde_json::json!({"UsersNew": {"name": name, "lamports": lamports}});
+                dispatch_solana(handle, client, base_url, contract, body, steps)
+            } else {
+                dispatch_solana(
+                    handle,
+                    client,
+                    base_url,
+                    contract,
+                    serde_json::json!("Users"),
+                    steps,
+                )
+            }
+        }
+        "airdrop" | "air" => {
+            let parts: Vec<&str> = arg.split_whitespace().collect();
+            if parts.len() != 2 {
+                println!("  Usage: airdrop <name> <lamports>");
+                return InputResult::Continue;
+            }
+            let lamports: u64 = match parts[1].parse() {
+                Ok(v) => v,
+                Err(_) => {
+                    println!("  Lamports must be an integer");
+                    return InputResult::Continue;
+                }
+            };
+            let body =
+                serde_json::json!({"Airdrop": {"user": parts[0], "lamports": lamports}});
+            dispatch_solana(handle, client, base_url, contract, body, steps)
+        }
+        "time-warp" | "tw" => {
+            let delta: i64 = match arg.parse() {
+                Ok(v) => v,
+                Err(_) => {
+                    println!("  Usage: time-warp <delta_seconds>");
+                    return InputResult::Continue;
+                }
+            };
+            let body = serde_json::json!({"TimeWarp": {"delta_seconds": delta}});
+            dispatch_solana(handle, client, base_url, contract, body, steps)
+        }
+        "pda" => {
+            if arg.is_empty() {
+                println!("  Usage: pda <instruction>");
+                return InputResult::Continue;
+            }
+            let body = serde_json::json!({"Pda": {"instruction": arg}});
+            dispatch_solana(handle, client, base_url, contract, body, steps)
+        }
+        "inspect" | "acc" => {
+            if arg.is_empty() {
+                println!("  Usage: inspect <pubkey>");
+                return InputResult::Continue;
+            }
+            let body = serde_json::json!({"Inspect": {"pubkey": arg}});
+            dispatch_solana(handle, client, base_url, contract, body, steps)
+        }
+        "call" | "c" => {
+            let parts: Vec<&str> = arg.splitn(2, ' ').collect();
+            if parts.is_empty() || parts[0].is_empty() {
+                println!(
+                    "  Usage: call <ix> <json with args, accounts, signers>"
+                );
+                return InputResult::Continue;
+            }
+            let ix = parts[0];
+            let payload = parts.get(1).copied().unwrap_or("{}");
+            let parsed: serde_json::Value = match serde_json::from_str(payload) {
+                Ok(v) => v,
+                Err(e) => {
+                    println!("  Invalid JSON: {e}");
+                    return InputResult::Continue;
+                }
+            };
+            let body = serde_json::json!({
+                "Call": {
+                    "ix": ix,
+                    "args": parsed.get("args").cloned().unwrap_or(serde_json::json!({})),
+                    "accounts": parsed.get("accounts").cloned().unwrap_or(serde_json::json!({})),
+                    "signers": parsed.get("signers").cloned().unwrap_or(serde_json::json!([])),
+                }
+            });
+            dispatch_solana(handle, client, base_url, contract, body, steps)
+        }
+        "ct" | "contracts" | "programs" | "progs" => {
+            // print_programs handled via SwitchContract path; this branch never
+            // reaches here because we route handle_solana_input before the
+            // shared dispatch. Inline a Funcs response so users see something.
+            dispatch_solana(
+                handle,
+                client,
+                base_url,
+                contract,
+                serde_json::json!("Funcs"),
+                steps,
+            )
+        }
+        "sc" | "scenario" => {
+            let parts: Vec<&str> = arg.split_whitespace().collect();
+            let sub = parts.first().copied().unwrap_or("");
+            let name_arg = parts.get(1).copied().unwrap_or("");
+            let action: Option<serde_json::Value> = match sub {
+                "new" if !name_arg.is_empty() => {
+                    Some(serde_json::json!({"New": {"name": name_arg}}))
+                }
+                "list" | "ls" | "" => Some(serde_json::json!("List")),
+                "switch" if !name_arg.is_empty() => {
+                    Some(serde_json::json!({"Switch": {"name": name_arg}}))
+                }
+                "fork" if !name_arg.is_empty() => {
+                    let at_step: Option<usize> = parts.get(2).and_then(|s| s.parse().ok());
+                    Some(serde_json::json!({"Fork": {"name": name_arg, "at_step": at_step}}))
+                }
+                "delete" | "rm" if !name_arg.is_empty() => {
+                    Some(serde_json::json!({"Delete": {"name": name_arg}}))
+                }
+                _ => None,
+            };
+            let action = match action {
+                Some(a) => a,
+                None => {
+                    println!(
+                        "  Usage: scenario new|list|switch|fork|delete <name> [step]"
+                    );
+                    return InputResult::Continue;
+                }
+            };
+            let body = serde_json::json!({"Scenario": {"sub": action}});
+            let outcome = dispatch_solana(handle, client, base_url, contract, body, steps);
+            *scenario_name = sync_active_scenario(handle, client, base_url, contract)
+                .unwrap_or_else(|| scenario_name.clone());
+            if let Ok(mut comp) = completer.lock() {
+                if let Some(items) = sync_scenarios(handle, client, base_url, contract) {
+                    comp.scenarios = items;
+                }
+            }
+            outcome
+        }
+        "note" | "n" => {
+            if arg.is_empty() {
+                println!("  Usage: note <text>");
+                return InputResult::Continue;
+            }
+            let body = serde_json::json!({"Note": {"text": arg}});
+            dispatch_solana(handle, client, base_url, contract, body, steps)
+        }
+        "status" => {
+            let parts: Vec<&str> = arg.split_whitespace().collect();
+            if parts.len() != 2 {
+                println!("  Usage: status <ix> <open|reviewed|finding>");
+                return InputResult::Continue;
+            }
+            let st = match parts[1].to_lowercase().as_str() {
+                "open" => "Open",
+                "reviewed" => "Reviewed",
+                "finding" | "found" => "Finding",
+                other => {
+                    println!("  Unknown status '{other}'. Use open|reviewed|finding");
+                    return InputResult::Continue;
+                }
+            };
+            let body =
+                serde_json::json!({"Status": {"ix": parts[0], "status": st}});
+            dispatch_solana(handle, client, base_url, contract, body, steps)
+        }
+        _ => {
+            println!(
+                "  Unknown command: {}. Type {} for help.",
+                c_danger(&cmd),
+                c_accent("?")
+            );
+            InputResult::Continue
+        }
+    }
+}
+
+fn dispatch_solana(
+    handle: &tokio::runtime::Handle,
+    client: &reqwest::Client,
+    base_url: &str,
+    contract: &str,
+    command: serde_json::Value,
+    steps: &mut Vec<String>,
+) -> InputResult {
+    let body = serde_json::json!({"contract": contract, "command": command});
+    match send_solana_command(handle, client, base_url, &body) {
+        Ok(result) => {
+            apply_solana_result_to_steps(&result, steps);
+            print_solana_result(&result);
+            InputResult::UpdatePrompt
+        }
+        Err(e) => {
+            eprintln!("  {}", c_danger(&e));
+            InputResult::Continue
+        }
+    }
+}
+
+fn send_solana_command(
+    handle: &tokio::runtime::Handle,
+    client: &reqwest::Client,
+    base_url: &str,
+    body: &serde_json::Value,
+) -> Result<SolanaCommandResult, String> {
+    handle.block_on(async {
+        let resp = client
+            .post(format!("{base_url}/api/cmd"))
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {e}"))?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(format!("Server error {status}: {text}"));
+        }
+        resp.json::<SolanaCommandResult>()
+            .await
+            .map_err(|e| format!("Parse failed: {e}"))
+    })
+}
+
+fn apply_solana_result_to_steps(result: &SolanaCommandResult, steps: &mut Vec<String>) {
+    match result {
+        SolanaCommandResult::StepAdded { instruction, .. } => steps.push(instruction.clone()),
+        SolanaCommandResult::StepRemoved { .. } => {
+            steps.pop();
+        }
+        SolanaCommandResult::Cleared => steps.clear(),
+        SolanaCommandResult::SessionView { steps: server_steps, .. } => {
+            *steps = server_steps.clone();
+        }
+        SolanaCommandResult::SessionLoaded { steps: server_steps, .. } => {
+            *steps = server_steps.clone();
+        }
+        _ => {}
+    }
+}
+
+fn print_solana_result(result: &SolanaCommandResult) {
+    println!();
+    match result {
+        SolanaCommandResult::StepAdded {
+            step_index,
+            instruction,
+            logs_excerpt,
+            account_diffs_count,
+            compute_units,
+        } => {
+            println!(
+                "  {} step {}: {} {}",
+                c_ok("✓"),
+                step_index,
+                c_accent(instruction),
+                c_muted(&format!(
+                    "({} CU, {} diffs)",
+                    compute_units, account_diffs_count
+                ))
+            );
+            for log in logs_excerpt {
+                println!("    {}", c_muted(log));
+            }
+        }
+        SolanaCommandResult::StepRemoved { remaining } => {
+            println!("  {} step undone ({} remaining)", c_ok("✓"), remaining);
+        }
+        SolanaCommandResult::Cleared => {
+            println!("  {} session cleared", c_ok("✓"));
+        }
+        SolanaCommandResult::InstructionList { items } => {
+            for ix in items {
+                let badge = if ix.has_pdas { c_accent("[PDA]") } else { c_muted("[ix]") };
+                let signers = if ix.signers.is_empty() {
+                    String::new()
+                } else {
+                    format!(" signers: {}", ix.signers.join(","))
+                };
+                println!(
+                    "  {} {} {}{}",
+                    badge,
+                    ix.name,
+                    c_muted(&format!(
+                        "(args:{} accounts:{})",
+                        ix.args_count, ix.accounts_count
+                    )),
+                    c_muted(&signers)
+                );
+            }
+        }
+        SolanaCommandResult::StateView { accounts } => {
+            if accounts.is_empty() {
+                println!("  {}", c_muted("No accounts mutated yet"));
+            }
+            for a in accounts {
+                let decoded = a
+                    .decoded
+                    .as_ref()
+                    .map(|v| serde_json::to_string(v).unwrap_or_default())
+                    .unwrap_or_else(|| "<not decoded>".into());
+                println!(
+                    "  {} {} {} {} {}",
+                    c_accent("[A]"),
+                    a.label,
+                    c_muted(&format!("({} lamports)", a.lamports)),
+                    c_muted(&a.pubkey),
+                    c_muted(&decoded)
+                );
+            }
+        }
+        SolanaCommandResult::SessionView {
+            program,
+            scenario,
+            steps,
+            findings_count,
+        } => {
+            println!(
+                "  program={} scenario={} steps={} findings={}",
+                c_accent(program),
+                c_accent(scenario),
+                steps.len(),
+                findings_count
+            );
+            for (i, s) in steps.iter().enumerate() {
+                println!("    {} {}", c_muted(&format!("{i}.")), s);
+            }
+        }
+        SolanaCommandResult::UserList { users } => {
+            if users.is_empty() {
+                println!("  {}", c_muted("No users — create with 'users new <name>'"));
+            }
+            for u in users {
+                println!(
+                    "  {} {} {} {}",
+                    c_accent("[U]"),
+                    u.name,
+                    c_muted(&u.pubkey),
+                    c_muted(&format!("{} lamports", u.lamports))
+                );
+            }
+        }
+        SolanaCommandResult::UserCreated { name, pubkey, lamports } => {
+            println!(
+                "  {} user {} created at {} with {} lamports",
+                c_ok("✓"),
+                c_accent(name),
+                c_muted(pubkey),
+                lamports
+            );
+        }
+        SolanaCommandResult::Airdropped { name, pubkey, total_lamports } => {
+            println!(
+                "  {} {} now {} lamports {}",
+                c_ok("✓"),
+                c_accent(name),
+                total_lamports,
+                c_muted(pubkey)
+            );
+        }
+        SolanaCommandResult::TimeWarped { unix_timestamp, slot } => {
+            println!(
+                "  {} clock now ts={} slot={}",
+                c_ok("✓"),
+                unix_timestamp,
+                slot
+            );
+        }
+        SolanaCommandResult::PdaList { instruction, pdas } => {
+            if pdas.is_empty() {
+                println!("  {} {}", c_muted("no PDAs declared in"), instruction);
+            }
+            for p in pdas {
+                println!(
+                    "  {} {} seeds=[{}] program={}",
+                    c_accent("[PDA]"),
+                    p.account_name,
+                    p.seeds.join(", "),
+                    c_muted(&p.program)
+                );
+            }
+        }
+        SolanaCommandResult::AccountInspected {
+            pubkey,
+            owner,
+            lamports,
+            data_len,
+            decoded,
+        } => {
+            println!(
+                "  {} owner={} lamports={} data_len={}",
+                c_accent(pubkey),
+                c_muted(owner),
+                lamports,
+                data_len
+            );
+            if let Some(d) = decoded {
+                println!("    {}", serde_json::to_string_pretty(d).unwrap_or_default());
+            }
+        }
+        SolanaCommandResult::FindingAdded { id } => {
+            println!("  {} finding {}", c_ok("✓"), c_accent(id));
+        }
+        SolanaCommandResult::NoteAdded => {
+            println!("  {} note recorded", c_ok("✓"));
+        }
+        SolanaCommandResult::StatusUpdated => {
+            println!("  {} status updated", c_ok("✓"));
+        }
+        SolanaCommandResult::SessionSaved { json } => {
+            println!(
+                "  {} session JSON ({} bytes)",
+                c_ok("✓"),
+                json.len()
+            );
+        }
+        SolanaCommandResult::SessionLoaded { program, steps } => {
+            println!(
+                "  {} loaded program={} steps={}",
+                c_ok("✓"),
+                c_accent(program),
+                steps.len()
+            );
+        }
+        SolanaCommandResult::ScenarioList { items } => {
+            for it in items {
+                let marker = if it.active { c_ok(" ← active") } else { "".into() };
+                println!(
+                    "  {} {} {}{}",
+                    c_accent("[S]"),
+                    it.name,
+                    c_muted(&format!("({} steps)", it.step_count)),
+                    marker
+                );
+            }
+        }
+        SolanaCommandResult::ScenarioCreated { name } => {
+            println!("  {} scenario {} created", c_ok("✓"), c_accent(name));
+        }
+        SolanaCommandResult::ScenarioSwitched { from, to } => {
+            println!("  {} {} → {}", c_ok("→"), from, c_accent(to));
+        }
+        SolanaCommandResult::ScenarioForked { from, to, at_step } => {
+            println!(
+                "  {} forked {} → {} at step {}",
+                c_ok("✓"),
+                from,
+                c_accent(to),
+                at_step
+            );
+        }
+        SolanaCommandResult::ScenarioDeleted { name } => {
+            println!("  {} scenario {} deleted", c_ok("✓"), name);
+        }
+        SolanaCommandResult::Error { message } => {
+            eprintln!("  {} {}", c_danger("✗"), message);
+        }
+    }
+    println!();
+}
+
+fn sync_active_scenario(
+    handle: &tokio::runtime::Handle,
+    client: &reqwest::Client,
+    base_url: &str,
+    contract: &str,
+) -> Option<String> {
+    let body = serde_json::json!({
+        "contract": contract,
+        "command": {"Scenario": {"sub": "List"}}
+    });
+    let res = send_solana_command(handle, client, base_url, &body).ok()?;
+    if let SolanaCommandResult::ScenarioList { items } = res {
+        items.into_iter().find(|i| i.active).map(|i| i.name)
+    } else {
+        None
+    }
+}
+
+fn sync_scenarios(
+    handle: &tokio::runtime::Handle,
+    client: &reqwest::Client,
+    base_url: &str,
+    contract: &str,
+) -> Option<Vec<String>> {
+    let body = serde_json::json!({
+        "contract": contract,
+        "command": {"Scenario": {"sub": "List"}}
+    });
+    let res = send_solana_command(handle, client, base_url, &body).ok()?;
+    if let SolanaCommandResult::ScenarioList { items } = res {
+        Some(items.into_iter().map(|i| i.name).collect())
+    } else {
+        None
     }
 }
 
