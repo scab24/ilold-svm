@@ -19,6 +19,7 @@
     lookupBlock: (blockId: string) => { statements: string[]; node_type: string } | null;
     onpathselect: (funcName: string, path: any) => void;
     onexpandcfg: (funcName: string, nodeId?: string) => void;
+    onsolanarun?: (instructionName: string) => void;
   }
 
   let {
@@ -33,6 +34,7 @@
     lookupBlock,
     onpathselect,
     onexpandcfg,
+    onsolanarun,
   }: Props = $props();
 
   function termColor(t: string): string {
@@ -338,12 +340,70 @@
         {:else}
           <div class="d-hint">Click a path above to see the execution flow</div>
         {/if}
+
+      {:else if selectedNode._type === 'instruction'}
+        <div class="d-row"><span class="d-label">Program</span><span>{selectedNode.programName}</span></div>
+        <div class="d-row"><span class="d-label">Args</span><span>{selectedNode.argsCount}</span></div>
+        <div class="d-row"><span class="d-label">Accounts</span><span>{selectedNode.accountsCount}</span></div>
+        {#if selectedNode.hasPdas}
+          <div class="d-row"><span class="d-label">PDAs</span><span class="text-warning">declares PDAs</span></div>
+        {/if}
+        {#if selectedNode.signers && selectedNode.signers.length > 0}
+          <div class="d-row"><span class="d-label">Signers</span><span>{selectedNode.signers.join(', ')}</span></div>
+        {/if}
+        {#if onsolanarun}
+          <div class="d-actions">
+            <button class="d-action-btn" onclick={() => onsolanarun?.(selectedNode.label)}>
+              ▶ Execute instruction
+            </button>
+          </div>
+        {/if}
+
+      {:else if selectedNode._type === 'account'}
+        <div class="d-row"><span class="d-label">Program</span><span>{selectedNode.programName}</span></div>
+        {#if selectedNode.fields && selectedNode.fields.length > 0}
+          <div class="d-section-label">Fields</div>
+          {#each selectedNode.fields as f}
+            <div class="d-row"><span class="d-label">{f.name}</span><span class="font-mono">{f.type}</span></div>
+          {/each}
+        {:else}
+          <div class="d-hint">Layout fields not declared in this IDL</div>
+        {/if}
+
+      {:else if selectedNode._type === 'trace'}
+        <div class="d-row"><span class="d-label">Step</span><span>#{selectedNode.stepIndex}</span></div>
+        <div class="d-row"><span class="d-label">Instruction</span><span>{selectedNode.instruction}</span></div>
+        <div class="d-row"><span class="d-label">Compute units</span><span>{selectedNode.computeUnits}</span></div>
+        <div class="d-row"><span class="d-label">Account diffs</span><span>{selectedNode.diffsCount}</span></div>
+        <div class="d-row"><span class="d-label">Scenario</span><span>{selectedNode.scenario}</span></div>
+        {#if selectedNode.error}
+          <div class="d-row"><span class="d-label">Error</span><span class="text-danger">{selectedNode.error}</span></div>
+        {/if}
+        {#if selectedNode.logsExcerpt && selectedNode.logsExcerpt.length > 0}
+          <div class="d-section-label">Logs</div>
+          <pre class="trace-logs">{selectedNode.logsExcerpt.join('\n')}</pre>
+        {/if}
       {/if}
     </div>
   </div>
 {/if}
 
 <style>
+  .trace-logs {
+    background: var(--color-hover);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: 4px;
+    padding: 8px;
+    font-family: var(--font-mono, monospace);
+    font-size: 10px;
+    color: var(--color-text-muted);
+    white-space: pre-wrap;
+    max-height: 280px;
+    overflow-y: auto;
+    margin-top: 6px;
+  }
+  .text-danger { color: var(--color-danger); }
+  .text-warning { color: var(--color-warning); }
   .empty-state {
     display: flex;
     flex-direction: column;

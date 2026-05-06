@@ -12,10 +12,12 @@
   import { composeScenarioTree, type ComposedNode } from '$lib/canvas/scenarios';
   import { promptScenarioName } from '$lib/scenarios/name';
   import { dispatchScenarioAction } from '$lib/scenarios/dispatch';
-  import { postCommand } from '$lib/api/session';
+  import { postCommand, postSolanaCommand } from '$lib/api/session';
   import Legend from '$lib/components/contract/Legend.svelte';
   import FunctionSidebar from '$lib/components/contract/FunctionSidebar.svelte';
   import InstructionSidebar from '$lib/components/contract/InstructionSidebar.svelte';
+  import SolanaRunPanel from '$lib/components/contract/SolanaRunPanel.svelte';
+  import NodeInspector from '$lib/components/contract/NodeInspector.svelte';
   import { composeProgramGraph } from '$lib/canvas/program';
   import TopBar from '$lib/components/contract/TopBar.svelte';
   import StatusBar from '$lib/components/contract/StatusBar.svelte';
@@ -41,6 +43,9 @@
   let solanaProgram: ProgramDetail | null = $state(null);
   let kind: 'solidity' | 'solana' = $state('solidity');
   let solanaCanvasIxs: Set<string> = $state(new Set());
+  let solanaRunIx: any = $state(null);
+  let solanaUsers: { name: string; pubkey: string }[] = $state([]);
+  let solanaTraceCount = $state(0);
   let error: string | null = $state(null);
   let selectedNode: any = $state(null);
   let selectedPath: any = $state(null);
@@ -564,6 +569,78 @@
     removeNodesById([`ix:${ix}`]);
   }
 
+  function handleSolanaRun(name: string) {
+    if (!solanaProgram) return;
+    const ix = solanaProgram.instructions.find((i) => i.name === name);
+    if (!ix) return;
+    solanaRunIx = ix;
+  }
+
+  async function refreshSolanaUsers() {
+    if (!solanaProgram) return;
+    try {
+      const result = await postSolanaCommand('Users', solanaProgram.name);
+      if (result?.UserList?.users) {
+        solanaUsers = result.UserList.users;
+      }
+    } catch {}
+  }
+
+  async function handleSolanaSubmit(payload: {
+    args: Record<string, any>;
+    accounts: Record<string, string>;
+    signers: string[];
+  }) {
+    if (!solanaProgram || !solanaRunIx) return;
+    const ixName = solanaRunIx.name;
+    const result = await postSolanaCommand(
+      {
+        Call: {
+          ix: ixName,
+          args: payload.args,
+          accounts: payload.accounts,
+          signers: payload.signers,
+        },
+      },
+      solanaProgram.name,
+    );
+    if (result?.Error) {
+      throw new Error(result.Error.message ?? 'Call failed');
+    }
+    if (result?.StepAdded) {
+      const sa = result.StepAdded;
+      const id = `trace:${sa.step_index}`;
+      const ixNode = findNode(`ix:${ixName}`);
+      const baseX = ixNode?.position?.x ?? 0;
+      const baseY = (ixNode?.position?.y ?? 320) + 180;
+      const offsetX = solanaTraceCount * 40;
+      addNode({
+        id,
+        type: 'trace',
+        position: { x: baseX + offsetX, y: baseY },
+        data: {
+          _type: 'trace',
+          label: `${sa.instruction} #${sa.step_index}`,
+          stepIndex: sa.step_index,
+          instruction: sa.instruction,
+          computeUnits: sa.compute_units ?? 0,
+          diffsCount: sa.account_diffs_count ?? 0,
+          logsExcerpt: sa.logs_excerpt ?? [],
+          scenario: getActiveScenario() ?? 'main',
+          error: null,
+        },
+      } as any);
+      addEdge({
+        id: `e:${`ix:${ixName}`}->${id}`,
+        source: `ix:${ixName}`,
+        target: id,
+      });
+      solanaTraceCount += 1;
+    }
+    solanaRunIx = null;
+    await refreshSolanaUsers();
+  }
+
   onMount(async () => {
     const contractName = page.params.name;
     if (!contractName) return;
@@ -592,6 +669,7 @@
         setNodes(composed.nodes);
         setEdges(composed.edges);
         solanaCanvasIxs = new Set(solanaProgram.instructions.map((i) => i.name));
+        await refreshSolanaUsers();
         return;
       }
       projectMap = pm.contracts ?? [];
@@ -1426,7 +1504,32 @@
         onselectionchange={(nodes) => { selectionCount = nodes.length; }}
         onready={(api) => { flowApi = api; }}
       />
+      <aside class="w-[320px] shrink-0 border-l border-border-subtle overflow-y-auto bg-hover">
+        <NodeInspector
+          {selectedNode}
+          {selectedPath}
+          {funcPaths}
+          {expandedFuncs}
+          {seqExpanded}
+          mode="cfg"
+          {seqAnalysis}
+          contract={{ name: solanaProgram.name, functions: [] }}
+          lookupBlock={() => null}
+          onpathselect={() => {}}
+          onexpandcfg={() => {}}
+          onsolanarun={handleSolanaRun}
+        />
+      </aside>
     </div>
+    {#if solanaRunIx}
+      <SolanaRunPanel
+        program={solanaProgram}
+        ix={solanaRunIx}
+        users={solanaUsers}
+        onsubmit={handleSolanaSubmit}
+        oncancel={() => (solanaRunIx = null)}
+      />
+    {/if}
   {:else}
     <TopBar
       contractName={contract?.name ?? '...'}
