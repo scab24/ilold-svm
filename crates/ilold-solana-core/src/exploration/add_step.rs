@@ -170,3 +170,108 @@ fn diffs_to_mutations(diffs: &[AccountDiff], step_index: usize) -> Vec<StateMuta
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::AccountSpec;
+    use solana_keypair::Keypair;
+    use solana_signer::Signer;
+
+    fn ix_with_accounts(names: &[&str]) -> InstructionDef {
+        InstructionDef {
+            name: "test".into(),
+            discriminator: [0u8; 8],
+            args: vec![],
+            accounts: names
+                .iter()
+                .map(|n| AccountSpec {
+                    path: n.to_string(),
+                    name: n.to_string(),
+                    writable: true,
+                    signer: false,
+                    optional: false,
+                    address: None,
+                    pda: None,
+                    relations: vec![],
+                })
+                .collect(),
+            returns: None,
+        }
+    }
+
+    fn account_with(lamports: u64, data: Vec<u8>) -> Account {
+        Account {
+            lamports,
+            data,
+            owner: Address::default(),
+            executable: false,
+            rent_epoch: 0,
+        }
+    }
+
+    #[test]
+    fn diff_skips_unchanged_accounts() {
+        let addr = Keypair::new().pubkey();
+        let acc = account_with(100, vec![1, 2, 3]);
+        let pre = vec![(addr, Some(acc.clone()))];
+        let post = vec![(addr, Some(acc))];
+        let ix = ix_with_accounts(&["a"]);
+
+        let diffs = compute_diffs(&pre, &post, &ix);
+        assert!(diffs.is_empty());
+    }
+
+    #[test]
+    fn diff_detects_lamports_and_data_changes() {
+        let addr = Keypair::new().pubkey();
+        let pre = vec![(addr, Some(account_with(100, vec![1])))];
+        let post = vec![(addr, Some(account_with(150, vec![1, 2, 3])))];
+        let ix = ix_with_accounts(&["counter"]);
+
+        let diffs = compute_diffs(&pre, &post, &ix);
+        assert_eq!(diffs.len(), 1);
+        let d = &diffs[0];
+        assert_eq!(d.lamports_delta, 50);
+        assert_eq!(d.before, Some(vec![1]));
+        assert_eq!(d.after, Some(vec![1, 2, 3]));
+        assert_eq!(d.name.as_deref(), Some("counter"));
+    }
+
+    #[test]
+    fn diff_handles_account_creation() {
+        let addr = Keypair::new().pubkey();
+        let pre = vec![(addr, None)];
+        let post = vec![(addr, Some(account_with(890, vec![0; 8])))];
+        let ix = ix_with_accounts(&["new_acc"]);
+
+        let diffs = compute_diffs(&pre, &post, &ix);
+        assert_eq!(diffs.len(), 1);
+        let d = &diffs[0];
+        assert_eq!(d.lamports_delta, 890);
+        assert_eq!(d.before, None);
+        assert_eq!(d.after, Some(vec![0; 8]));
+    }
+
+    #[test]
+    fn mutations_emit_lamports_and_data_entries() {
+        let diffs = vec![AccountDiff {
+            address: "abc".into(),
+            name: Some("counter".into()),
+            before: Some(vec![0]),
+            after: Some(vec![42]),
+            lamports_delta: 1_000,
+            owner_changed: false,
+            decoded_before: None,
+            decoded_after: None,
+        }];
+
+        let muts = diffs_to_mutations(&diffs, 3);
+        assert_eq!(muts.len(), 2);
+        assert_eq!(muts[0].variable, "counter.lamports");
+        assert_eq!(muts[0].value_expr, "1000");
+        assert_eq!(muts[0].step_index, 3);
+        assert_eq!(muts[1].variable, "counter.data");
+        assert_eq!(muts[1].value_expr, "1 bytes");
+    }
+}
