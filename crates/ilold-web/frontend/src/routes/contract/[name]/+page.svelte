@@ -1356,6 +1356,54 @@
   // is global, so on route unmount we clear the list to avoid leaking
   // stale handlers back to the next page.
   $effect(() => {
+    if (kind === 'solana' && solanaProgram) {
+      const prog = solanaProgram;
+      const cmds: Command[] = [];
+      cmds.push({
+        id: 'canvas:center',
+        label: 'Center canvas',
+        category: 'Action',
+        icon: '⊙',
+        keywords: ['fit', 'zoom', 'reset view'],
+        run: () => { flowApi?.fitView({ padding: 0.1 }); },
+      });
+      for (const ix of prog.instructions ?? []) {
+        cmds.push({
+          id: `solana-ix:${ix.name}`,
+          label: ix.name,
+          category: 'Function',
+          icon: 'ƒ',
+          detail: `${(ix.args ?? []).length} args · ${(ix.accounts ?? []).length} accounts`,
+          keywords: ['instruction', 'jump', 'canvas'],
+          run: () => handleSolanaIxAdd(ix.name),
+        });
+        cmds.push({
+          id: `solana-run:${ix.name}`,
+          label: `Execute ${ix.name}`,
+          category: 'Action',
+          icon: '▶',
+          keywords: ['call', 'execute', 'instruction', 'run'],
+          run: () => handleSolanaRun(ix.name),
+        });
+      }
+      for (const a of prog.account_types ?? []) {
+        cmds.push({
+          id: `solana-acc:${a.name}`,
+          label: a.name,
+          category: 'Contract',
+          icon: '◇',
+          detail: 'account type',
+          keywords: ['account', 'type'],
+          run: () => {
+            const node = findNode(`account:${a.name}`);
+            if (node && flowApi) flowApi.fitView({ nodes: [{ id: node.id }], padding: 0.5, duration: 400 });
+          },
+        });
+      }
+      setPaletteCommands(cmds);
+      return;
+    }
+
     if (!contract) {
       setPaletteCommands([]);
       return;
