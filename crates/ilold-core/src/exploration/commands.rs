@@ -59,18 +59,10 @@ pub struct AnalysisData<'a> {
     pub all_classifications: &'a HashMap<String, Vec<(String, AccessLevel)>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ScenarioAction {
-    New { name: String },
-    List,
-    Switch { name: String },
-    Fork {
-        name: String,
-        #[serde(default)]
-        at_step: Option<usize>,
-    },
-    Delete { name: String },
-}
+pub use ilold_session_core::exploration::canvas::CanvasPatch;
+pub use ilold_session_core::exploration::scenario::{
+    validate_scenario_name, ScenarioAction, ScenarioEvent, ScenarioInfo,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SessionCommand {
@@ -94,13 +86,6 @@ pub enum SessionCommand {
     FunctionsAll,
     StateVarsAll,
     Scenario { sub: ScenarioAction },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ScenarioInfo {
-    pub name: String,
-    pub active: bool,
-    pub step_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -160,47 +145,6 @@ pub enum CommandResult {
     ScenarioSwitched { from: String, to: String },
     ScenarioForked { from: String, to: String, at_step: usize },
     ScenarioDeleted { name: String },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum CanvasPatch {
-    AddNode { scenario: String, function: String, access: AccessLevel, step_index: usize },
-    RemoveLastNode { scenario: String },
-    ClearAll { scenario: String },
-    Highlight { scenario: String, function: String },
-    ScenarioEvent(ScenarioEvent),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ScenarioEvent {
-    Created { name: String },
-    Switched { from: String, to: String },
-    Deleted { name: String },
-    Forked { from: String, to: String, at_step: usize },
-    /// Emitted after a successful `LoadSession`. Carries the new active
-    /// scenario name so the frontend can update its activeScenario eagerly,
-    /// and triggers a full resync to pull every scenario + forkOrigin.
-    Reloaded { active: String },
-}
-
-/// Validates scenario name against `^[a-z][a-z0-9_-]{0,31}$`.
-/// Manual ASCII check — avoids pulling in the `regex` crate.
-pub fn validate_scenario_name(name: &str) -> Result<(), String> {
-    const ERR: &str = "Invalid scenario name: must match ^[a-z][a-z0-9_-]{0,31}$";
-    if name.is_empty() || name.len() > 32 {
-        return Err(ERR.to_string());
-    }
-    let mut chars = name.chars();
-    let first = chars.next().ok_or_else(|| ERR.to_string())?;
-    if !first.is_ascii_lowercase() {
-        return Err(ERR.to_string());
-    }
-    for c in chars {
-        if !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-') {
-            return Err(ERR.to_string());
-        }
-    }
-    Ok(())
 }
 
 pub fn canvas_patch_from(result: &CommandResult, active_scenario: &str) -> Option<CanvasPatch> {
