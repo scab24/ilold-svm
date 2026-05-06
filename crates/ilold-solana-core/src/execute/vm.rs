@@ -11,6 +11,7 @@ pub const DEFAULT_PAYER_LAMPORTS: u64 = 1_000_000_000_000;
 pub struct VmHost {
     svm: LiteSVM,
     payer: Keypair,
+    programs: Vec<(Address, Vec<u8>)>,
 }
 
 impl VmHost {
@@ -24,15 +25,27 @@ impl VmHost {
                 SolanaError::VmBootFailed(format!("airdrop payer: {:?}", meta.err))
             })?;
 
-        for (program_id, bytes) in programs {
-            svm.add_program(program_id, &bytes).map_err(|e| {
+        for (program_id, bytes) in &programs {
+            svm.add_program(*program_id, bytes).map_err(|e| {
                 SolanaError::VmBootFailed(format!(
                     "add_program {program_id}: {e:?}"
                 ))
             })?;
         }
 
-        Ok(Self { svm, payer })
+        Ok(Self { svm, payer, programs })
+    }
+
+    pub(crate) fn programs(&self) -> &[(Address, Vec<u8>)] {
+        &self.programs
+    }
+
+    pub(crate) fn from_parts(
+        svm: LiteSVM,
+        payer: Keypair,
+        programs: Vec<(Address, Vec<u8>)>,
+    ) -> Self {
+        Self { svm, payer, programs }
     }
 
     pub fn payer(&self) -> &Keypair {
