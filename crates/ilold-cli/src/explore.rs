@@ -15,6 +15,26 @@ use ilold_core::exploration::commands::CommandResult;
 use crate::colors::*;
 use crate::fmt;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BackendKind {
+    Solidity,
+    Solana,
+    Attached,
+}
+
+fn detect_backend_kind(state: &Option<std::sync::Arc<ilold_web::state::AppState>>) -> BackendKind {
+    match state {
+        None => BackendKind::Attached,
+        Some(s) => {
+            if s.solana().is_some() {
+                BackendKind::Solana
+            } else {
+                BackendKind::Solidity
+            }
+        }
+    }
+}
+
 pub async fn run(paths: Vec<PathBuf>, port: u16, max_seq_depth: usize, attach: Option<String>) -> Result<()> {
     // --attach mode: connect to a running server instead of starting one locally
     if let Some(url) = attach {
@@ -68,42 +88,100 @@ pub async fn run(paths: Vec<PathBuf>, port: u16, max_seq_depth: usize, attach: O
         let base_url = url;
         let handle = tokio::runtime::Handle::current();
         let repl_thread = std::thread::spawn(move || {
-            repl_loop(handle, contract_name, function_names, contract_names, None, base_url, Some(functions_by_contract));
+            repl_loop(
+                handle,
+                contract_name,
+                function_names,
+                contract_names,
+                None,
+                base_url,
+                Some(functions_by_contract),
+                BackendKind::Attached,
+            );
         });
         repl_thread.join().map_err(|_| anyhow::anyhow!("REPL thread panicked"))?;
         return Ok(());
     }
 
-    // Local mode: start server and connect
     println!("Analyzing {} file(s)...", paths.len());
     let (state, actual_port) = ilold_web::start_server(paths, port, max_seq_depth).await?;
+    run_with_state(state, actual_port).await
+}
 
-    let s = state.unwrap_solidity();
-    let contract_name = s.project.find_contract(None)
-        .map(|c| c.name.clone())
-        .unwrap_or_else(|_| "unknown".into());
+pub async fn run_solana(
+    detected: ilold_solana_core::ingest::DetectedProject,
+    port: u16,
+) -> Result<()> {
+    println!("Analyzing {} IDL(s)...", detected.idl_paths.len());
+    let (state, actual_port) = ilold_web::start_solana_server(detected, port).await?;
+    run_with_state(state, actual_port).await
+}
 
-    let function_names: Vec<String> = s.project.contracts.iter()
-        .find(|c| c.name == contract_name)
-        .map(|c| {
-            s.project
-                .accessible_functions(c)
+async fn run_with_state(
+    state: std::sync::Arc<ilold_web::state::AppState>,
+    actual_port: u16,
+) -> Result<()> {
+    let backend = detect_backend_kind(&Some(state.clone()));
+
+    let (contract_name, function_names, contract_names, header_label) = match backend {
+        BackendKind::Solana => {
+            let s = state.solana().expect("solana backend");
+            let program = s.project.programs.first();
+            let name = program
+                .map(|p| p.name.clone())
+                .unwrap_or_else(|| "unknown".into());
+            let ix_names: Vec<String> = program
+                .map(|p| p.instructions.iter().map(|i| i.name.clone()).collect())
+                .unwrap_or_default();
+            let program_names: Vec<String> = s
+                .project
+                .programs
                 .iter()
-                .map(|af| af.function.name.clone())
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let contract_names: Vec<String> = s.project.contracts.iter()
-        .map(|c| c.name.clone())
-        .filter(|n| !n.is_empty())
-        .collect();
+                .map(|p| p.name.clone())
+                .collect();
+            let label = format!("ilold explore — {} (solana)", name);
+            (name, ix_names, program_names, label)
+        }
+        _ => {
+            let s = state.unwrap_solidity();
+            let name = s
+                .project
+                .find_contract(None)
+                .map(|c| c.name.clone())
+                .unwrap_or_else(|_| "unknown".into());
+            let function_names: Vec<String> = s
+                .project
+                .contracts
+                .iter()
+                .find(|c| c.name == name)
+                .map(|c| {
+                    s.project
+                        .accessible_functions(c)
+                        .iter()
+                        .map(|af| af.function.name.clone())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let contract_names: Vec<String> = s
+                .project
+                .contracts
+                .iter()
+                .map(|c| c.name.clone())
+                .filter(|n| !n.is_empty())
+                .collect();
+            let label = format!("ilold explore — {}", name);
+            (name, function_names, contract_names, label)
+        }
+    };
 
     let func_count = function_names.len();
-
+    let func_label = match backend {
+        BackendKind::Solana => "instructions",
+        _ => "functions",
+    };
     let banner = fmt::header_box(&[
-        &format!("ilold explore — {}", contract_name),
-        &format!("{} functions | Type ? for help", func_count),
+        &header_label,
+        &format!("{} {} | Type ? for help", func_count, func_label),
         &format!("Web UI: http://localhost:{}", actual_port),
     ]);
     println!("{}\n", banner);
@@ -112,13 +190,23 @@ pub async fn run(paths: Vec<PathBuf>, port: u16, max_seq_depth: usize, attach: O
     let state_for_thread = state.clone();
     let base_url = format!("http://127.0.0.1:{}", actual_port);
     let repl_thread = std::thread::spawn(move || {
-        repl_loop(handle, contract_name, function_names, contract_names, Some(state_for_thread), base_url, None);
+        repl_loop(
+            handle,
+            contract_name,
+            function_names,
+            contract_names,
+            Some(state_for_thread),
+            base_url,
+            None,
+            backend,
+        );
     });
 
     repl_thread.join().map_err(|_| anyhow::anyhow!("REPL thread panicked"))?;
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn repl_loop(
     handle: tokio::runtime::Handle,
     mut contract: String,
@@ -127,6 +215,7 @@ fn repl_loop(
     state: Option<std::sync::Arc<ilold_web::state::AppState>>,
     base_url: String,
     functions_by_contract: Option<HashMap<String, Vec<String>>>,
+    backend: BackendKind,
 ) {
     let history_path = dirs::home_dir()
         .map(|h| h.join(".ilold").join("history"))
@@ -189,7 +278,7 @@ fn repl_loop(
 
                 match handle_input(
                     line, &handle, &client, &base_url, &contract,
-                    &mut steps, &mut scenario_name, &completer, &state,
+                    &mut steps, &mut scenario_name, &completer, &state, backend,
                 ) {
                     InputResult::Continue => {}
                     InputResult::Quit => break,
@@ -202,15 +291,38 @@ fn repl_loop(
                         steps.clear();
                         scenario_name = "main".into();
                         if let Some(state) = state.as_ref() {
-                            let s = state.unwrap_solidity();
-                            if let Some(c) = s.project.contracts.iter().find(|c| c.name == new_name) {
-                                functions = s.project
-                                    .accessible_functions(c)
-                                    .iter()
-                                    .map(|af| af.function.name.clone())
-                                    .collect();
-                                if let Ok(mut comp) = completer.lock() {
-                                    comp.functions = functions.clone();
+                            match backend {
+                                BackendKind::Solana => {
+                                    if let Some(s) = state.solana() {
+                                        if let Some(p) =
+                                            s.project.programs.iter().find(|p| p.name == new_name)
+                                        {
+                                            functions = p
+                                                .instructions
+                                                .iter()
+                                                .map(|i| i.name.clone())
+                                                .collect();
+                                            if let Ok(mut comp) = completer.lock() {
+                                                comp.functions = functions.clone();
+                                            }
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    let s = state.unwrap_solidity();
+                                    if let Some(c) =
+                                        s.project.contracts.iter().find(|c| c.name == new_name)
+                                    {
+                                        functions = s
+                                            .project
+                                            .accessible_functions(c)
+                                            .iter()
+                                            .map(|af| af.function.name.clone())
+                                            .collect();
+                                        if let Ok(mut comp) = completer.lock() {
+                                            comp.functions = functions.clone();
+                                        }
+                                    }
                                 }
                             }
                         } else if let Some(fbc) = functions_by_contract.as_ref() {
@@ -255,6 +367,7 @@ impl Completer for CompleterWrapper {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_input(
     line: &str,
     handle: &tokio::runtime::Handle,
@@ -265,6 +378,7 @@ fn handle_input(
     scenario_name: &mut String,
     completer: &std::sync::Arc<std::sync::Mutex<IloldCompleter>>,
     state: &Option<std::sync::Arc<ilold_web::state::AppState>>,
+    backend: BackendKind,
 ) -> InputResult {
     // Allow shortcuts like `st0`, `st1`, `step2` without requiring a space.
     let normalized = split_numeric_suffix(line);
@@ -385,9 +499,12 @@ fn handle_input(
             InputResult::Continue
         }
 
-        "ct" | "contracts" => {
+        "ct" | "contracts" | "programs" | "progs" => {
             if let Some(state) = state {
-                print_contracts(state, contract);
+                match backend {
+                    BackendKind::Solana => print_programs(state, contract),
+                    _ => print_contracts(state, contract),
+                }
             } else {
                 // --attach mode: fetch contract list from server
                 match handle.block_on(async {
@@ -416,24 +533,60 @@ fn handle_input(
                 return InputResult::Continue;
             }
             if let Some(state) = state {
-                // Local mode
-                let s = state.unwrap_solidity();
-                match s.project.find_contract(Some(arg)) {
-                    Ok(c) => {
-                        let name = c.name.clone();
-                        if name == contract {
-                            println!("  Already using {}", c_accent(&name));
-                            return InputResult::Continue;
+                match backend {
+                    BackendKind::Solana => {
+                        let s = state.solana().expect("solana backend");
+                        match s.project.find_program(arg) {
+                            Some(p) => {
+                                let name = p.name.clone();
+                                if name == contract {
+                                    println!("  Already using {}", c_accent(&name));
+                                    return InputResult::Continue;
+                                }
+                                println!("  {} Now using: {}", c_ok("✓"), c_accent(&name));
+                                if !steps.is_empty() {
+                                    println!(
+                                        "  {}",
+                                        c_muted(&format!(
+                                            "Cleared {} step(s) from previous program",
+                                            steps.len()
+                                        ))
+                                    );
+                                }
+                                InputResult::SwitchContract(name)
+                            }
+                            None => {
+                                eprintln!("  {}", c_danger(&format!("program '{arg}' not found")));
+                                InputResult::Continue
+                            }
                         }
-                        println!("  {} Now using: {}", c_ok("✓"), c_accent(&name));
-                        if !steps.is_empty() {
-                            println!("  {}", c_muted(&format!("Cleared {} step(s) from previous contract", steps.len())));
-                        }
-                        InputResult::SwitchContract(name)
                     }
-                    Err(e) => {
-                        eprintln!("  {}", c_danger(&e));
-                        InputResult::Continue
+                    _ => {
+                        let s = state.unwrap_solidity();
+                        match s.project.find_contract(Some(arg)) {
+                            Ok(c) => {
+                                let name = c.name.clone();
+                                if name == contract {
+                                    println!("  Already using {}", c_accent(&name));
+                                    return InputResult::Continue;
+                                }
+                                println!("  {} Now using: {}", c_ok("✓"), c_accent(&name));
+                                if !steps.is_empty() {
+                                    println!(
+                                        "  {}",
+                                        c_muted(&format!(
+                                            "Cleared {} step(s) from previous contract",
+                                            steps.len()
+                                        ))
+                                    );
+                                }
+                                InputResult::SwitchContract(name)
+                            }
+                            Err(e) => {
+                                eprintln!("  {}", c_danger(&e));
+                                InputResult::Continue
+                            }
+                        }
                     }
                 }
             } else {
@@ -1092,6 +1245,35 @@ fn handle_finding_interactive(
         Ok(result) => print_result(&result, steps),
         Err(e) => eprintln!("  {}", c_danger(&e)),
     }
+}
+
+fn print_programs(state: &std::sync::Arc<ilold_web::state::AppState>, current: &str) {
+    let s = match state.solana() {
+        Some(s) => s,
+        None => return,
+    };
+    println!();
+    if s.project.programs.is_empty() {
+        println!("  {}", c_muted("No programs detected"));
+        println!();
+        return;
+    }
+    for p in &s.project.programs {
+        let marker = if p.name == current {
+            c_ok(" ← current").to_string()
+        } else {
+            String::new()
+        };
+        println!(
+            "  {} {} {} {}{}",
+            c_accent("[P]"),
+            p.name,
+            c_muted(&format!("({} ix)", p.instructions.len())),
+            c_muted(&p.program_id.to_string()),
+            marker
+        );
+    }
+    println!();
 }
 
 fn print_contracts(state: &std::sync::Arc<ilold_web::state::AppState>, current: &str) {
