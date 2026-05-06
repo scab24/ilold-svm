@@ -76,8 +76,24 @@ export interface SearchSuggestions {
 }
 
 export interface ProjectMap {
+  kind: string;
   contracts: MapContract[];
+  programs: MapProgram[];
   relationships: MapRelationship[];
+}
+
+export interface MapProgram {
+  name: string;
+  program_id: string;
+  instructions: MapInstruction[];
+  account_types: { name: string }[];
+}
+
+export interface MapInstruction {
+  name: string;
+  args_count: number;
+  accounts_count: number;
+  has_pdas: boolean;
 }
 
 export interface MapContract {
