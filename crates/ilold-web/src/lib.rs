@@ -87,11 +87,21 @@ pub async fn start_server(
 pub async fn serve_solana(detected: DetectedProject, port: u16) -> anyhow::Result<()> {
     println!("Analyzing {} IDL(s)...", detected.idl_paths.len());
     let project = build_solana_project(&detected)?;
+    let artifacts = load_program_artifacts(&detected, &project);
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await?;
     let actual_port = listener.local_addr()?.port();
-    let state = Arc::new(AppState::from_solana(project, actual_port, detected.root.clone()));
+    let state = Arc::new(AppState::from_solana(
+        project,
+        artifacts,
+        actual_port,
+        detected.root.clone(),
+    )?);
     if let Some(s) = state.solana() {
-        println!("Ready: {} program(s) analyzed\n", s.project.programs.len());
+        println!(
+            "Ready: {} program(s) analyzed, {} .so loaded\n",
+            s.project.programs.len(),
+            s.program_artifacts.len()
+        );
     }
     let app = build_router(state);
     println!("Server running at http://localhost:{actual_port}");
@@ -104,9 +114,15 @@ pub async fn start_solana_server(
     port: u16,
 ) -> anyhow::Result<(Arc<AppState>, u16)> {
     let project = build_solana_project(&detected)?;
+    let artifacts = load_program_artifacts(&detected, &project);
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await?;
     let actual_port = listener.local_addr()?.port();
-    let state = Arc::new(AppState::from_solana(project, actual_port, detected.root.clone()));
+    let state = Arc::new(AppState::from_solana(
+        project,
+        artifacts,
+        actual_port,
+        detected.root.clone(),
+    )?);
     let app = build_router(state.clone());
 
     tokio::spawn(async move {
@@ -125,4 +141,26 @@ fn build_solana_project(detected: &DetectedProject) -> anyhow::Result<SolanaProj
         programs.push(program);
     }
     Ok(SolanaProject::new(programs))
+}
+
+fn load_program_artifacts(
+    detected: &DetectedProject,
+    project: &SolanaProject,
+) -> Vec<(solana_address::Address, Vec<u8>)> {
+    let mut out = Vec::new();
+    for program in &project.programs {
+        for so_path in &detected.so_paths {
+            let stem = so_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("");
+            if stem == program.name {
+                if let Ok(bytes) = std::fs::read(so_path) {
+                    out.push((program.program_id, bytes));
+                }
+                break;
+            }
+        }
+    }
+    out
 }

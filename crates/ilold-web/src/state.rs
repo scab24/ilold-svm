@@ -21,7 +21,10 @@ use ilold_core::pathtree::walker::build_path_tree;
 use ilold_core::sequence::analysis::{analyze_project, analyze_sequences, SequenceAnalysis};
 use ilold_core::sequence::builder::build_sequence_tree;
 use ilold_core::sequence::types::SequenceTree;
+use ilold_solana_core::execute::VmHost;
 use ilold_solana_core::model::SolanaProject;
+use solana_address::Address;
+use solana_keypair::Keypair;
 
 use serde::{Deserialize, Serialize};
 
@@ -211,6 +214,9 @@ pub struct SolidityState {
 
 pub struct SolanaState {
     pub project: SolanaProject,
+    pub program_artifacts: Vec<(Address, Vec<u8>)>,
+    pub vms: RwLock<HashMap<String, VmHost>>,
+    pub users: RwLock<HashMap<String, HashMap<String, Keypair>>>,
 }
 
 pub enum Backend {
@@ -292,23 +298,38 @@ pub enum AnnotationStatus {
 impl AppState {
     pub fn from_solana(
         project: SolanaProject,
+        program_artifacts: Vec<(Address, Vec<u8>)>,
         port: u16,
         project_root: PathBuf,
-    ) -> Self {
+    ) -> anyhow::Result<Self> {
         let (session_tx, _) = broadcast::channel(64);
         let default_program = project
             .programs
             .first()
             .map(|p| p.name.clone())
             .unwrap_or_else(|| "unknown".to_string());
-        Self {
-            backend: Backend::Solana(SolanaState { project }),
+
+        let mut vms = HashMap::new();
+        let main_vm = VmHost::boot(program_artifacts.clone())
+            .map_err(|e| anyhow::anyhow!("boot main VM: {e:?}"))?;
+        vms.insert(DEFAULT_SCENARIO.to_string(), main_vm);
+
+        let mut users: HashMap<String, HashMap<String, Keypair>> = HashMap::new();
+        users.insert(DEFAULT_SCENARIO.to_string(), HashMap::new());
+
+        Ok(Self {
+            backend: Backend::Solana(SolanaState {
+                project,
+                program_artifacts,
+                vms: RwLock::new(vms),
+                users: RwLock::new(users),
+            }),
             annotations: RwLock::new(Vec::new()),
             scenarios: RwLock::new(ScenarioStore::new_for_contract(default_program)),
             session_tx,
             port,
             project_root,
-        }
+        })
     }
 
     pub fn from_paths(paths: &[PathBuf], max_seq_depth: usize, port: u16, project_root: PathBuf) -> anyhow::Result<Self> {
