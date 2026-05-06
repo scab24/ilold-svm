@@ -51,7 +51,49 @@ export interface SequenceNodeData {
   _dimmed?: boolean;
 }
 
-export type GraphNodeData = FunctionNodeData | BlockNodeData | SequenceNodeData;
+export interface InstructionNodeData {
+  [key: string]: unknown;
+  _type: 'instruction';
+  label: string;
+  programName: string;
+  programId: string;
+  argsCount: number;
+  accountsCount: number;
+  hasPdas: boolean;
+  signers: string[];
+  _dimmed?: boolean;
+}
+
+export interface AccountNodeData {
+  [key: string]: unknown;
+  _type: 'account';
+  label: string;
+  programName: string;
+  fields?: { name: string; type: string }[];
+  _dimmed?: boolean;
+}
+
+export interface TraceNodeData {
+  [key: string]: unknown;
+  _type: 'trace';
+  label: string;
+  stepIndex: number;
+  instruction: string;
+  computeUnits: number;
+  diffsCount: number;
+  logsExcerpt: string[];
+  scenario: string;
+  error?: string | null;
+  _dimmed?: boolean;
+}
+
+export type GraphNodeData =
+  | FunctionNodeData
+  | BlockNodeData
+  | SequenceNodeData
+  | InstructionNodeData
+  | AccountNodeData
+  | TraceNodeData;
 
 // ── Reactive state ──────────────────────────────────────────
 // SvelteFlow uses $bindable nodes/edges — the wrapper component

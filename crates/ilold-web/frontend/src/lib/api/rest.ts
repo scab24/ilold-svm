@@ -96,6 +96,38 @@ export interface MapInstruction {
   has_pdas: boolean;
 }
 
+export interface ProgramDetail {
+  name: string;
+  program_id: string;
+  instructions: InstructionDef[];
+  account_types: AccountTypeDef[];
+}
+
+export interface InstructionDef {
+  name: string;
+  discriminator: number[];
+  args: { name: string; ty: any }[];
+  accounts: AccountSpec[];
+  returns?: any;
+}
+
+export interface AccountSpec {
+  path: string;
+  name: string;
+  writable: boolean;
+  signer: boolean;
+  optional: boolean;
+  address?: string;
+  pda?: { seeds: any[]; program?: any; bump_arg?: string };
+  relations: string[];
+}
+
+export interface AccountTypeDef {
+  name: string;
+  discriminator: number[];
+  layout: any;
+}
+
 export interface MapContract {
   name: string;
   kind: string;
@@ -137,6 +169,12 @@ export async function getProject(): Promise<ProjectSummary> {
 export async function getContract(name: string): Promise<ContractDetail> {
   const res = await fetch(`${BASE}/api/contract/${name}`);
   if (!res.ok) throw new Error(`Contract ${name} not found`);
+  return res.json();
+}
+
+export async function getProgram(name: string): Promise<ProgramDetail> {
+  const res = await fetch(`${BASE}/api/program/${encodeURIComponent(name)}`);
+  if (!res.ok) throw new Error(`Program ${name} not found`);
   return res.json();
 }
 

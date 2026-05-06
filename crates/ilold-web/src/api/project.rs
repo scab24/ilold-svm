@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::Json;
+use ilold_solana_core::model::ProgramDef;
 use serde::Serialize;
 
 use crate::state::{require_solidity_msg, AppState, Backend};
@@ -112,6 +113,21 @@ pub struct MapRelationship {
     pub to_contract: String,
     pub to_function: String,
     pub kind: String,
+}
+
+pub async fn get_program_detail(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Result<Json<ProgramDef>, (StatusCode, String)> {
+    let solana = state
+        .solana()
+        .ok_or((StatusCode::BAD_REQUEST, "endpoint is Solana-only".into()))?;
+    solana
+        .project
+        .find_program(&name)
+        .cloned()
+        .map(Json)
+        .ok_or((StatusCode::NOT_FOUND, format!("program '{name}' not found")))
 }
 
 pub async fn get_project_map(
