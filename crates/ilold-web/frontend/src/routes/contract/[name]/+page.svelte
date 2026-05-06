@@ -1,7 +1,7 @@
 <script lang="ts">
   import { page } from '$app/state';
   import { onMount, onDestroy, tick, untrack } from 'svelte';
-  import { getContract, getCallGraph, getCfg, getPaths, getSequences, getSequenceAnalysis, getFunctionSource, getProjectMap, type ContractDetail, type CytoscapeGraph, type SequenceAnalysis, type MapContract, type MapProgram } from '$lib/api/rest';
+  import { getContract, getCallGraph, getCfg, getPaths, getSequences, getSequenceAnalysis, getFunctionSource, getProjectMap, getProgram, type ContractDetail, type CytoscapeGraph, type SequenceAnalysis, type MapContract, type MapProgram, type ProgramDetail } from '$lib/api/rest';
   import { goto } from '$app/navigation';
   import { toggleTerminal } from '$lib/stores/terminal.svelte';
   import { openInIde } from '$lib/utils/ide-links';
@@ -15,6 +15,8 @@
   import { postCommand } from '$lib/api/session';
   import Legend from '$lib/components/contract/Legend.svelte';
   import FunctionSidebar from '$lib/components/contract/FunctionSidebar.svelte';
+  import InstructionSidebar from '$lib/components/contract/InstructionSidebar.svelte';
+  import { composeProgramGraph } from '$lib/canvas/program';
   import TopBar from '$lib/components/contract/TopBar.svelte';
   import StatusBar from '$lib/components/contract/StatusBar.svelte';
   import ContextMenu from '$lib/components/contract/ContextMenu.svelte';
@@ -36,8 +38,9 @@
   import type { Node, Edge } from '@xyflow/svelte';
 
   let contract: ContractDetail | null = $state(null);
-  let solanaProgram: MapProgram | null = $state(null);
+  let solanaProgram: ProgramDetail | null = $state(null);
   let kind: 'solidity' | 'solana' = $state('solidity');
+  let solanaCanvasIxs: Set<string> = $state(new Set());
   let error: string | null = $state(null);
   let selectedNode: any = $state(null);
   let selectedPath: any = $state(null);
@@ -546,6 +549,21 @@
     if (node) selectedNode = node;
   });
 
+  function handleSolanaIxAdd(ix: string) {
+    solanaCanvasIxs = new Set([...solanaCanvasIxs, ix]);
+    const node = findNode(`ix:${ix}`);
+    if (node && flowApi) {
+      flowApi.fitView({ nodes: [{ id: node.id }], padding: 0.5, duration: 400 });
+    }
+  }
+
+  function handleSolanaIxRemove(ix: string) {
+    const next = new Set(solanaCanvasIxs);
+    next.delete(ix);
+    solanaCanvasIxs = next;
+    removeNodesById([`ix:${ix}`]);
+  }
+
   onMount(async () => {
     const contractName = page.params.name;
     if (!contractName) return;
@@ -563,13 +581,17 @@
       const pm = await getProjectMap();
       kind = pm.kind === 'solana' ? 'solana' : 'solidity';
       if (kind === 'solana') {
-        const program = (pm.programs ?? []).find(p => p.name === contractName) ?? null;
-        if (!program) {
+        try {
+          solanaProgram = await getProgram(contractName);
+        } catch {
           error = `Program "${contractName}" not found`;
           return;
         }
-        solanaProgram = program;
         projectMap = [];
+        const composed = composeProgramGraph(solanaProgram);
+        setNodes(composed.nodes);
+        setEdges(composed.edges);
+        solanaCanvasIxs = new Set(solanaProgram.instructions.map((i) => i.name));
         return;
       }
       projectMap = pm.contracts ?? [];
@@ -1386,35 +1408,24 @@
         <button class="bg-hover border border-border-subtle text-accent-hover px-3 py-1 rounded-sm cursor-pointer text-xs hover:border-accent" onclick={togglePalette}>⌘K</button>
       </div>
     </div>
-    <div class="flex-1 overflow-y-auto p-6">
-      <div class="max-w-3xl mx-auto">
-        <h2 class="text-sm text-text-muted uppercase tracking-wide mb-2">Instructions</h2>
-        <div class="space-y-1.5 mb-6">
-          {#each solanaProgram.instructions as ix}
-            <div class="bg-hover border border-border-subtle rounded-md px-3 py-2 flex items-center gap-2">
-              <span class="size-1.5 rounded-full shrink-0 bg-accent-hover"></span>
-              <span class="text-text font-semibold font-mono">{ix.name}</span>
-              <span class="text-[10px] text-text-muted">{ix.args_count} args · {ix.accounts_count} accounts</span>
-              {#if ix.has_pdas}
-                <span class="text-[9px] px-1 py-px rounded-md bg-warning/10 text-warning">pda</span>
-              {/if}
-            </div>
-          {/each}
-        </div>
-        {#if solanaProgram.account_types.length > 0}
-          <h2 class="text-sm text-text-muted uppercase tracking-wide mb-2">Account types</h2>
-          <div class="space-y-1.5 mb-6">
-            {#each solanaProgram.account_types as a}
-              <div class="bg-hover border border-border-subtle rounded-md px-3 py-2 font-mono text-text">
-                {a.name}
-              </div>
-            {/each}
-          </div>
-        {/if}
-        <div class="text-text-dim text-xs italic mt-8">
-          Use the terminal (⌘K) or <code>ilold explore</code> for interactive exploration. Canvas mode for Solana lands in a follow-up.
-        </div>
-      </div>
+    <div class="flex-1 flex overflow-hidden h-full">
+      <InstructionSidebar
+        program={solanaProgram}
+        canvasInstructions={solanaCanvasIxs}
+        mode="program"
+        onadd={(ix) => handleSolanaIxAdd(ix)}
+        onremove={(ix) => handleSolanaIxRemove(ix)}
+      />
+      <GraphCanvasFlow
+        bind:this={graphCanvas}
+        onnodetap={(node, event) => handleNodeClick(node, event)}
+        onbackgroundtap={handleBackgroundTap}
+        oncontextmenu={handleContextMenu}
+        onnodesdelete={handleNodesDelete}
+        canDeleteNodes={true}
+        onselectionchange={(nodes) => { selectionCount = nodes.length; }}
+        onready={(api) => { flowApi = api; }}
+      />
     </div>
   {:else}
     <TopBar

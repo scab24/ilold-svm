@@ -8,7 +8,7 @@
 </script>
 
 <div
-  class="account-node py-1.5 px-3 rounded-md bg-surface-alt border-[1.5px] border-success-dark text-text font-mono text-xs min-w-[100px] text-center cursor-pointer"
+  class="account-node py-1.5 px-3 rounded-md bg-surface-alt border-[1.5px] text-text font-mono text-xs min-w-[100px] text-center cursor-pointer"
   class:dimmed={data._dimmed}
 >
   <div class="font-semibold">{data.label}</div>
