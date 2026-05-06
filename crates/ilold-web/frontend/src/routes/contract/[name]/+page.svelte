@@ -1,7 +1,7 @@
 <script lang="ts">
   import { page } from '$app/state';
   import { onMount, onDestroy, tick, untrack } from 'svelte';
-  import { getContract, getCallGraph, getCfg, getPaths, getSequences, getSequenceAnalysis, getFunctionSource, getProjectMap, type ContractDetail, type CytoscapeGraph, type SequenceAnalysis, type MapContract } from '$lib/api/rest';
+  import { getContract, getCallGraph, getCfg, getPaths, getSequences, getSequenceAnalysis, getFunctionSource, getProjectMap, type ContractDetail, type CytoscapeGraph, type SequenceAnalysis, type MapContract, type MapProgram } from '$lib/api/rest';
   import { goto } from '$app/navigation';
   import { toggleTerminal } from '$lib/stores/terminal.svelte';
   import { openInIde } from '$lib/utils/ide-links';
@@ -36,6 +36,8 @@
   import type { Node, Edge } from '@xyflow/svelte';
 
   let contract: ContractDetail | null = $state(null);
+  let solanaProgram: MapProgram | null = $state(null);
+  let kind: 'solidity' | 'solana' = $state('solidity');
   let error: string | null = $state(null);
   let selectedNode: any = $state(null);
   let selectedPath: any = $state(null);
@@ -558,17 +560,24 @@
     selectedPath = null;
     setSearchContext(contractName);
     try {
+      const pm = await getProjectMap();
+      kind = pm.kind === 'solana' ? 'solana' : 'solidity';
+      if (kind === 'solana') {
+        const program = (pm.programs ?? []).find(p => p.name === contractName) ?? null;
+        if (!program) {
+          error = `Program "${contractName}" not found`;
+          return;
+        }
+        solanaProgram = program;
+        projectMap = [];
+        return;
+      }
+      projectMap = pm.contracts ?? [];
       contract = await getContract(contractName);
       const callgraphData = await getCallGraph(contractName);
       callgraphRaw = callgraphData;
       try { seqTree = await getSequences(contractName); } catch {}
       try { seqAnalysis = await getSequenceAnalysis(contractName); } catch {}
-      // Fire-and-forget — palette commands render fine without it, cross-
-      // contract nav just stays empty until the list lands.
-      try {
-        const pm = await getProjectMap();
-        projectMap = pm.contracts;
-      } catch {}
     } catch (e) {
       error = `Contract "${contractName}" not found`;
     }
@@ -1366,6 +1375,47 @@
 <div class="fixed inset-0 flex flex-col bg-dark">
   {#if error}
     <div class="p-6 text-danger">{error}</div>
+  {:else if kind === 'solana' && solanaProgram}
+    <div class="flex items-center gap-2.5 px-4 py-2 bg-hover border-b border-border-subtle z-10 shrink-0">
+      <a class="text-text no-underline hover:text-accent-hover" href="/">ilold</a>
+      <span class="text-text-dim">/</span>
+      <span class="text-lg font-bold text-text">{solanaProgram.name}</span>
+      <span class="text-xs text-text-muted">solana program</span>
+      <span class="text-[10px] text-text-dim font-mono ml-2">{solanaProgram.program_id}</span>
+      <div class="ml-auto flex gap-1">
+        <button class="bg-hover border border-border-subtle text-accent-hover px-3 py-1 rounded-sm cursor-pointer text-xs hover:border-accent" onclick={togglePalette}>⌘K</button>
+      </div>
+    </div>
+    <div class="flex-1 overflow-y-auto p-6">
+      <div class="max-w-3xl mx-auto">
+        <h2 class="text-sm text-text-muted uppercase tracking-wide mb-2">Instructions</h2>
+        <div class="space-y-1.5 mb-6">
+          {#each solanaProgram.instructions as ix}
+            <div class="bg-hover border border-border-subtle rounded-md px-3 py-2 flex items-center gap-2">
+              <span class="size-1.5 rounded-full shrink-0 bg-accent-hover"></span>
+              <span class="text-text font-semibold font-mono">{ix.name}</span>
+              <span class="text-[10px] text-text-muted">{ix.args_count} args · {ix.accounts_count} accounts</span>
+              {#if ix.has_pdas}
+                <span class="text-[9px] px-1 py-px rounded-md bg-warning/10 text-warning">pda</span>
+              {/if}
+            </div>
+          {/each}
+        </div>
+        {#if solanaProgram.account_types.length > 0}
+          <h2 class="text-sm text-text-muted uppercase tracking-wide mb-2">Account types</h2>
+          <div class="space-y-1.5 mb-6">
+            {#each solanaProgram.account_types as a}
+              <div class="bg-hover border border-border-subtle rounded-md px-3 py-2 font-mono text-text">
+                {a.name}
+              </div>
+            {/each}
+          </div>
+        {/if}
+        <div class="text-text-dim text-xs italic mt-8">
+          Use the terminal (⌘K) or <code>ilold explore</code> for interactive exploration. Canvas mode for Solana lands in a follow-up.
+        </div>
+      </div>
+    </div>
   {:else}
     <TopBar
       contractName={contract?.name ?? '...'}
