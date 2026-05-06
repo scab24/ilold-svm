@@ -48,4 +48,14 @@ pub enum SolanaError {
 
     #[error("VM operation failed: {0}")]
     VmOperationFailed(String),
+
+    #[error("PDA seed type mismatch at '{path}': expected {expected}, got {got}")]
+    SeedTypeMismatch {
+        path: String,
+        expected: String,
+        got: String,
+    },
+
+    #[error("PDA program override is bound to an arg seed '{path}', which is not supported")]
+    PdaProgramArgUnsupported { path: String },
 }
