@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use anchor_lang_idl::types::IdlTypeDefTy;
 use ilold_session_core::exploration::session::ExplorationSession;
+use ilold_session_core::journal::types::{Finding, JournalEntry, ReviewStatus, Severity};
 use serde_json::Value;
 use solana_address::Address;
 use solana_keypair::Keypair;
@@ -15,6 +16,8 @@ use super::add_step::add_solana_step;
 use super::commands::{
     AccountSummary, InstructionEntry, PdaEntry, SolanaCommandResult, UserEntry,
 };
+
+const DEFAULT_USER_LAMPORTS: u64 = 10_000_000_000;
 
 pub fn execute_funcs(program: &ProgramDef) -> SolanaCommandResult {
     let items = program
@@ -328,6 +331,152 @@ pub fn execute_back(session: &mut ExplorationSession) -> SolanaCommandResult {
 pub fn execute_clear(session: &mut ExplorationSession) -> SolanaCommandResult {
     session.clear();
     SolanaCommandResult::Cleared
+}
+
+pub fn execute_users_new(
+    name: String,
+    lamports: u64,
+    users: &mut HashMap<String, Keypair>,
+    vm: &mut VmHost,
+) -> SolanaCommandResult {
+    if users.contains_key(&name) {
+        return SolanaCommandResult::Error {
+            message: format!("user '{name}' already exists"),
+        };
+    }
+    let kp = Keypair::new();
+    let pk = kp.pubkey();
+    let funded = if lamports == 0 {
+        DEFAULT_USER_LAMPORTS
+    } else {
+        lamports
+    };
+    if let Err(e) = vm.airdrop(pk, funded) {
+        return SolanaCommandResult::Error {
+            message: format!("airdrop failed: {e:?}"),
+        };
+    }
+    users.insert(name.clone(), kp);
+    SolanaCommandResult::UserCreated {
+        name,
+        pubkey: pk.to_string(),
+        lamports: funded,
+    }
+}
+
+pub fn execute_airdrop(
+    user: &str,
+    lamports: u64,
+    users: &HashMap<String, Keypair>,
+    vm: &mut VmHost,
+) -> SolanaCommandResult {
+    let kp = match users.get(user) {
+        Some(k) => k,
+        None => {
+            return SolanaCommandResult::Error {
+                message: format!("user '{user}' not found"),
+            };
+        }
+    };
+    let pk = kp.pubkey();
+    if let Err(e) = vm.airdrop(pk, lamports) {
+        return SolanaCommandResult::Error {
+            message: format!("airdrop failed: {e:?}"),
+        };
+    }
+    SolanaCommandResult::Airdropped {
+        name: user.to_string(),
+        pubkey: pk.to_string(),
+        total_lamports: vm.balance(&pk),
+    }
+}
+
+pub fn execute_time_warp(delta_seconds: i64, vm: &mut VmHost) -> SolanaCommandResult {
+    let clock = vm.clock();
+    let new_ts = clock.unix_timestamp.saturating_add(delta_seconds);
+    let slot_advance = delta_seconds.max(0) as u64;
+    let new_slot = clock.slot.saturating_add(slot_advance);
+    vm.warp_clock(new_slot, new_ts);
+    SolanaCommandResult::TimeWarped {
+        unix_timestamp: new_ts,
+        slot: new_slot,
+    }
+}
+
+pub fn execute_finding(
+    session: &mut ExplorationSession,
+    severity: Severity,
+    title: String,
+    description: String,
+    timestamp: &str,
+) -> SolanaCommandResult {
+    let affected_sequence = if session.steps.is_empty() {
+        None
+    } else {
+        Some(
+            session
+                .current_sequence()
+                .into_iter()
+                .map(|s| s.to_string())
+                .collect(),
+        )
+    };
+    let finding = Finding {
+        id: String::new(),
+        severity,
+        title,
+        affected_function: session
+            .steps
+            .last()
+            .map(|s| s.function.clone())
+            .unwrap_or_default(),
+        affected_sequence,
+        description,
+        notes: vec![],
+        created_at: String::new(),
+    };
+    session.journal.add_finding(finding, timestamp);
+    let id = session
+        .journal
+        .findings
+        .last()
+        .map(|f| f.id.clone())
+        .unwrap_or_default();
+    SolanaCommandResult::FindingAdded { id }
+}
+
+pub fn execute_note(
+    session: &mut ExplorationSession,
+    text: &str,
+    timestamp: &str,
+) -> SolanaCommandResult {
+    let anchor = session.current_sequence().join(" → ");
+    session.journal.record(JournalEntry::NoteAdded {
+        anchor,
+        content: text.into(),
+        timestamp: timestamp.into(),
+    });
+    SolanaCommandResult::NoteAdded
+}
+
+pub fn execute_status(
+    session: &mut ExplorationSession,
+    program: &ProgramDef,
+    ix_name: &str,
+    status: ReviewStatus,
+    timestamp: &str,
+) -> SolanaCommandResult {
+    if !program.instructions.iter().any(|i| i.name == ix_name) {
+        return SolanaCommandResult::Error {
+            message: format!("instruction '{ix_name}' not found in program '{}'", program.name),
+        };
+    }
+    session.journal.record(JournalEntry::StatusChanged {
+        function: ix_name.into(),
+        status,
+        timestamp: timestamp.into(),
+    });
+    SolanaCommandResult::StatusUpdated
 }
 
 fn describe_seed(seed: &SeedSpec) -> String {
