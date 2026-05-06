@@ -95,8 +95,8 @@ pub struct UserEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PdaEntry {
     pub account_name: String,
-    pub address: String,
-    pub bump: u8,
+    pub seeds: Vec<String>,
+    pub program: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
