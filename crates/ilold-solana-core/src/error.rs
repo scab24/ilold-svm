@@ -58,4 +58,10 @@ pub enum SolanaError {
 
     #[error("PDA program override is bound to an arg seed '{path}', which is not supported")]
     PdaProgramArgUnsupported { path: String },
+
+    #[error("Borsh encode failed: {0}")]
+    EncodeFailed(String),
+
+    #[error("Borsh encode type mismatch: expected {expected}, got {got}")]
+    EncodeTypeMismatch { expected: String, got: String },
 }
