@@ -1258,17 +1258,20 @@ fn handle_solana_input(
             dispatch_solana(handle, client, base_url, contract, body, steps)
         }
         "ct" | "contracts" | "programs" | "progs" => {
-            // print_programs handled via SwitchContract path; this branch never
-            // reaches here because we route handle_solana_input before the
-            // shared dispatch. Inline a Funcs response so users see something.
-            dispatch_solana(
-                handle,
-                client,
-                base_url,
-                contract,
-                serde_json::json!("Funcs"),
-                steps,
-            )
+            match handle.block_on(async {
+                client
+                    .get(format!("{base_url}/api/project/map"))
+                    .send()
+                    .await?
+                    .json::<serde_json::Value>()
+                    .await
+            }) {
+                Ok(map) => print_remote_programs(&map, contract),
+                Err(e) => {
+                    eprintln!("  {}", c_danger(&format!("Failed to fetch programs: {e}")))
+                }
+            }
+            InputResult::Continue
         }
         "sc" | "scenario" => {
             let parts: Vec<&str> = arg.split_whitespace().collect();
@@ -1902,6 +1905,45 @@ fn handle_finding_interactive(
         Ok(result) => print_result(&result, steps),
         Err(e) => eprintln!("  {}", c_danger(&e)),
     }
+}
+
+fn print_remote_programs(map: &serde_json::Value, current: &str) {
+    let arr = match map.get("programs").and_then(|v| v.as_array()) {
+        Some(a) => a,
+        None => {
+            println!("  {}", c_muted("No programs in /api/project/map"));
+            return;
+        }
+    };
+    println!();
+    if arr.is_empty() {
+        println!("  {}", c_muted("No programs detected"));
+        println!();
+        return;
+    }
+    for p in arr {
+        let name = p.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+        let pid = p.get("program_id").and_then(|v| v.as_str()).unwrap_or("");
+        let ix_count = p
+            .get("instructions")
+            .and_then(|v| v.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0);
+        let marker = if name == current {
+            c_ok(" ← current").to_string()
+        } else {
+            String::new()
+        };
+        println!(
+            "  {} {} {} {}{}",
+            c_accent("[P]"),
+            name,
+            c_muted(&format!("({} ix)", ix_count)),
+            c_muted(pid),
+            marker
+        );
+    }
+    println!();
 }
 
 fn print_programs(state: &std::sync::Arc<ilold_web::state::AppState>, current: &str) {
