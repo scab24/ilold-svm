@@ -5,6 +5,7 @@ edition.workspace = true
 description = "Anchor IDL parser and (later) Solana execution backend for Ilold."
 
 [dependencies]
+ilold-session-core = { path = "../ilold-session-core" }
 anchor-lang-idl = { git = "https://github.com/solana-foundation/anchor", tag = "v1.0.2", features = ["build", "convert"] }
 solana-account = "3"
 solana-address = { version = "2.0", features = ["serde", "decode", "curve25519"] }

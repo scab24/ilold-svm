@@ -2417,6 +2417,7 @@ dependencies = [
  "anyhow",
  "borsh",
  "bs58",
+ "ilold-session-core",
  "litesvm",
  "serde",
  "serde_json",
