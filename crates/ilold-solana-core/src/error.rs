@@ -64,4 +64,7 @@ pub enum SolanaError {
 
     #[error("Borsh encode type mismatch: expected {expected}, got {got}")]
     EncodeTypeMismatch { expected: String, got: String },
+
+    #[error("instruction account '{path}' is not constant, not a PDA, and not provided")]
+    AccountNotProvided { path: String },
 }
