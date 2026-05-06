@@ -37,9 +37,23 @@ fn detect_backend_kind(state: &Option<std::sync::Arc<ilold_web::state::AppState>
 }
 
 pub async fn run(paths: Vec<PathBuf>, port: u16, max_seq_depth: usize, attach: Option<String>) -> Result<()> {
-    // --attach mode: connect to a running server instead of starting one locally
     if let Some(url) = attach {
         let client = reqwest::Client::new();
+        let map_resp = client
+            .get(format!("{url}/api/project/map"))
+            .send()
+            .await
+            .map_err(|e| anyhow::anyhow!("Cannot reach server at {url}: {e}"))?;
+        if !map_resp.status().is_success() {
+            anyhow::bail!("Server at {url} returned {}", map_resp.status());
+        }
+        let project_map: serde_json::Value = map_resp.json().await?;
+        let kind = project_map["kind"].as_str().unwrap_or("solidity");
+
+        if kind == "solana" {
+            return run_solana_attach(url, client, project_map).await;
+        }
+
         let resp = client.get(format!("{url}/api/project"))
             .send().await
             .map_err(|e| anyhow::anyhow!("Cannot reach server at {url}: {e}"))?;
@@ -107,6 +121,60 @@ pub async fn run(paths: Vec<PathBuf>, port: u16, max_seq_depth: usize, attach: O
     println!("Analyzing {} file(s)...", paths.len());
     let (state, actual_port) = ilold_web::start_server(paths, port, max_seq_depth).await?;
     run_with_state(state, actual_port).await
+}
+
+async fn run_solana_attach(
+    url: String,
+    _client: reqwest::Client,
+    project_map: serde_json::Value,
+) -> Result<()> {
+    let programs_arr = project_map["programs"].as_array();
+    let program_name = programs_arr
+        .and_then(|arr| arr.first())
+        .and_then(|p| p["name"].as_str())
+        .unwrap_or("unknown")
+        .to_string();
+    let program_names: Vec<String> = programs_arr
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|p| p["name"].as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    let function_names: Vec<String> = programs_arr
+        .and_then(|arr| arr.iter().find(|p| p["name"].as_str() == Some(&program_name)))
+        .and_then(|p| p["instructions"].as_array())
+        .map(|ixs| {
+            ixs.iter()
+                .filter_map(|i| i["name"].as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let banner = fmt::header_box(&[
+        &format!("ilold explore — {} (solana, attached)", program_name),
+        &format!("{} instructions | Type ? for help", function_names.len()),
+        &format!("Server: {}", url),
+    ]);
+    println!("{}\n", banner);
+
+    let handle = tokio::runtime::Handle::current();
+    let repl_thread = std::thread::spawn(move || {
+        repl_loop(
+            handle,
+            program_name,
+            function_names,
+            program_names,
+            None,
+            url,
+            None,
+            BackendKind::Solana,
+        );
+    });
+    repl_thread
+        .join()
+        .map_err(|_| anyhow::anyhow!("REPL thread panicked"))?;
+    Ok(())
 }
 
 pub async fn run_solana(
@@ -1041,7 +1109,7 @@ fn handle_solana_input(
 
     match cmd.as_str() {
         "?" | "help" | "h" => {
-            print_help();
+            print_solana_help();
             InputResult::Continue
         }
         "quit" | "q" | "exit" => InputResult::Quit,
@@ -2438,7 +2506,49 @@ fn print_sequence_narrative(val: &serde_json::Value) {
 }
 
 fn print_help() {
-    let groups: &[(&str, &[(&str, &str, &str)])] = &[
+    print_help_for(BackendKind::Solidity);
+}
+
+fn print_solana_help() {
+    print_help_for(BackendKind::Solana);
+}
+
+fn print_help_for(backend: BackendKind) {
+    let groups: &[(&str, &[(&str, &str, &str)])] = match backend {
+        BackendKind::Solana => &[
+            ("Session", &[
+                ("c",  "call <ix> <json>", "Send instruction (json: {args, accounts, signers})"),
+                ("b",  "back",             "Remove last step"),
+                ("cl", "clear",            "Reset session"),
+                ("",   "state",            "Decoded view of mutated accounts"),
+                ("s",  "session",          "Steps + scenario summary"),
+            ]),
+            ("Solana", &[
+                ("",   "users",            "List keypairs"),
+                ("",   "users new <name> [lamports]", "Create + airdrop"),
+                ("",   "airdrop <user> <lamports>", "Top up balance"),
+                ("tw", "time-warp <secs>", "Advance Clock"),
+                ("",   "pda <ix>",         "List declared PDAs of an instruction"),
+                ("",   "inspect <pubkey>", "Decode account by discriminator"),
+            ]),
+            ("Programs", &[
+                ("ct", "programs",         "List programs in workspace"),
+                ("",   "use <program>",    "Switch active program"),
+                ("",   "funcs",            "List instructions of active program"),
+            ]),
+            ("Findings", &[
+                ("fi", "finding <sev> <t>", "Record a finding"),
+                ("n",  "note <text>",       "Add note"),
+                ("",   "status <ix> <st>",  "Change review status"),
+                ("sc", "scenario <sub>",    "new|list|switch|fork|delete"),
+            ]),
+            ("Workspace", &[
+                ("",   "save <name>",      "Save session JSON"),
+                ("",   "load <name>",      "Load session JSON"),
+                ("q",  "quit/exit",        "Exit"),
+            ]),
+        ],
+        _ => &[
         ("Session", &[
             ("c",      "call <func>",      "Add function to sequence"),
             ("b",      "back",             "Remove last step"),
@@ -2479,7 +2589,8 @@ fn print_help() {
             ("",       "browser",          "Open web UI"),
             ("q",      "quit/exit",        "Exit"),
         ]),
-    ];
+        ],
+    };
 
     println!();
     println!("  {}  {}", c_bright("ilold explore"), c_muted("— append ? to any command for inline help (e.g. sl?)"));
