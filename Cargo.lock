@@ -2423,9 +2423,13 @@ dependencies = [
  "solana-account",
  "solana-address 2.6.0",
  "solana-clock",
+ "solana-hash 3.1.0",
+ "solana-instruction",
  "solana-keypair",
+ "solana-message",
  "solana-sdk-ids",
  "solana-signer",
+ "solana-transaction",
  "tempfile",
  "thiserror 2.0.18",
 ]
