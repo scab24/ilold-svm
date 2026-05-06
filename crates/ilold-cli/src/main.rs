@@ -88,9 +88,7 @@ async fn main() -> Result<()> {
             let detected = detect(&path)?;
             match detected.kind {
                 ProjectKind::Solidity => explore_solidity(&path, port, max_seq_depth, attach).await,
-                ProjectKind::Solana => anyhow::bail!(
-                    "Explore mode for Solana projects requires the REPL command set planned for a later phase. Use `ilold serve` for now."
-                ),
+                ProjectKind::Solana => explore::run_solana(detected, port).await,
             }
         }
     }
