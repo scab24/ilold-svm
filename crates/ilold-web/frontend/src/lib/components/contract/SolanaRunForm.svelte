@@ -32,11 +32,14 @@
     const sgn: Record<string, boolean> = {};
     for (const acc of ix.accounts ?? []) {
       accs[acc.name] = '';
-      if (acc.signer) sgn[acc.name] = false;
+      if (acc.signer) sgn[acc.name] = true;
     }
     accountValues = accs;
     signerValues = sgn;
   });
+
+  const visibleAccounts = $derived((ix.accounts ?? []).filter((a: any) => !a.address));
+  const constantAccounts = $derived((ix.accounts ?? []).filter((a: any) => a.address));
 
   const NUMBER_INTS = new Set(['u8','u16','u32','u64','i8','i16','i32','i64','f32','f64']);
   const STRING_INTS = new Set(['u128','i128','u256','i256']);
@@ -115,7 +118,7 @@
   {/each}
 
   <div class="d-section-label">Accounts</div>
-  {#each ix.accounts ?? [] as acc}
+  {#each visibleAccounts as acc}
     <label class="run-row">
       <span class="run-label">
         {acc.name}
@@ -137,6 +140,12 @@
       {/if}
     </label>
   {/each}
+
+  {#if constantAccounts.length > 0}
+    <div class="run-auto-fill">
+      Auto-filled: {constantAccounts.map((a: any) => a.name).join(', ')}
+    </div>
+  {/if}
 
   {#if users.length > 0}
     <div class="run-hint">Users: {users.map((u) => u.name).join(', ')}</div>
@@ -212,6 +221,14 @@
     font-size: 10px;
     color: var(--color-text-dim);
     font-style: italic;
+  }
+  .run-auto-fill {
+    font-size: 10px;
+    color: var(--color-text-dim);
+    font-style: italic;
+    background: var(--color-hover);
+    border-radius: 4px;
+    padding: 4px 6px;
   }
   .run-error {
     font-size: 11px;

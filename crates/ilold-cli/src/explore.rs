@@ -1234,27 +1234,45 @@ fn handle_solana_input(
             let parts: Vec<&str> = arg.splitn(2, ' ').collect();
             if parts.is_empty() || parts[0].is_empty() {
                 println!(
-                    "  Usage: call <ix> <json with args, accounts, signers>"
+                    "  Usage: call <ix> [arg=val ...] [account=user_or_pubkey ...]"
                 );
+                println!("         or: call <ix> {{json}} for full control");
                 return InputResult::Continue;
             }
-            let ix = parts[0];
-            let payload = parts.get(1).copied().unwrap_or("{}");
-            let parsed: serde_json::Value = match serde_json::from_str(payload) {
-                Ok(v) => v,
-                Err(e) => {
-                    println!("  Invalid JSON: {e}");
-                    return InputResult::Continue;
+            let ix = parts[0].to_string();
+            let payload_raw = parts.get(1).copied().unwrap_or("").trim();
+            let body = if payload_raw.starts_with('{') {
+                let parsed: serde_json::Value = match serde_json::from_str(payload_raw) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        println!("  Invalid JSON: {e}");
+                        return InputResult::Continue;
+                    }
+                };
+                serde_json::json!({
+                    "Call": {
+                        "ix": ix,
+                        "args": parsed.get("args").cloned().unwrap_or(serde_json::json!({})),
+                        "accounts": parsed.get("accounts").cloned().unwrap_or(serde_json::json!({})),
+                        "signers": parsed.get("signers").cloned().unwrap_or(serde_json::json!([])),
+                    }
+                })
+            } else {
+                let program = match fetch_program_detail(handle, client, base_url, contract) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        eprintln!("  {}", c_danger(&format!("fetch program: {e}")));
+                        return InputResult::Continue;
+                    }
+                };
+                match build_call_from_kv(&program, &ix, payload_raw) {
+                    Ok(body) => body,
+                    Err(e) => {
+                        eprintln!("  {}", c_danger(&e));
+                        return InputResult::Continue;
+                    }
                 }
             };
-            let body = serde_json::json!({
-                "Call": {
-                    "ix": ix,
-                    "args": parsed.get("args").cloned().unwrap_or(serde_json::json!({})),
-                    "accounts": parsed.get("accounts").cloned().unwrap_or(serde_json::json!({})),
-                    "signers": parsed.get("signers").cloned().unwrap_or(serde_json::json!([])),
-                }
-            });
             dispatch_solana(handle, client, base_url, contract, body, steps)
         }
         "ct" | "contracts" | "programs" | "progs" => {
@@ -1372,6 +1390,170 @@ fn dispatch_solana(
             InputResult::Continue
         }
     }
+}
+
+fn fetch_program_detail(
+    handle: &tokio::runtime::Handle,
+    client: &reqwest::Client,
+    base_url: &str,
+    name: &str,
+) -> Result<serde_json::Value, String> {
+    handle.block_on(async {
+        let resp = client
+            .get(format!("{base_url}/api/program/{name}"))
+            .send()
+            .await
+            .map_err(|e| format!("request: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("status {}", resp.status()));
+        }
+        resp.json::<serde_json::Value>()
+            .await
+            .map_err(|e| format!("parse: {e}"))
+    })
+}
+
+fn build_call_from_kv(
+    program: &serde_json::Value,
+    ix_name: &str,
+    rest: &str,
+) -> Result<serde_json::Value, String> {
+    let ix = program
+        .get("instructions")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.iter().find(|i| i.get("name").and_then(|n| n.as_str()) == Some(ix_name)))
+        .ok_or_else(|| format!("instruction '{ix_name}' not found in program"))?;
+
+    let arg_keys: std::collections::HashSet<String> = ix
+        .get("args")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|a| a.get("name").and_then(|n| n.as_str()).map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    let arg_types: std::collections::HashMap<String, serde_json::Value> = ix
+        .get("args")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|a| {
+                    let n = a.get("name").and_then(|x| x.as_str())?.to_string();
+                    let t = a.get("type").cloned().unwrap_or(serde_json::Value::Null);
+                    Some((n, t))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let account_keys: std::collections::HashSet<String> = ix
+        .get("accounts")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|a| a.get("name").and_then(|n| n.as_str()).map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    let signer_accounts: Vec<String> = ix
+        .get("accounts")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter(|a| a.get("signer").and_then(|s| s.as_bool()).unwrap_or(false))
+                .filter_map(|a| a.get("name").and_then(|n| n.as_str()).map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut args = serde_json::Map::new();
+    let mut accounts = serde_json::Map::new();
+    let mut signer_overrides: Option<Vec<String>> = None;
+    let mut signer_negatives: Vec<String> = Vec::new();
+
+    for token in rest.split_whitespace() {
+        if let Some(name_csv) = token.strip_prefix("--no-signer=") {
+            for n in name_csv.split(',').map(|s| s.trim()) {
+                if !n.is_empty() {
+                    signer_negatives.push(n.to_string());
+                }
+            }
+            continue;
+        }
+        if let Some(name_csv) = token.strip_prefix("--signer=") {
+            let mut acc = signer_overrides.unwrap_or_default();
+            for n in name_csv.split(',').map(|s| s.trim()) {
+                if !n.is_empty() {
+                    acc.push(n.to_string());
+                }
+            }
+            signer_overrides = Some(acc);
+            continue;
+        }
+        let (key, value) = match token.split_once('=') {
+            Some(kv) => kv,
+            None => return Err(format!("expected key=value, got '{token}'")),
+        };
+        if arg_keys.contains(key) {
+            let ty = arg_types.get(key).cloned().unwrap_or(serde_json::Value::Null);
+            args.insert(key.to_string(), coerce_kv(value, &ty));
+        } else if account_keys.contains(key) {
+            accounts.insert(key.to_string(), serde_json::Value::String(value.to_string()));
+        } else {
+            return Err(format!(
+                "unknown key '{key}'; expected one of args [{}] or accounts [{}]",
+                arg_keys.iter().cloned().collect::<Vec<_>>().join(","),
+                account_keys.iter().cloned().collect::<Vec<_>>().join(",")
+            ));
+        }
+    }
+
+    let signers = match signer_overrides {
+        Some(list) => list
+            .into_iter()
+            .filter(|n| !signer_negatives.contains(n))
+            .collect(),
+        None => signer_accounts
+            .iter()
+            .filter_map(|name| {
+                let resolved = accounts.get(name).and_then(|v| v.as_str()).map(String::from)?;
+                Some(resolved)
+            })
+            .filter(|n| !signer_negatives.contains(n))
+            .collect::<Vec<String>>(),
+    };
+
+    Ok(serde_json::json!({
+        "Call": {
+            "ix": ix_name,
+            "args": serde_json::Value::Object(args),
+            "accounts": serde_json::Value::Object(accounts),
+            "signers": signers,
+        }
+    }))
+}
+
+fn coerce_kv(raw: &str, ty: &serde_json::Value) -> serde_json::Value {
+    if let Some(s) = ty.as_str() {
+        match s {
+            "bool" => return serde_json::Value::Bool(raw == "true" || raw == "1"),
+            "u8" | "u16" | "u32" | "u64" | "i8" | "i16" | "i32" | "i64" | "f32" | "f64" => {
+                if let Ok(n) = raw.parse::<u64>() {
+                    return serde_json::Value::Number(n.into());
+                }
+                if let Ok(n) = raw.parse::<i64>() {
+                    return serde_json::Value::Number(n.into());
+                }
+                if let Ok(f) = raw.parse::<f64>() {
+                    if let Some(n) = serde_json::Number::from_f64(f) {
+                        return serde_json::Value::Number(n);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    serde_json::Value::String(raw.to_string())
 }
 
 fn send_solana_command(
