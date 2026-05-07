@@ -46,6 +46,8 @@ enum ServerMessage {
     ScenarioForked { from: String, to: String, at_step: usize },
     #[serde(rename = "scenario_store_reloaded")]
     ScenarioStoreReloaded { active: String },
+    #[serde(rename = "solana_users_changed")]
+    SolanaUsersChanged { scenario: String },
 }
 
 pub async fn ws_handler(
@@ -76,6 +78,9 @@ fn server_message_from_patch(patch: CanvasPatch) -> ServerMessage {
                 ServerMessage::ScenarioStoreReloaded { active }
             }
         },
+        CanvasPatch::SolanaUsersChanged { scenario } => {
+            ServerMessage::SolanaUsersChanged { scenario }
+        }
     }
 }
 

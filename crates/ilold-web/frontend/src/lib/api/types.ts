@@ -136,9 +136,15 @@ export type ServerMessage =
   | ScenarioDeleted
   | ScenarioForked
   | ScenarioStoreReloaded
+  | SolanaUsersChanged
   | SearchResult
   | SearchComplete
   | SearchError;
+
+export interface SolanaUsersChanged {
+  type: 'solana_users_changed';
+  scenario: string;
+}
 
 // ── Connection events (synthetic, frontend-only) ────────────────────────────
 
@@ -154,6 +160,7 @@ export interface TopicMap {
   search_result: SearchResult;
   search_complete: SearchComplete;
   error: SearchError;
+  solana_users_changed: SolanaUsersChanged;
   session_add_node: SessionAddNode;
   session_remove_node: SessionRemoveNode;
   session_clear: SessionClear;

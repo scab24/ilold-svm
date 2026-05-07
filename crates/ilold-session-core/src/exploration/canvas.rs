@@ -10,4 +10,5 @@ pub enum CanvasPatch {
     ClearAll { scenario: String },
     Highlight { scenario: String, function: String },
     ScenarioEvent(ScenarioEvent),
+    SolanaUsersChanged { scenario: String },
 }

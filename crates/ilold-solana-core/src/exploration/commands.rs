@@ -234,6 +234,11 @@ pub fn canvas_patch_from_solana(
                 active: active_scenario.to_string(),
             },
         )),
+        SolanaCommandResult::UserCreated { .. } | SolanaCommandResult::Airdropped { .. } => {
+            Some(CanvasPatch::SolanaUsersChanged {
+                scenario: active_scenario.to_string(),
+            })
+        }
         _ => None,
     }
 }

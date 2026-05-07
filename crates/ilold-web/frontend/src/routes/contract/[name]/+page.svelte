@@ -6,6 +6,7 @@
   import { toggleTerminal } from '$lib/stores/terminal.svelte';
   import { openInIde } from '$lib/utils/ide-links';
   import { setSearchContext, getSearchNavigate, setSearchNavigate } from '$lib/stores/search.svelte';
+  import { subscribe as subscribeWs } from '$lib/api/ws';
   import { togglePalette, setPaletteCommands, clearPaletteCommands } from '$lib/stores/palette.svelte';
   import type { Command } from '$lib/commands/registry';
   import { getHighlightedFunction, getScenarios, getActiveScenario, getForkOrigins } from '$lib/stores/session.svelte';
@@ -760,6 +761,14 @@
   ) {
     await handleSolanaSubmit(payload, ix);
   }
+
+  $effect(() => {
+    if (kind !== 'solana' || !solanaProgram) return;
+    const unsub = subscribeWs('solana_users_changed', () => {
+      refreshSolanaUsers();
+    });
+    return () => unsub();
+  });
 
   async function refreshSolanaUsers() {
     if (!solanaProgram) return;
