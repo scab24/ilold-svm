@@ -106,7 +106,7 @@ export interface ProgramDetail {
 export interface InstructionDef {
   name: string;
   discriminator: number[];
-  args: { name: string; ty: any }[];
+  args: { name: string; type: any }[];
   accounts: AccountSpec[];
   returns?: any;
 }

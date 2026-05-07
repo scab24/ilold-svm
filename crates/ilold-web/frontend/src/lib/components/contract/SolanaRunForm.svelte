@@ -38,12 +38,18 @@
     signerValues = sgn;
   });
 
+  const SMALL_INTS = new Set(['u8','u16','u32','i8','i16','i32']);
+  const LARGE_INTS = new Set(['u64','u128','i64','i128']);
+
   function coerceArg(raw: string, ty: any): any {
     if (typeof ty === 'string') {
       if (ty === 'bool') return raw === 'true' || raw === '1';
-      if (['u8','u16','u32','u64','i8','i16','i32','i64'].includes(ty)) {
+      if (SMALL_INTS.has(ty)) {
         const n = Number(raw);
         return Number.isFinite(n) ? n : raw;
+      }
+      if (LARGE_INTS.has(ty)) {
+        return raw;
       }
     }
     return raw;
@@ -52,6 +58,10 @@
   function describeType(ty: any): string {
     if (typeof ty === 'string') return ty;
     if (ty == null) return '?';
+    if (typeof ty === 'object' && 'defined' in ty) {
+      const d = (ty as any).defined;
+      return typeof d === 'string' ? d : (d?.name ?? JSON.stringify(d));
+    }
     return JSON.stringify(ty);
   }
 
@@ -64,7 +74,7 @@
       for (const arg of ix.args ?? []) {
         const raw = argValues[arg.name] ?? '';
         if (raw === '') continue;
-        args[arg.name] = coerceArg(raw, arg.ty);
+        args[arg.name] = coerceArg(raw, arg.type);
       }
       const accounts: Record<string, string> = {};
       for (const [k, v] of Object.entries(accountValues)) {
@@ -99,7 +109,7 @@
         class="run-input"
         type="text"
         bind:value={argValues[arg.name]}
-        placeholder={describeType(arg.ty)}
+        placeholder={describeType(arg.type)}
       />
     </label>
   {/each}
