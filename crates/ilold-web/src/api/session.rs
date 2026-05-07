@@ -872,25 +872,22 @@ pub async fn get_scenarios(
 pub async fn get_all_scenarios(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<AllScenariosResponse>, (StatusCode, String)> {
-    let s = require_solidity_msg(&state)?;
+    let solidity = state.solidity();
     let guard = state.scenarios.read().unwrap();
     let active = guard.active().to_string();
     let mut scenarios: Vec<ScenarioSnapshot> = Vec::with_capacity(guard.len());
     for name in guard.names() {
         let Some(session) = guard.get(name) else { continue };
-        let classifs = s.classifications.get(&session.contract);
+        let classifs = solidity.and_then(|s| s.classifications.get(&session.contract));
         let steps = session
             .steps
             .iter()
             .enumerate()
             .map(|(idx, step)| {
-                // Same lookup pattern as `execute_who`'s `access_for`
-                // (`commands.rs:515-519`): fall back to `Internal` when the
-                // classification is missing so the response shape is stable.
                 let access = classifs
                     .and_then(|c| c.iter().find(|(n, _)| n == &step.function))
                     .map(|(_, a)| a.clone())
-                    .unwrap_or(AccessLevel::Internal);
+                    .unwrap_or(AccessLevel::Public);
                 SessionStepView {
                     function: step.function.clone(),
                     access,
