@@ -38,17 +38,17 @@
     signerValues = sgn;
   });
 
-  const SMALL_INTS = new Set(['u8','u16','u32','i8','i16','i32']);
-  const LARGE_INTS = new Set(['u64','u128','i64','i128']);
+  const NUMBER_INTS = new Set(['u8','u16','u32','u64','i8','i16','i32','i64','f32','f64']);
+  const STRING_INTS = new Set(['u128','i128','u256','i256']);
 
   function coerceArg(raw: string, ty: any): any {
     if (typeof ty === 'string') {
       if (ty === 'bool') return raw === 'true' || raw === '1';
-      if (SMALL_INTS.has(ty)) {
+      if (NUMBER_INTS.has(ty)) {
         const n = Number(raw);
         return Number.isFinite(n) ? n : raw;
       }
-      if (LARGE_INTS.has(ty)) {
+      if (STRING_INTS.has(ty)) {
         return raw;
       }
     }
