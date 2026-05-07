@@ -768,32 +768,39 @@
     if (result?.StepAdded) {
       const sa = result.StepAdded;
       const id = `trace:${sa.step_index}`;
-      const ixNode = findNode(`ix:${ixName}`);
-      const baseX = ixNode?.position?.x ?? 0;
-      const baseY = (ixNode?.position?.y ?? 320) + 180;
-      const offsetX = solanaTraceCount * 40;
+      const stepIndex = sa.step_index;
+      const x = stepIndex * 240;
+      const y = 200;
       addNode({
         id,
         type: 'trace',
-        position: { x: baseX + offsetX, y: baseY },
+        position: { x, y },
         data: {
           _type: 'trace',
-          label: `${sa.instruction} #${sa.step_index}`,
-          stepIndex: sa.step_index,
+          label: `${sa.instruction} #${stepIndex}`,
+          stepIndex,
           instruction: sa.instruction,
           computeUnits: sa.compute_units ?? 0,
           diffsCount: sa.account_diffs_count ?? 0,
           logsExcerpt: sa.logs_excerpt ?? [],
           scenario: getActiveScenario() ?? 'main',
           error: null,
+          _sessionStep: true,
         },
       } as any);
-      addEdge({
-        id: `e:${`ix:${ixName}`}->${id}`,
-        source: `ix:${ixName}`,
-        target: id,
-      });
+      if (stepIndex > 0) {
+        addEdge({
+          id: `e:trace:${stepIndex - 1}->trace:${stepIndex}`,
+          source: `trace:${stepIndex - 1}`,
+          sourceHandle: 'r',
+          target: id,
+          targetHandle: 'l',
+          markerEnd: { type: 'arrowclosed', color: 'var(--color-accent)' },
+          style: 'stroke: var(--color-accent); stroke-width: 2;',
+        } as any);
+      }
       solanaTraceCount += 1;
+      if (flowApi) flowApi.fitView({ padding: 0.2, duration: 400 });
     }
     await refreshSolanaUsers();
   }
