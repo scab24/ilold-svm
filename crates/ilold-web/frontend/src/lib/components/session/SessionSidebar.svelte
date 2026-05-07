@@ -30,6 +30,7 @@
     onsolanarun = () => {},
     onnewuser = async () => {},
     onairdrop = async () => {},
+    onsolanasubmit,
   }: {
     contract: string;
     selectedNode?: any;
@@ -49,6 +50,10 @@
     onsolanarun?: (instruction: string) => void;
     onnewuser?: (name: string, lamports: number) => Promise<void>;
     onairdrop?: (name: string, lamports: number) => Promise<void>;
+    onsolanasubmit?: (
+      ix: any,
+      payload: { args: Record<string, any>; accounts: Record<string, string>; signers: string[] },
+    ) => Promise<void>;
   } = $props();
 
   let newUserName = $state('');
@@ -373,6 +378,9 @@
           {onpathselect}
           {onsolanarun}
           {onexpandcfg}
+          {program}
+          {solanaUsers}
+          {onsolanasubmit}
         />
       {/if}
     </div>

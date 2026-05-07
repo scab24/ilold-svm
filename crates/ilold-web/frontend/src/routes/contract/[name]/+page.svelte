@@ -15,7 +15,6 @@
   import { postCommand, postSolanaCommand } from '$lib/api/session';
   import Legend from '$lib/components/contract/Legend.svelte';
   import FunctionSidebar from '$lib/components/contract/FunctionSidebar.svelte';
-  import SolanaRunPanel from '$lib/components/contract/SolanaRunPanel.svelte';
   import { composeProgramGraph } from '$lib/canvas/program';
   import TopBar from '$lib/components/contract/TopBar.svelte';
   import StatusBar from '$lib/components/contract/StatusBar.svelte';
@@ -41,8 +40,7 @@
   let solanaProgram: ProgramDetail | null = $state(null);
   let kind: 'solidity' | 'solana' = $state('solidity');
   let solanaCanvasIxs: Set<string> = $state(new Set());
-  let solanaRunIx: any = $state(null);
-  let solanaUsers: { name: string; pubkey: string }[] = $state([]);
+  let solanaUsers: { name: string; pubkey: string; lamports: number }[] = $state([]);
   let solanaTraceCount = $state(0);
   let error: string | null = $state(null);
   let selectedNode: any = $state(null);
@@ -571,7 +569,15 @@
     if (!solanaProgram) return;
     const ix = solanaProgram.instructions.find((i) => i.name === name);
     if (!ix) return;
-    solanaRunIx = ix;
+    selectedNode = { ...findNode(`ix:${ix.name}`)?.data, id: `ix:${ix.name}` } as any;
+    flowApi?.fitView({ nodes: [{ id: `ix:${ix.name}` }], padding: 0.5, duration: 400 });
+  }
+
+  async function handleSolanaSubmitFromInspector(
+    ix: any,
+    payload: { args: Record<string, any>; accounts: Record<string, string>; signers: string[] },
+  ) {
+    await handleSolanaSubmit(payload, ix);
   }
 
   async function refreshSolanaUsers() {
@@ -584,13 +590,18 @@
     } catch {}
   }
 
-  async function handleSolanaSubmit(payload: {
-    args: Record<string, any>;
-    accounts: Record<string, string>;
-    signers: string[];
-  }) {
-    if (!solanaProgram || !solanaRunIx) return;
-    const ixName = solanaRunIx.name;
+  async function handleSolanaSubmit(
+    payload: {
+      args: Record<string, any>;
+      accounts: Record<string, string>;
+      signers: string[];
+    },
+    targetIx?: any,
+  ) {
+    if (!solanaProgram) return;
+    const ix = targetIx;
+    if (!ix) return;
+    const ixName = ix.name;
     const result = await postSolanaCommand(
       {
         Call: {
@@ -635,7 +646,6 @@
       });
       solanaTraceCount += 1;
     }
-    solanaRunIx = null;
     await refreshSolanaUsers();
   }
 
@@ -1577,6 +1587,7 @@
         contractDetail={{ name: solanaProgram.name, functions: [] }}
         solanaUsers={solanaUsers}
         onsolanarun={handleSolanaRun}
+        onsolanasubmit={handleSolanaSubmitFromInspector}
         onnewuser={async (name, lamports) => {
           const result = await postSolanaCommand(
             { UsersNew: { name, lamports } },
@@ -1601,15 +1612,6 @@
       activeScenario={getActiveScenario()}
       {selectionCount}
     />
-    {#if solanaRunIx}
-      <SolanaRunPanel
-        program={solanaProgram}
-        ix={solanaRunIx}
-        users={solanaUsers}
-        onsubmit={handleSolanaSubmit}
-        oncancel={() => (solanaRunIx = null)}
-      />
-    {/if}
     <ContextMenu
       menu={contextMenu}
       {expandedFuncs}

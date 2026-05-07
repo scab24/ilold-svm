@@ -1,11 +1,7 @@
 <script lang="ts">
-  // F4 — the floating NodeDetailPanel used to pop up on top of the canvas
-  // whenever a node was selected. Now it's a tab inside SessionSidebar, so
-  // this component renders plain content (no DraggablePanel wrapper, no
-  // close button — "closing" means clicking the pane or switching tabs).
-  //
-  // Empty state is the default: if nothing is selected we show a hint.
   import Collapsible from '$lib/Collapsible.svelte';
+  import SolanaRunForm from './SolanaRunForm.svelte';
+  import type { ProgramDetail, InstructionDef } from '$lib/api/rest';
 
   interface Props {
     selectedNode: any;
@@ -20,6 +16,12 @@
     onpathselect: (funcName: string, path: any) => void;
     onexpandcfg: (funcName: string, nodeId?: string) => void;
     onsolanarun?: (instructionName: string) => void;
+    program?: ProgramDetail | null;
+    solanaUsers?: { name: string; pubkey: string }[];
+    onsolanasubmit?: (
+      ix: InstructionDef,
+      payload: { args: Record<string, any>; accounts: Record<string, string>; signers: string[] },
+    ) => Promise<void>;
   }
 
   let {
@@ -35,7 +37,15 @@
     onpathselect,
     onexpandcfg,
     onsolanarun,
+    program = null,
+    solanaUsers = [],
+    onsolanasubmit,
   }: Props = $props();
+
+  const inspectedIx = $derived.by<InstructionDef | null>(() => {
+    if (!program || !selectedNode || selectedNode._type !== 'instruction') return null;
+    return program.instructions.find((i) => i.name === selectedNode.label) ?? null;
+  });
 
   function termColor(t: string): string {
     return t === 'Return' ? 'var(--color-success)' : t === 'Revert' ? 'var(--color-danger)' : 'var(--color-text-muted)';
@@ -351,7 +361,14 @@
         {#if selectedNode.signers && selectedNode.signers.length > 0}
           <div class="d-row"><span class="d-label">Signers</span><span>{selectedNode.signers.join(', ')}</span></div>
         {/if}
-        {#if onsolanarun}
+        {#if program && inspectedIx && onsolanasubmit}
+          <SolanaRunForm
+            {program}
+            ix={inspectedIx}
+            users={solanaUsers}
+            onsubmit={(payload) => onsolanasubmit!(inspectedIx, payload)}
+          />
+        {:else if onsolanarun}
           <div class="d-actions">
             <button class="d-action-btn" onclick={() => onsolanarun?.(selectedNode.label)}>
               ▶ Execute instruction
