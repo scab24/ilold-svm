@@ -1609,6 +1609,29 @@
         oncancel={() => (solanaRunIx = null)}
       />
     {/if}
+    <ContextMenu
+      menu={contextMenu}
+      {expandedFuncs}
+      {seqExpanded}
+      mode="cfg"
+      onexpandcfg={() => { contextMenu = null; }}
+      onremovefunc={() => { contextMenu = null; }}
+      onremovenode={(nodeId) => {
+        if (nodeId.startsWith('ix:')) {
+          handleSolanaIxRemove(nodeId.slice(3));
+        } else {
+          removeNodesById([nodeId]);
+        }
+        contextMenu = null;
+        selectedNode = null;
+      }}
+      onforkscenario={() => { contextMenu = null; }}
+      onremovefromhere={() => { contextMenu = null; }}
+      onviewsource={() => { contextMenu = null; }}
+      onopenide={() => { contextMenu = null; }}
+      onsolanarun={(name) => { handleSolanaRun(name); contextMenu = null; }}
+      onclose={() => (contextMenu = null)}
+    />
   {:else}
     <TopBar
       contractName={contract?.name ?? '...'}
