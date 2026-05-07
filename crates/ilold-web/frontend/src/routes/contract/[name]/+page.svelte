@@ -15,7 +15,6 @@
   import { postCommand, postSolanaCommand } from '$lib/api/session';
   import Legend from '$lib/components/contract/Legend.svelte';
   import FunctionSidebar from '$lib/components/contract/FunctionSidebar.svelte';
-  import InstructionSidebar from '$lib/components/contract/InstructionSidebar.svelte';
   import SolanaRunPanel from '$lib/components/contract/SolanaRunPanel.svelte';
   import NodeInspector from '$lib/components/contract/NodeInspector.svelte';
   import SolanaSessionSidebar from '$lib/components/session/SolanaSessionSidebar.svelte';
@@ -1554,10 +1553,11 @@
       }}
     />
     <div class="flex-1 flex overflow-hidden h-full">
-      <InstructionSidebar
+      <FunctionSidebar
         program={solanaProgram}
-        canvasInstructions={solanaCanvasIxs}
-        mode={mode === 'session' || mode === 'trace' ? 'session' : 'program'}
+        kind="solana"
+        canvasFuncs={solanaCanvasIxs}
+        {mode}
         onadd={(ix) => handleSolanaIxAdd(ix)}
         onremove={(ix) => handleSolanaIxRemove(ix)}
       />
