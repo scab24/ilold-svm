@@ -43,6 +43,13 @@
   let solanaExpandedIxs: Set<string> = $state(new Set());
   let solanaUsers: { name: string; pubkey: string; lamports: number }[] = $state([]);
   let solanaTraceCount = $state(0);
+  type SolanaRuntimeInfo = {
+    computeUnits: number;
+    diffsCount: number;
+    logsExcerpt: string[];
+    error?: string | null;
+  };
+  let solanaRuntimeByStep: Map<string, SolanaRuntimeInfo> = $state(new Map());
   let error: string | null = $state(null);
   let selectedNode: any = $state(null);
   let selectedPath: any = $state(null);
@@ -408,6 +415,11 @@
     const scenarios = getScenarios();
     const forkOrigins = getForkOrigins();
     const active = getActiveScenario();
+    if (kind === 'solana') {
+      if (!solanaProgram) return;
+      paintSolanaScenarioTree(scenarios, forkOrigins, active);
+      return;
+    }
     if (!contract || !callgraphRaw) return;
 
     const tree = composeScenarioTree(scenarios, forkOrigins);
@@ -593,6 +605,93 @@
     solanaExpandedIxs = new Set([...solanaExpandedIxs].filter((n) => n !== ixName));
   }
 
+  function paintSolanaScenarioTree(
+    scenarios: Map<string, any[]>,
+    forkOrigins: Map<string, any>,
+    active: string,
+  ) {
+    untrack(() => {
+      const toRemove = new Set<string>();
+      for (const n of getNodes()) {
+        if (n.id.startsWith('session:') || n.id.startsWith('trace:')) toRemove.add(n.id);
+      }
+      if (toRemove.size > 0) removeNodesById(toRemove);
+
+      const tree = composeScenarioTree(scenarios, forkOrigins);
+      if (tree.nodes.length === 0) {
+        solanaTraceCount = 0;
+        return;
+      }
+
+      const SESSION_BASE_X = 200;
+      const SESSION_BASE_Y = 200;
+      const SESSION_STEP_WIDTH = 240;
+      const SESSION_LANE_HEIGHT = 130;
+
+      const composedNodes = tree.nodes.map((cn) => {
+        const runtimeKey = `${cn._scenario}:${cn.stepIndex}`;
+        const runtime = solanaRuntimeByStep.get(runtimeKey);
+        return {
+          id: cn.id,
+          type: 'trace',
+          position: {
+            x: SESSION_BASE_X + cn.stepIndex * SESSION_STEP_WIDTH,
+            y: SESSION_BASE_Y + cn.lane * SESSION_LANE_HEIGHT,
+          },
+          data: {
+            _type: 'trace',
+            _sessionStep: true,
+            _scenario: cn._scenario,
+            _scenariosPassingThrough: cn._scenariosPassingThrough,
+            _activeScenario: active,
+            stepIndex: cn.stepIndex,
+            label: `${cn.function} #${cn.stepIndex}`,
+            instruction: cn.function,
+            scenario: cn._scenario,
+            computeUnits: runtime?.computeUnits ?? 0,
+            diffsCount: runtime?.diffsCount ?? 0,
+            logsExcerpt: runtime?.logsExcerpt ?? [],
+            error: runtime?.error ?? null,
+          } as any,
+        } as Node<GraphNodeData>;
+      });
+      addNodes(composedNodes);
+
+      const nodeScenarios = new Map<string, string[]>(
+        tree.nodes.map((n) => [n.id, n._scenariosPassingThrough]),
+      );
+
+      const composedEdges = tree.edges.map((ce) => {
+        const isFork = ce._forkEdge === true;
+        const sourceScns = nodeScenarios.get(ce.source) ?? [];
+        const targetScns = nodeScenarios.get(ce.target) ?? [];
+        const onActivePath = sourceScns.includes(active) && targetScns.includes(active);
+        const color = onActivePath
+          ? (isFork ? 'var(--color-accent)' : 'var(--color-accent-hover)')
+          : 'var(--color-text-dim)';
+        const opacity = onActivePath ? 1 : 0.4;
+        return {
+          id: ce.id,
+          source: ce.source,
+          target: ce.target,
+          sourceHandle: 'r',
+          targetHandle: 'l',
+          type: 'default',
+          animated: isFork && onActivePath,
+          style: `stroke: ${color}; opacity: ${opacity}; ${isFork ? 'stroke-dasharray: 4 4;' : ''}`,
+          markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12, color },
+          labelBgStyle: { fill: 'var(--color-surface)', fillOpacity: 0.85 },
+          labelBgPadding: [3, 5] as [number, number],
+          data: { _type: 'session-path', _scenario: ce._scenario, _forkEdge: isFork },
+        };
+      });
+      addEdges(composedEdges);
+
+      solanaTraceCount = tree.nodes.length;
+      if (flowApi) flowApi.fitView({ padding: 0.2, duration: 300 });
+    });
+  }
+
   function paintSequencesMode() {
     if (!solanaProgram) return;
     clearGraph();
@@ -767,40 +866,16 @@
     }
     if (result?.StepAdded) {
       const sa = result.StepAdded;
-      const id = `trace:${sa.step_index}`;
-      const stepIndex = sa.step_index;
-      const x = stepIndex * 240;
-      const y = 200;
-      addNode({
-        id,
-        type: 'trace',
-        position: { x, y },
-        data: {
-          _type: 'trace',
-          label: `${sa.instruction} #${stepIndex}`,
-          stepIndex,
-          instruction: sa.instruction,
-          computeUnits: sa.compute_units ?? 0,
-          diffsCount: sa.account_diffs_count ?? 0,
-          logsExcerpt: sa.logs_excerpt ?? [],
-          scenario: getActiveScenario() ?? 'main',
-          error: null,
-          _sessionStep: true,
-        },
-      } as any);
-      if (stepIndex > 0) {
-        addEdge({
-          id: `e:trace:${stepIndex - 1}->trace:${stepIndex}`,
-          source: `trace:${stepIndex - 1}`,
-          sourceHandle: 'r',
-          target: id,
-          targetHandle: 'l',
-          markerEnd: { type: 'arrowclosed', color: 'var(--color-accent)' },
-          style: 'stroke: var(--color-accent); stroke-width: 2;',
-        } as any);
-      }
-      solanaTraceCount += 1;
-      if (flowApi) flowApi.fitView({ padding: 0.2, duration: 400 });
+      const scenario = getActiveScenario() ?? 'main';
+      const runtimeKey = `${scenario}:${sa.step_index}`;
+      const next = new Map(solanaRuntimeByStep);
+      next.set(runtimeKey, {
+        computeUnits: sa.compute_units ?? 0,
+        diffsCount: sa.account_diffs_count ?? 0,
+        logsExcerpt: sa.logs_excerpt ?? [],
+        error: null,
+      });
+      solanaRuntimeByStep = next;
     }
     await refreshSolanaUsers();
   }
