@@ -40,6 +40,7 @@
   let solanaProgram: ProgramDetail | null = $state(null);
   let kind: 'solidity' | 'solana' = $state('solidity');
   let solanaCanvasIxs: Set<string> = $state(new Set());
+  let solanaExpandedIxs: Set<string> = $state(new Set());
   let solanaUsers: { name: string; pubkey: string; lamports: number }[] = $state([]);
   let solanaTraceCount = $state(0);
   let error: string | null = $state(null);
@@ -54,7 +55,7 @@
   // Default: Seq mode is the auditor-friendly view; Session mode flips the
   // sidebar click into "add step" and hides exploration nodes on the canvas
   // so only the scenarios tree is visible.
-  let mode: 'cfg' | 'sequences' | 'session' | 'program' | 'trace' = $state('sequences');
+  let mode: 'cfg' | 'sequences' | 'session' = $state('sequences');
   let seqTree: any = $state(null);
   let seqAnalysis: SequenceAnalysis | null = $state(null);
   let seqExpanded: Map<string, boolean> = $state(new Map());
@@ -550,19 +551,150 @@
     if (node) selectedNode = node;
   });
 
-  function handleSolanaIxAdd(ix: string) {
-    solanaCanvasIxs = new Set([...solanaCanvasIxs, ix]);
-    const node = findNode(`ix:${ix}`);
-    if (node && flowApi) {
-      flowApi.fitView({ nodes: [{ id: node.id }], padding: 0.5, duration: 400 });
+  function handleSolanaIxAdd(ixName: string) {
+    if (!solanaProgram) return;
+    if (solanaCanvasIxs.has(ixName)) {
+      const existing = findNode(`ix:${ixName}`);
+      if (existing && flowApi) flowApi.fitView({ nodes: [{ id: existing.id }], padding: 0.5, duration: 400 });
+      return;
     }
+    const ix = solanaProgram.instructions.find((i) => i.name === ixName);
+    if (!ix) return;
+    const idx = solanaCanvasIxs.size;
+    addNode({
+      id: `ix:${ixName}`,
+      type: 'instruction',
+      position: { x: idx * 220, y: 200 },
+      data: {
+        _type: 'instruction',
+        label: ixName,
+        programName: solanaProgram.name,
+        programId: solanaProgram.program_id,
+        argsCount: (ix.args ?? []).length,
+        accountsCount: (ix.accounts ?? []).length,
+        hasPdas: (ix.accounts ?? []).some((a: any) => a.pda != null),
+        signers: (ix.accounts ?? []).filter((a: any) => a.signer).map((a: any) => a.name),
+      },
+    } as any);
+    solanaCanvasIxs = new Set([...solanaCanvasIxs, ixName]);
+    if (flowApi) flowApi.fitView({ nodes: [{ id: `ix:${ixName}` }], padding: 0.5, duration: 400 });
   }
 
-  function handleSolanaIxRemove(ix: string) {
+  function handleSolanaIxRemove(ixName: string) {
     const next = new Set(solanaCanvasIxs);
-    next.delete(ix);
+    next.delete(ixName);
     solanaCanvasIxs = next;
-    removeNodesById([`ix:${ix}`]);
+    const ids: string[] = [`ix:${ixName}`];
+    for (const n of getNodes()) {
+      const data: any = n.data;
+      if (data?._type === 'account' && data.parentInstruction === ixName) ids.push(n.id);
+    }
+    removeNodesById(ids);
+    solanaExpandedIxs = new Set([...solanaExpandedIxs].filter((n) => n !== ixName));
+  }
+
+  function paintSequencesMode() {
+    if (!solanaProgram) return;
+    clearGraph();
+    solanaCanvasIxs = new Set();
+    solanaExpandedIxs = new Set();
+
+    const ixs = solanaProgram.instructions ?? [];
+    const accountUsage = new Map<string, Set<string>>();
+    for (const ix of ixs) {
+      for (const acc of ix.accounts ?? []) {
+        const key = acc.name;
+        if (!accountUsage.has(key)) accountUsage.set(key, new Set());
+        accountUsage.get(key)!.add(ix.name);
+      }
+    }
+
+    const newNodes: any[] = ixs.map((ix, i) => ({
+      id: `ix:${ix.name}`,
+      type: 'instruction',
+      position: { x: i * 220, y: 200 },
+      data: {
+        _type: 'instruction',
+        label: ix.name,
+        programName: solanaProgram!.name,
+        programId: solanaProgram!.program_id,
+        argsCount: (ix.args ?? []).length,
+        accountsCount: (ix.accounts ?? []).length,
+        hasPdas: (ix.accounts ?? []).some((a: any) => a.pda != null),
+        signers: (ix.accounts ?? []).filter((a: any) => a.signer).map((a: any) => a.name),
+      },
+    }));
+
+    const newEdges: any[] = [];
+    const seen = new Set<string>();
+    for (const [, sharingSet] of accountUsage) {
+      const arr = Array.from(sharingSet);
+      for (let i = 0; i < arr.length; i++) {
+        for (let j = 0; j < arr.length; j++) {
+          if (i === j) continue;
+          const key = `${arr[i]}->${arr[j]}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          newEdges.push({
+            id: `transition:${key}`,
+            source: `ix:${arr[i]}`,
+            target: `ix:${arr[j]}`,
+            animated: false,
+            style: 'stroke: var(--color-accent-hover); stroke-dasharray: 4 3; opacity: 0.6;',
+          });
+        }
+      }
+    }
+
+    setNodes(newNodes);
+    setEdges(newEdges);
+    solanaCanvasIxs = new Set(ixs.map((i) => i.name));
+  }
+
+  function handleSolanaIxExpand(ixName: string) {
+    if (!solanaProgram) return;
+    if (solanaExpandedIxs.has(ixName)) {
+      const ids: string[] = [];
+      for (const n of getNodes()) {
+        const data: any = n.data;
+        if (data?._type === 'account' && data.parentInstruction === ixName) ids.push(n.id);
+      }
+      if (ids.length > 0) removeNodesById(ids);
+      solanaExpandedIxs = new Set([...solanaExpandedIxs].filter((n) => n !== ixName));
+      return;
+    }
+    const ix = solanaProgram.instructions.find((i) => i.name === ixName);
+    if (!ix) return;
+    const parent = findNode(`ix:${ixName}`);
+    const baseX = parent?.position?.x ?? 0;
+    const baseY = (parent?.position?.y ?? 200) - 160;
+    const newNodes: any[] = [];
+    const newEdges: any[] = [];
+    (ix.accounts ?? []).forEach((acc: any, i: number) => {
+      const id = `ix:${ixName}:acc:${acc.name}`;
+      newNodes.push({
+        id,
+        type: 'account',
+        position: { x: baseX + (i - (ix.accounts.length - 1) / 2) * 150, y: baseY },
+        data: {
+          _type: 'account',
+          label: acc.name,
+          programName: solanaProgram!.name,
+          parentInstruction: ixName,
+          fields: acc.signer ? [{ name: 'signer', type: 'true' }] : [],
+        },
+      });
+      newEdges.push({
+        id: `e:${ixName}:${acc.name}`,
+        source: `ix:${ixName}`,
+        sourceHandle: 't',
+        target: id,
+        targetHandle: 'b',
+      });
+    });
+    if (newNodes.length > 0) addNodes(newNodes);
+    if (newEdges.length > 0) addEdges(newEdges);
+    solanaExpandedIxs = new Set([...solanaExpandedIxs, ixName]);
   }
 
   function handleSolanaRun(name: string) {
@@ -673,11 +805,8 @@
           return;
         }
         projectMap = [];
-        const composed = composeProgramGraph(solanaProgram);
-        setNodes(composed.nodes);
-        setEdges(composed.edges);
-        solanaCanvasIxs = new Set(solanaProgram.instructions.map((i) => i.name));
         await refreshSolanaUsers();
+        if (mode === 'sequences') paintSequencesMode();
         return;
       }
       projectMap = pm.contracts ?? [];
@@ -1082,6 +1211,10 @@
     // deliberately hide in this mode.
     if (mode === 'session') return;
     const d = node.data;
+    if (d._type === 'instruction') {
+      handleSolanaIxExpand(d.label as string);
+      return;
+    }
     if (d._type === 'function' && !d.is_external) {
       await handleFunctionTap(d.label, node.id);
     } else if (d._type === 'seq-next') {
@@ -1328,7 +1461,16 @@
   }
 
   function switchMode(newMode: 'cfg' | 'sequences' | 'session') {
-    // Remove expanded nodes from graph store
+    if (kind === 'solana') {
+      clearGraph();
+      solanaCanvasIxs = new Set();
+      solanaExpandedIxs = new Set();
+      solanaTraceCount = 0;
+      selectedNode = null;
+      mode = newMode;
+      if (newMode === 'sequences') paintSequencesMode();
+      return;
+    }
     const toRemove = new Set<string>();
     for (const n of getNodes()) {
       if (n.data._type === 'block' || n.data._type === 'seq-next') {
@@ -1559,9 +1701,7 @@
       {mode}
       {seqDirection}
       {kind}
-      onmodechange={(m) => {
-        if (kind === 'solana') { mode = m; } else { switchMode(m); }
-      }}
+      onmodechange={switchMode}
       onsearch={togglePalette}
       oncenter={() => flowApi?.fitView({ padding: 0.1 })}
       onseqdirection={(dir) => { seqDirection = dir; reorientAllSeqSubtrees(); }}

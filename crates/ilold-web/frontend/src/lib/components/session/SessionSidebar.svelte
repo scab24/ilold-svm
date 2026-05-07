@@ -38,7 +38,7 @@
     funcPaths?: Record<string, any>;
     expandedFuncs?: Set<string>;
     seqExpanded?: Map<string, boolean>;
-    mode?: 'cfg' | 'sequences' | 'session' | 'program' | 'trace';
+    mode?: 'cfg' | 'sequences' | 'session';
     seqAnalysis?: any;
     contractDetail?: { name: string; functions?: any[] } | null;
     lookupBlock?: (blockId: string) => { statements: string[]; node_type: string } | null;

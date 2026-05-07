@@ -18,10 +18,10 @@
     onsessionclear,
   }: {
     contractName: string;
-    mode: 'cfg' | 'sequences' | 'session' | 'program' | 'trace';
+    mode: 'cfg' | 'sequences' | 'session';
     seqDirection: 'TB' | 'LR';
     kind?: 'solidity' | 'solana';
-    onmodechange: (mode: 'cfg' | 'sequences' | 'session' | 'program' | 'trace') => void;
+    onmodechange: (mode: 'cfg' | 'sequences' | 'session') => void;
     onsearch: () => void;
     oncenter: () => void;
     onseqdirection: (dir: 'TB' | 'LR') => void;
@@ -56,43 +56,26 @@
   <span class="divider"></span>
 
   <!-- Mode switcher -->
-  {#if kind === 'solana'}
-    <div class="seg" role="group" aria-label="View mode">
-      <button
-        class="seg-btn"
-        class:active={mode === 'program'}
-        onclick={() => onmodechange('program')}
-        title="Program view — instructions and account types"
-      >Program</button>
-      <button
-        class="seg-btn"
-        class:active={mode === 'trace'}
-        onclick={() => onmodechange('trace')}
-        title="Trace view — runtime steps and account diffs"
-      >Trace</button>
-    </div>
-  {:else}
-    <div class="seg" role="group" aria-label="View mode">
-      <button
-        class="seg-btn"
-        class:active={mode === 'cfg'}
-        onclick={() => onmodechange('cfg')}
-        title="Control-flow graph view"
-      >CFG</button>
-      <button
-        class="seg-btn"
-        class:active={mode === 'sequences'}
-        onclick={() => onmodechange('sequences')}
-        title="Function sequence view"
-      >Seq</button>
-      <button
-        class="seg-btn"
-        class:active={mode === 'session'}
-        onclick={() => onmodechange('session')}
-        title="Session mode — click in sidebar to add steps"
-      >Session</button>
-    </div>
-  {/if}
+  <div class="seg" role="group" aria-label="View mode">
+    <button
+      class="seg-btn"
+      class:active={mode === 'cfg'}
+      onclick={() => onmodechange('cfg')}
+      title={kind === 'solana' ? 'Click an instruction to add it; expand to see its accounts' : 'Control-flow graph view'}
+    >CFG</button>
+    <button
+      class="seg-btn"
+      class:active={mode === 'sequences'}
+      onclick={() => onmodechange('sequences')}
+      title={kind === 'solana' ? 'Sequence view — instructions linked by shared accounts' : 'Function sequence view'}
+    >Seq</button>
+    <button
+      class="seg-btn"
+      class:active={mode === 'session'}
+      onclick={() => onmodechange('session')}
+      title="Session mode — click in sidebar to add steps"
+    >Session</button>
+  </div>
 
   {#if mode === 'sequences'}
     <span class="divider"></span>

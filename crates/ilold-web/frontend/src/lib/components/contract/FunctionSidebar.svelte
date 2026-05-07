@@ -24,7 +24,7 @@
     contract?: ContractDetail | null;
     program?: ProgramDetail | null;
     canvasFuncs: Set<string>;
-    mode: 'cfg' | 'sequences' | 'session' | 'program' | 'trace';
+    mode: 'cfg' | 'sequences' | 'session';
     kind?: 'solidity' | 'solana';
     onadd: (entry: string) => void;
     onremove: (entry: string) => void;
