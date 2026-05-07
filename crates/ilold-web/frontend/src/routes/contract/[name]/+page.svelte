@@ -18,6 +18,7 @@
   import InstructionSidebar from '$lib/components/contract/InstructionSidebar.svelte';
   import SolanaRunPanel from '$lib/components/contract/SolanaRunPanel.svelte';
   import NodeInspector from '$lib/components/contract/NodeInspector.svelte';
+  import SolanaSessionSidebar from '$lib/components/session/SolanaSessionSidebar.svelte';
   import { composeProgramGraph } from '$lib/canvas/program';
   import TopBar from '$lib/components/contract/TopBar.svelte';
   import StatusBar from '$lib/components/contract/StatusBar.svelte';
@@ -58,7 +59,7 @@
   // Default: Seq mode is the auditor-friendly view; Session mode flips the
   // sidebar click into "add step" and hides exploration nodes on the canvas
   // so only the scenarios tree is visible.
-  let mode: 'cfg' | 'sequences' | 'session' = $state('sequences');
+  let mode: 'cfg' | 'sequences' | 'session' | 'program' | 'trace' = $state('sequences');
   let seqTree: any = $state(null);
   let seqAnalysis: SequenceAnalysis | null = $state(null);
   let seqExpanded: Map<string, boolean> = $state(new Map());
@@ -1524,21 +1525,39 @@
   {#if error}
     <div class="p-6 text-danger">{error}</div>
   {:else if kind === 'solana' && solanaProgram}
-    <div class="flex items-center gap-2.5 px-4 py-2 bg-hover border-b border-border-subtle z-10 shrink-0">
-      <a class="text-text no-underline hover:text-accent-hover" href="/">ilold</a>
-      <span class="text-text-dim">/</span>
-      <span class="text-lg font-bold text-text">{solanaProgram.name}</span>
-      <span class="text-xs text-text-muted">solana program</span>
-      <span class="text-[10px] text-text-dim font-mono ml-2">{solanaProgram.program_id}</span>
-      <div class="ml-auto flex gap-1">
-        <button class="bg-hover border border-border-subtle text-accent-hover px-3 py-1 rounded-sm cursor-pointer text-xs hover:border-accent" onclick={togglePalette}>⌘K</button>
-      </div>
-    </div>
+    <TopBar
+      contractName={solanaProgram.name}
+      mode={mode === 'cfg' || mode === 'sequences' || mode === 'session' ? 'program' : mode}
+      {seqDirection}
+      kind="solana"
+      onmodechange={(m) => { mode = m; }}
+      onsearch={togglePalette}
+      oncenter={() => flowApi?.fitView({ padding: 0.1 })}
+      onseqdirection={() => {}}
+      onsessionback={async () => {
+        try {
+          await postSolanaCommand('Back', solanaProgram.name);
+        } catch (e) {
+          alert(`session back failed:\n\n${e instanceof Error ? e.message : String(e)}`);
+        }
+      }}
+      onsessionclear={async () => {
+        try {
+          await postSolanaCommand('Clear', solanaProgram.name);
+          solanaTraceCount = 0;
+          const composed = composeProgramGraph(solanaProgram);
+          setNodes(composed.nodes);
+          setEdges(composed.edges);
+        } catch (e) {
+          alert(`session clear failed:\n\n${e instanceof Error ? e.message : String(e)}`);
+        }
+      }}
+    />
     <div class="flex-1 flex overflow-hidden h-full">
       <InstructionSidebar
         program={solanaProgram}
         canvasInstructions={solanaCanvasIxs}
-        mode="program"
+        mode={mode === 'session' || mode === 'trace' ? 'session' : 'program'}
         onadd={(ix) => handleSolanaIxAdd(ix)}
         onremove={(ix) => handleSolanaIxRemove(ix)}
       />
@@ -1552,23 +1571,35 @@
         onselectionchange={(nodes) => { selectionCount = nodes.length; }}
         onready={(api) => { flowApi = api; }}
       />
-      <aside class="w-[320px] shrink-0 border-l border-border-subtle overflow-y-auto bg-hover">
-        <NodeInspector
-          {selectedNode}
-          {selectedPath}
-          {funcPaths}
-          {expandedFuncs}
-          {seqExpanded}
-          mode="cfg"
-          {seqAnalysis}
-          contract={{ name: solanaProgram.name, functions: [] }}
-          lookupBlock={() => null}
-          onpathselect={() => {}}
-          onexpandcfg={() => {}}
-          onsolanarun={handleSolanaRun}
-        />
-      </aside>
+      <SolanaSessionSidebar
+        program={solanaProgram}
+        {selectedNode}
+        users={solanaUsers}
+        onsolanarun={handleSolanaRun}
+        onnewuser={async (name, lamports) => {
+          const result = await postSolanaCommand(
+            { UsersNew: { name, lamports } },
+            solanaProgram.name,
+          );
+          if (result?.Error) throw new Error(result.Error.message ?? 'create user failed');
+          await refreshSolanaUsers();
+        }}
+        onairdrop={async (name, lamports) => {
+          await postSolanaCommand(
+            { Airdrop: { user: name, lamports } },
+            solanaProgram.name,
+          );
+          await refreshSolanaUsers();
+        }}
+      />
     </div>
+    <StatusBar
+      mode={mode === 'cfg' || mode === 'sequences' ? 'session' : (mode === 'program' || mode === 'trace' ? 'session' : mode)}
+      canvasCount={solanaCanvasIxs.size}
+      expandedCount={solanaTraceCount}
+      activeScenario={getActiveScenario()}
+      {selectionCount}
+    />
     {#if solanaRunIx}
       <SolanaRunPanel
         program={solanaProgram}

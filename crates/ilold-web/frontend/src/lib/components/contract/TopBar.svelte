@@ -9,6 +9,7 @@
     contractName,
     mode,
     seqDirection,
+    kind = 'solidity',
     onmodechange,
     onsearch,
     oncenter,
@@ -17,15 +18,14 @@
     onsessionclear,
   }: {
     contractName: string;
-    mode: 'cfg' | 'sequences' | 'session';
+    mode: 'cfg' | 'sequences' | 'session' | 'program' | 'trace';
     seqDirection: 'TB' | 'LR';
-    onmodechange: (mode: 'cfg' | 'sequences' | 'session') => void;
+    kind?: 'solidity' | 'solana';
+    onmodechange: (mode: 'cfg' | 'sequences' | 'session' | 'program' | 'trace') => void;
     onsearch: () => void;
     oncenter: () => void;
     onseqdirection: (dir: 'TB' | 'LR') => void;
-    /** Remove the last step of the active scenario (REPL `b`). */
     onsessionback: () => void;
-    /** Clear every step of the active scenario (REPL `cl`). */
     onsessionclear: () => void;
   } = $props();
 
@@ -56,26 +56,43 @@
   <span class="divider"></span>
 
   <!-- Mode switcher -->
-  <div class="seg" role="group" aria-label="View mode">
-    <button
-      class="seg-btn"
-      class:active={mode === 'cfg'}
-      onclick={() => onmodechange('cfg')}
-      title="Control-flow graph view"
-    >CFG</button>
-    <button
-      class="seg-btn"
-      class:active={mode === 'sequences'}
-      onclick={() => onmodechange('sequences')}
-      title="Function sequence view"
-    >Seq</button>
-    <button
-      class="seg-btn"
-      class:active={mode === 'session'}
-      onclick={() => onmodechange('session')}
-      title="Session mode — click in sidebar to add steps"
-    >Session</button>
-  </div>
+  {#if kind === 'solana'}
+    <div class="seg" role="group" aria-label="View mode">
+      <button
+        class="seg-btn"
+        class:active={mode === 'program'}
+        onclick={() => onmodechange('program')}
+        title="Program view — instructions and account types"
+      >Program</button>
+      <button
+        class="seg-btn"
+        class:active={mode === 'trace'}
+        onclick={() => onmodechange('trace')}
+        title="Trace view — runtime steps and account diffs"
+      >Trace</button>
+    </div>
+  {:else}
+    <div class="seg" role="group" aria-label="View mode">
+      <button
+        class="seg-btn"
+        class:active={mode === 'cfg'}
+        onclick={() => onmodechange('cfg')}
+        title="Control-flow graph view"
+      >CFG</button>
+      <button
+        class="seg-btn"
+        class:active={mode === 'sequences'}
+        onclick={() => onmodechange('sequences')}
+        title="Function sequence view"
+      >Seq</button>
+      <button
+        class="seg-btn"
+        class:active={mode === 'session'}
+        onclick={() => onmodechange('session')}
+        title="Session mode — click in sidebar to add steps"
+      >Session</button>
+    </div>
+  {/if}
 
   {#if mode === 'sequences'}
     <span class="divider"></span>
