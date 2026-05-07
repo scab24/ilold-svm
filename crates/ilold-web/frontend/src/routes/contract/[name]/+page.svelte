@@ -692,73 +692,6 @@
     });
   }
 
-  function paintSequencesMode() {
-    if (!solanaProgram) return;
-    clearGraph();
-    solanaCanvasIxs = new Set();
-    solanaExpandedIxs = new Set();
-
-    const ixs = solanaProgram.instructions ?? [];
-    const accountUsage = new Map<string, Set<string>>();
-    for (const ix of ixs) {
-      for (const acc of ix.accounts ?? []) {
-        const key = acc.name;
-        if (!accountUsage.has(key)) accountUsage.set(key, new Set());
-        accountUsage.get(key)!.add(ix.name);
-      }
-    }
-
-    const newNodes: any[] = ixs.map((ix, i) => ({
-      id: `ix:${ix.name}`,
-      type: 'instruction',
-      position: { x: i * 220, y: 200 },
-      data: {
-        _type: 'instruction',
-        label: ix.name,
-        programName: solanaProgram!.name,
-        programId: solanaProgram!.program_id,
-        argsCount: (ix.args ?? []).length,
-        accountsCount: (ix.accounts ?? []).length,
-        hasPdas: (ix.accounts ?? []).some((a: any) => a.pda != null),
-        signers: (ix.accounts ?? []).filter((a: any) => a.signer).map((a: any) => a.name),
-      },
-    }));
-
-    const newEdges: any[] = [];
-    const seen = new Set<string>();
-    const ixIndex = new Map(ixs.map((ix, i) => [ix.name, i]));
-    for (const [, sharingSet] of accountUsage) {
-      const arr = Array.from(sharingSet);
-      for (let i = 0; i < arr.length; i++) {
-        for (let j = 0; j < arr.length; j++) {
-          if (i === j) continue;
-          const a = arr[i];
-          const b = arr[j];
-          const ai = ixIndex.get(a) ?? 0;
-          const bi = ixIndex.get(b) ?? 0;
-          if (ai >= bi) continue;
-          const key = `${a}->${b}`;
-          if (seen.has(key)) continue;
-          seen.add(key);
-          newEdges.push({
-            id: `transition:${key}`,
-            source: `ix:${a}`,
-            sourceHandle: 'r',
-            target: `ix:${b}`,
-            targetHandle: 'l',
-            animated: false,
-            style: 'stroke: var(--color-accent-hover); stroke-dasharray: 4 3; opacity: 0.7;',
-            markerEnd: { type: 'arrowclosed', color: 'var(--color-accent-hover)' },
-          });
-        }
-      }
-    }
-
-    setNodes(newNodes);
-    setEdges(newEdges);
-    solanaCanvasIxs = new Set(ixs.map((i) => i.name));
-  }
-
   function handleSolanaIxExpand(ixName: string) {
     if (!solanaProgram) return;
     if (solanaExpandedIxs.has(ixName)) {
@@ -905,7 +838,6 @@
         }
         projectMap = [];
         await refreshSolanaUsers();
-        if (mode === 'sequences') paintSequencesMode();
         return;
       }
       projectMap = pm.contracts ?? [];
@@ -1567,7 +1499,6 @@
       solanaTraceCount = 0;
       selectedNode = null;
       mode = newMode;
-      if (newMode === 'sequences') paintSequencesMode();
       return;
     }
     const toRemove = new Set<string>();
