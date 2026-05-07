@@ -16,8 +16,6 @@
   import Legend from '$lib/components/contract/Legend.svelte';
   import FunctionSidebar from '$lib/components/contract/FunctionSidebar.svelte';
   import SolanaRunPanel from '$lib/components/contract/SolanaRunPanel.svelte';
-  import NodeInspector from '$lib/components/contract/NodeInspector.svelte';
-  import SolanaSessionSidebar from '$lib/components/session/SolanaSessionSidebar.svelte';
   import { composeProgramGraph } from '$lib/canvas/program';
   import TopBar from '$lib/components/contract/TopBar.svelte';
   import StatusBar from '$lib/components/contract/StatusBar.svelte';
@@ -1571,10 +1569,13 @@
         onselectionchange={(nodes) => { selectionCount = nodes.length; }}
         onready={(api) => { flowApi = api; }}
       />
-      <SolanaSessionSidebar
+      <SessionSidebar
+        contract={solanaProgram.name}
+        kind="solana"
         program={solanaProgram}
         {selectedNode}
-        users={solanaUsers}
+        contractDetail={{ name: solanaProgram.name, functions: [] }}
+        solanaUsers={solanaUsers}
         onsolanarun={handleSolanaRun}
         onnewuser={async (name, lamports) => {
           const result = await postSolanaCommand(
