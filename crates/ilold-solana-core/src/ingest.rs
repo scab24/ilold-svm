@@ -114,17 +114,25 @@ pub fn find_idls(anchor_root: &Path) -> Vec<PathBuf> {
 }
 
 pub fn find_so(anchor_root: &Path) -> Vec<PathBuf> {
-    let dir = anchor_root.join("target").join("deploy");
-    let mut found: Vec<PathBuf> = match std::fs::read_dir(&dir) {
+    let preferred = anchor_root.join("target").join("deploy");
+    let fallback = anchor_root.join("bin");
+    let mut found = collect_so(&preferred);
+    if found.is_empty() {
+        found = collect_so(&fallback);
+    }
+    found.sort();
+    found
+}
+
+fn collect_so(dir: &Path) -> Vec<PathBuf> {
+    match std::fs::read_dir(dir) {
         Ok(entries) => entries
             .flatten()
             .map(|e| e.path())
             .filter(|p| p.extension().is_some_and(|e| e == "so"))
             .collect(),
         Err(_) => Vec::new(),
-    };
-    found.sort();
-    found
+    }
 }
 
 fn collect_jsons(dir: &Path) -> Vec<PathBuf> {
