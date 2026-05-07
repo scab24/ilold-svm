@@ -584,10 +584,10 @@
     const next = new Set(solanaCanvasIxs);
     next.delete(ixName);
     solanaCanvasIxs = next;
-    const ids: string[] = [`ix:${ixName}`];
+    const ids = new Set<string>([`ix:${ixName}`]);
     for (const n of getNodes()) {
       const data: any = n.data;
-      if (data?._type === 'account' && data.parentInstruction === ixName) ids.push(n.id);
+      if (data?._type === 'account' && data.parentInstruction === ixName) ids.add(n.id);
     }
     removeNodesById(ids);
     solanaExpandedIxs = new Set([...solanaExpandedIxs].filter((n) => n !== ixName));
@@ -627,20 +627,29 @@
 
     const newEdges: any[] = [];
     const seen = new Set<string>();
+    const ixIndex = new Map(ixs.map((ix, i) => [ix.name, i]));
     for (const [, sharingSet] of accountUsage) {
       const arr = Array.from(sharingSet);
       for (let i = 0; i < arr.length; i++) {
         for (let j = 0; j < arr.length; j++) {
           if (i === j) continue;
-          const key = `${arr[i]}->${arr[j]}`;
+          const a = arr[i];
+          const b = arr[j];
+          const ai = ixIndex.get(a) ?? 0;
+          const bi = ixIndex.get(b) ?? 0;
+          if (ai >= bi) continue;
+          const key = `${a}->${b}`;
           if (seen.has(key)) continue;
           seen.add(key);
           newEdges.push({
             id: `transition:${key}`,
-            source: `ix:${arr[i]}`,
-            target: `ix:${arr[j]}`,
+            source: `ix:${a}`,
+            sourceHandle: 'r',
+            target: `ix:${b}`,
+            targetHandle: 'l',
             animated: false,
-            style: 'stroke: var(--color-accent-hover); stroke-dasharray: 4 3; opacity: 0.6;',
+            style: 'stroke: var(--color-accent-hover); stroke-dasharray: 4 3; opacity: 0.7;',
+            markerEnd: { type: 'arrowclosed', color: 'var(--color-accent-hover)' },
           });
         }
       }
@@ -654,12 +663,12 @@
   function handleSolanaIxExpand(ixName: string) {
     if (!solanaProgram) return;
     if (solanaExpandedIxs.has(ixName)) {
-      const ids: string[] = [];
+      const ids = new Set<string>();
       for (const n of getNodes()) {
         const data: any = n.data;
-        if (data?._type === 'account' && data.parentInstruction === ixName) ids.push(n.id);
+        if (data?._type === 'account' && data.parentInstruction === ixName) ids.add(n.id);
       }
-      if (ids.length > 0) removeNodesById(ids);
+      if (ids.size > 0) removeNodesById(ids);
       solanaExpandedIxs = new Set([...solanaExpandedIxs].filter((n) => n !== ixName));
       return;
     }
@@ -667,21 +676,28 @@
     if (!ix) return;
     const parent = findNode(`ix:${ixName}`);
     const baseX = parent?.position?.x ?? 0;
-    const baseY = (parent?.position?.y ?? 200) - 160;
+    const baseY = (parent?.position?.y ?? 200) - 200;
+    const accounts = ix.accounts ?? [];
+    const totalWidth = (accounts.length - 1) * 170;
     const newNodes: any[] = [];
     const newEdges: any[] = [];
-    (ix.accounts ?? []).forEach((acc: any, i: number) => {
+    accounts.forEach((acc: any, i: number) => {
       const id = `ix:${ixName}:acc:${acc.name}`;
       newNodes.push({
         id,
         type: 'account',
-        position: { x: baseX + (i - (ix.accounts.length - 1) / 2) * 150, y: baseY },
+        position: { x: baseX - totalWidth / 2 + i * 170, y: baseY },
         data: {
           _type: 'account',
           label: acc.name,
           programName: solanaProgram!.name,
           parentInstruction: ixName,
-          fields: acc.signer ? [{ name: 'signer', type: 'true' }] : [],
+          fields: acc.signer || acc.writable
+            ? [
+                ...(acc.signer ? [{ name: 'signer', type: 'true' }] : []),
+                ...(acc.writable ? [{ name: 'writable', type: 'true' }] : []),
+              ]
+            : [],
         },
       });
       newEdges.push({
@@ -690,6 +706,7 @@
         sourceHandle: 't',
         target: id,
         targetHandle: 'b',
+        markerEnd: { type: 'arrowclosed', color: 'var(--color-accent-hover)' },
       });
     });
     if (newNodes.length > 0) addNodes(newNodes);
@@ -1211,7 +1228,7 @@
     // deliberately hide in this mode.
     if (mode === 'session') return;
     const d = node.data;
-    if (d._type === 'instruction') {
+    if (d._type === 'instruction' && mode === 'cfg') {
       handleSolanaIxExpand(d.label as string);
       return;
     }
