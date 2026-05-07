@@ -756,6 +756,10 @@
   }
 
   async function handleSidebarAdd(funcName: string) {
+    if (kind === 'solana') {
+      handleSolanaIxAdd(funcName);
+      return;
+    }
     if (mode === 'session') {
       try {
         await postCommand({ Call: { func: funcName } }, contract?.name);
@@ -967,8 +971,15 @@
     );
   }
 
-  // Toolbar ↶: remove the last step of the active scenario.
   async function handleSessionBack() {
+    if (kind === 'solana' && solanaProgram) {
+      try {
+        await postSolanaCommand('Back', solanaProgram.name);
+      } catch (e) {
+        notifyFailure('session back', e);
+      }
+      return;
+    }
     try {
       await postCommand('Back', contract?.name);
     } catch (e) {
@@ -976,8 +987,19 @@
     }
   }
 
-  // Toolbar 🗑: wipe every step of the active scenario (with confirm).
   async function handleSessionClear() {
+    if (kind === 'solana' && solanaProgram) {
+      try {
+        await postSolanaCommand('Clear', solanaProgram.name);
+        solanaTraceCount = 0;
+        const composed = composeProgramGraph(solanaProgram);
+        setNodes(composed.nodes);
+        setEdges(composed.edges);
+      } catch (e) {
+        notifyFailure('session clear', e);
+      }
+      return;
+    }
     const active = getActiveScenario();
     const steps = getScenarios().get(active) ?? [];
     if (steps.length === 0) return;
@@ -1531,116 +1553,15 @@
 <div class="fixed inset-0 flex flex-col bg-dark">
   {#if error}
     <div class="p-6 text-danger">{error}</div>
-  {:else if kind === 'solana' && solanaProgram}
+  {:else if contract || (kind === 'solana' && solanaProgram)}
     <TopBar
-      contractName={solanaProgram.name}
-      mode={mode === 'cfg' || mode === 'sequences' || mode === 'session' ? 'program' : mode}
-      {seqDirection}
-      kind="solana"
-      onmodechange={(m) => { mode = m; }}
-      onsearch={togglePalette}
-      oncenter={() => flowApi?.fitView({ padding: 0.1 })}
-      onseqdirection={() => {}}
-      onsessionback={async () => {
-        try {
-          await postSolanaCommand('Back', solanaProgram.name);
-        } catch (e) {
-          alert(`session back failed:\n\n${e instanceof Error ? e.message : String(e)}`);
-        }
-      }}
-      onsessionclear={async () => {
-        try {
-          await postSolanaCommand('Clear', solanaProgram.name);
-          solanaTraceCount = 0;
-          const composed = composeProgramGraph(solanaProgram);
-          setNodes(composed.nodes);
-          setEdges(composed.edges);
-        } catch (e) {
-          alert(`session clear failed:\n\n${e instanceof Error ? e.message : String(e)}`);
-        }
-      }}
-    />
-    <div class="flex-1 flex overflow-hidden h-full">
-      <FunctionSidebar
-        program={solanaProgram}
-        kind="solana"
-        canvasFuncs={solanaCanvasIxs}
-        {mode}
-        onadd={(ix) => handleSolanaIxAdd(ix)}
-        onremove={(ix) => handleSolanaIxRemove(ix)}
-      />
-      <GraphCanvasFlow
-        bind:this={graphCanvas}
-        onnodetap={(node, event) => handleNodeClick(node, event)}
-        onbackgroundtap={handleBackgroundTap}
-        oncontextmenu={handleContextMenu}
-        onnodesdelete={handleNodesDelete}
-        canDeleteNodes={true}
-        onselectionchange={(nodes) => { selectionCount = nodes.length; }}
-        onready={(api) => { flowApi = api; }}
-      />
-      <SessionSidebar
-        contract={solanaProgram.name}
-        kind="solana"
-        program={solanaProgram}
-        {selectedNode}
-        contractDetail={{ name: solanaProgram.name, functions: [] }}
-        solanaUsers={solanaUsers}
-        onsolanarun={handleSolanaRun}
-        onsolanasubmit={handleSolanaSubmitFromInspector}
-        onnewuser={async (name, lamports) => {
-          const result = await postSolanaCommand(
-            { UsersNew: { name, lamports } },
-            solanaProgram.name,
-          );
-          if (result?.Error) throw new Error(result.Error.message ?? 'create user failed');
-          await refreshSolanaUsers();
-        }}
-        onairdrop={async (name, lamports) => {
-          await postSolanaCommand(
-            { Airdrop: { user: name, lamports } },
-            solanaProgram.name,
-          );
-          await refreshSolanaUsers();
-        }}
-      />
-    </div>
-    <StatusBar
-      mode={mode === 'cfg' || mode === 'sequences' ? 'session' : (mode === 'program' || mode === 'trace' ? 'session' : mode)}
-      canvasCount={solanaCanvasIxs.size}
-      expandedCount={solanaTraceCount}
-      activeScenario={getActiveScenario()}
-      {selectionCount}
-    />
-    <ContextMenu
-      menu={contextMenu}
-      {expandedFuncs}
-      {seqExpanded}
-      mode="cfg"
-      onexpandcfg={() => { contextMenu = null; }}
-      onremovefunc={() => { contextMenu = null; }}
-      onremovenode={(nodeId) => {
-        if (nodeId.startsWith('ix:')) {
-          handleSolanaIxRemove(nodeId.slice(3));
-        } else {
-          removeNodesById([nodeId]);
-        }
-        contextMenu = null;
-        selectedNode = null;
-      }}
-      onforkscenario={() => { contextMenu = null; }}
-      onremovefromhere={() => { contextMenu = null; }}
-      onviewsource={() => { contextMenu = null; }}
-      onopenide={() => { contextMenu = null; }}
-      onsolanarun={(name) => { handleSolanaRun(name); contextMenu = null; }}
-      onclose={() => (contextMenu = null)}
-    />
-  {:else}
-    <TopBar
-      contractName={contract?.name ?? '...'}
+      contractName={kind === 'solana' && solanaProgram ? solanaProgram.name : (contract?.name ?? '...')}
       {mode}
       {seqDirection}
-      onmodechange={switchMode}
+      {kind}
+      onmodechange={(m) => {
+        if (kind === 'solana') { mode = m; } else { switchMode(m); }
+      }}
       onsearch={togglePalette}
       oncenter={() => flowApi?.fitView({ padding: 0.1 })}
       onseqdirection={(dir) => { seqDirection = dir; reorientAllSeqSubtrees(); }}
@@ -1648,9 +1569,15 @@
       onsessionclear={handleSessionClear}
     />
     <div class="flex-1 flex overflow-hidden h-full">
-      {#if contract}
-        <FunctionSidebar {contract} {canvasFuncs} {mode} onadd={handleSidebarAdd} onremove={removeFuncFromCanvas} />
-      {/if}
+      <FunctionSidebar
+        contract={kind === 'solana' ? null : contract}
+        program={kind === 'solana' ? solanaProgram : null}
+        {kind}
+        canvasFuncs={kind === 'solana' ? solanaCanvasIxs : canvasFuncs}
+        {mode}
+        onadd={handleSidebarAdd}
+        onremove={kind === 'solana' ? handleSolanaIxRemove : removeFuncFromCanvas}
+      />
 
       <GraphCanvasFlow
         bind:this={graphCanvas}
@@ -1663,32 +1590,48 @@
         onready={(api) => { flowApi = api; }}
       />
 
-      {#if contract}
-        <SessionSidebar
-          contract={contract.name}
-          {selectedNode}
-          {selectedPath}
-          {funcPaths}
-          {expandedFuncs}
-          {seqExpanded}
-          {mode}
-          {seqAnalysis}
-          contractDetail={{ name: contract.name, functions: contract.functions }}
-          lookupBlock={(blockId) => {
-            const node = findNode(blockId);
-            if (!node || node.data._type !== 'block') return null;
-            return { statements: (node.data as any).statements ?? [], node_type: (node.data as any).node_type };
-          }}
-          onpathselect={(funcName, path) => { selectedPath = path; highlightPath(funcName, path); }}
-          onexpandcfg={(funcName, nodeId) => toggleFuncExpand(funcName, nodeId)}
-        />
-      {/if}
+      <SessionSidebar
+        contract={kind === 'solana' && solanaProgram ? solanaProgram.name : (contract?.name ?? '')}
+        {kind}
+        program={kind === 'solana' ? solanaProgram : null}
+        {selectedNode}
+        {selectedPath}
+        {funcPaths}
+        {expandedFuncs}
+        {seqExpanded}
+        {mode}
+        {seqAnalysis}
+        contractDetail={kind === 'solana' && solanaProgram
+          ? { name: solanaProgram.name, functions: [] }
+          : (contract ? { name: contract.name, functions: contract.functions } : null)}
+        lookupBlock={(blockId) => {
+          const node = findNode(blockId);
+          if (!node || node.data._type !== 'block') return null;
+          return { statements: (node.data as any).statements ?? [], node_type: (node.data as any).node_type };
+        }}
+        onpathselect={(funcName, path) => { selectedPath = path; highlightPath(funcName, path); }}
+        onexpandcfg={(funcName, nodeId) => toggleFuncExpand(funcName, nodeId)}
+        solanaUsers={solanaUsers}
+        onsolanarun={handleSolanaRun}
+        onsolanasubmit={handleSolanaSubmitFromInspector}
+        onnewuser={async (name, lamports) => {
+          if (!solanaProgram) return;
+          const result = await postSolanaCommand({ UsersNew: { name, lamports } }, solanaProgram.name);
+          if (result?.Error) throw new Error(result.Error.message ?? 'create user failed');
+          await refreshSolanaUsers();
+        }}
+        onairdrop={async (name, lamports) => {
+          if (!solanaProgram) return;
+          await postSolanaCommand({ Airdrop: { user: name, lamports } }, solanaProgram.name);
+          await refreshSolanaUsers();
+        }}
+      />
     </div>
 
     <StatusBar
       {mode}
-      canvasCount={canvasFuncs.size}
-      expandedCount={expandedFuncs.size}
+      canvasCount={kind === 'solana' ? solanaCanvasIxs.size : canvasFuncs.size}
+      expandedCount={kind === 'solana' ? solanaTraceCount : expandedFuncs.size}
       activeScenario={getActiveScenario()}
       {selectionCount}
     />
@@ -1700,11 +1643,20 @@
       {mode}
       onexpandcfg={(func, nodeId) => { toggleFuncExpand(func, nodeId); contextMenu = null; }}
       onremovefunc={(func) => { removeFuncFromCanvas(func); contextMenu = null; selectedNode = null; }}
-      onremovenode={(nodeId) => { removeSeqNode(nodeId); contextMenu = null; selectedNode = null; }}
+      onremovenode={(nodeId) => {
+        if (nodeId.startsWith('ix:')) {
+          handleSolanaIxRemove(nodeId.slice(3));
+        } else {
+          removeSeqNode(nodeId);
+        }
+        contextMenu = null;
+        selectedNode = null;
+      }}
       onforkscenario={handleForkScenario}
       onremovefromhere={handleRemoveFromHere}
       onviewsource={handleViewSource}
       onopenide={handleOpenInIde}
+      onsolanarun={(name) => { handleSolanaRun(name); contextMenu = null; }}
       onclose={() => contextMenu = null}
     />
 
