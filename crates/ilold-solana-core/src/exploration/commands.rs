@@ -46,6 +46,8 @@ pub enum SolanaCommand {
         severity: Severity,
         title: String,
         description: String,
+        #[serde(default)]
+        recommendation: Option<String>,
     },
     Note {
         text: String,
@@ -65,7 +67,10 @@ pub enum SolanaCommand {
         index: usize,
     },
     Findings,
-    Export,
+    Export {
+        #[serde(default)]
+        metadata: Option<ilold_session_core::journal::export::AuditMetadata>,
+    },
     Who {
         account_type: String,
     },

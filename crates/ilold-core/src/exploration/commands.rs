@@ -445,6 +445,11 @@ fn execute_finding(
         description,
         notes: vec![],
         created_at: String::new(),
+        // Solidity flow does not yet capture step_index or recommendation;
+        // SDD-02 only wires the new fields on the Solana side. Setting None
+        // here preserves backward-compat with existing Solidity callers.
+        affected_step_index: None,
+        recommendation: None,
     };
 
     session.journal.add_finding(finding, timestamp);

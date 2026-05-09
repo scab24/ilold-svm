@@ -34,6 +34,16 @@ pub struct Finding {
     pub description: String,
     pub notes: Vec<String>,
     pub created_at: String,
+    /// Step index that motivated the finding. Captured automatically at
+    /// recording time from `session.steps.len() - 1`. None when the finding
+    /// is recorded before any step has been executed.
+    #[serde(default)]
+    pub affected_step_index: Option<usize>,
+    /// Optional remediation suggestion (Solana auditor flow opts in via
+    /// `fi <sev> <title> --rec="…"`). When present the export markdown
+    /// renders a separate "Recommendation" block per finding.
+    #[serde(default)]
+    pub recommendation: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -170,6 +180,8 @@ mod tests {
             description: "CEI violation".into(),
             notes: vec![],
             created_at: String::new(),
+            affected_step_index: None,
+            recommendation: None,
         }, "2026-03-31T10:00:00Z");
 
         assert_eq!(j.findings.len(), 1);
@@ -215,7 +227,7 @@ mod tests {
         let f = Finding {
             id: String::new(), severity: Severity::High, title: "A".into(),
             affected_function: "x".into(), affected_sequence: None,
-            description: "d".into(), notes: vec![], created_at: String::new(),
+            description: "d".into(), notes: vec![], created_at: String::new(), affected_step_index: None, recommendation: None,
         };
         j.add_finding(f.clone(), "t1");
         j.add_finding(f.clone(), "t2");

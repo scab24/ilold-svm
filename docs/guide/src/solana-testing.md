@@ -77,11 +77,11 @@ Type `?` for the help. Two-terminal flows (one for `serve`, one for
 
 | Command | Description |
 | --- | --- |
-| `finding <severity> <title>` / `fi` | Record a finding. Severities: critical, high, medium, low, info. |
+| `finding <severity> <title> [--rec="..."]` / `fi` | Record a finding. Severities: critical, high, medium, low, info. The optional `--rec=` flag attaches a remediation suggestion that the export renders as its own block. |
 | `note <text>` / `n` | Annotation on the active sequence. |
 | `status <ix> <state>` | Mark instruction reviewed / suspicious / etc. |
 | `findings` / `fl` | List recorded findings. |
-| `export` / `ex` | Markdown report aggregating findings + steps from ALL scenarios. |
+| `export [--auditor="..."] [--version="..."] [--date=YYYY-MM-DD]` / `ex` | Markdown report aggregating audit metadata, severity matrix, methodology, findings (with step index + recommendation when set) and per-scenario steps from ALL scenarios. |
 | `save <name>` / `load <name>` | Persist / restore a session JSON in `~/.ilold/sessions/`. |
 
 ## 4. Differences vs Solidity
@@ -111,7 +111,7 @@ implemented.
 bash tests/scenarios/run.sh
 ```
 
-11 scenarios under `tests/scenarios/` (10 bash + 1 optional python WebSocket
+12 scenarios under `tests/scenarios/` (11 bash + 1 optional python WebSocket
 test that runs when `python3` and `pip install websockets` are available).
 Each spawns a fresh `ilold serve`
 on port 8081 (override with `ILOLD_TEST_PORT`) and aggregates pass/fail.
@@ -151,9 +151,9 @@ ilold[staking → initialize_pool]> call stake amount=1000 pool=pool user_stake=
 ilold[staking → … → stake]> step 1
 ilold[staking → … → stake]> who Pool
 ilold[staking → … → stake]> timeline <pool-pubkey>
-ilold[staking → … → stake]> finding High "missing reentrancy guard"
+ilold[staking → … → stake]> finding High "missing reentrancy guard" --rec="Apply checks-effects-interactions"
 ilold[staking → … → stake]> findings
-ilold[staking → … → stake]> export
+ilold[staking → … → stake]> export --auditor="Demo Auditor" --version="v0.1.0" --date=2026-05-09
 ilold[staking → … → stake]> save my-audit
 ilold[staking → … → stake]> clear
 ilold[staking]> load my-audit

@@ -603,14 +603,15 @@ async fn handle_solana_command(
             severity,
             title,
             description,
-        } => execute_finding(session, severity, title, description, &timestamp),
+            recommendation,
+        } => execute_finding(session, severity, title, description, recommendation, &timestamp),
         SolanaCommand::Note { text } => execute_note(session, &text, &timestamp),
         SolanaCommand::Status { ix, status } => {
             execute_status(session, &program, &ix, status, &timestamp)
         }
         SolanaCommand::Step { index } => execute_step(session, index),
         SolanaCommand::Findings => execute_findings_list(session),
-        SolanaCommand::Export => {
+        SolanaCommand::Export { metadata } => {
             // Export aggregates findings and step lists across ALL scenarios so
             // the auditor's deliverable reflects the full investigation, not
             // just the currently-active branch.
@@ -620,7 +621,7 @@ async fn handle_solana_command(
                     .iter()
                     .filter_map(|n| scenarios.get(n).map(|s| (n.as_str(), s)))
                     .collect();
-            execute_export(entries, &active_scenario, &program)
+            execute_export(entries, &active_scenario, &program, metadata.as_ref())
         }
         SolanaCommand::Who { account_type } => execute_who(&program, &account_type),
         SolanaCommand::Timeline { pubkey } => {

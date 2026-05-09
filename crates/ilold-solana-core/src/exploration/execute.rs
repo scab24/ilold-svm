@@ -420,6 +420,7 @@ pub fn execute_finding(
     severity: Severity,
     title: String,
     description: String,
+    recommendation: Option<String>,
     timestamp: &str,
 ) -> SolanaCommandResult {
     let affected_sequence = if session.steps.is_empty() {
@@ -432,6 +433,13 @@ pub fn execute_finding(
                 .map(|s| s.to_string())
                 .collect(),
         )
+    };
+    // Capture the index of the most recent step so the export can render
+    // "Step #N" alongside the affected function. None when no steps yet.
+    let affected_step_index = if session.steps.is_empty() {
+        None
+    } else {
+        Some(session.steps.len() - 1)
     };
     let finding = Finding {
         id: String::new(),
@@ -446,6 +454,8 @@ pub fn execute_finding(
         description,
         notes: vec![],
         created_at: String::new(),
+        affected_step_index,
+        recommendation,
     };
     session.journal.add_finding(finding, timestamp);
     let id = session
@@ -588,46 +598,44 @@ pub fn execute_export<'a, I>(
     scenarios: I,
     active: &str,
     program: &ProgramDef,
+    metadata: Option<&ilold_session_core::journal::export::AuditMetadata>,
 ) -> SolanaCommandResult
 where
     I: IntoIterator<Item = (&'a str, &'a ExplorationSession)>,
 {
+    use ilold_session_core::journal::export::{
+        export_markdown_multi, ProgramSection,
+    };
     let scenarios: Vec<(&str, &ExplorationSession)> = scenarios.into_iter().collect();
-    let total_steps: usize = scenarios.iter().map(|(_, s)| s.steps.len()).sum();
-    let total_findings: usize = scenarios.iter().map(|(_, s)| s.journal.findings.len()).sum();
+    let prog_section = ProgramSection {
+        name: program.name.clone(),
+        program_id: program.program_id.to_string(),
+        instructions: program.instructions.len(),
+        account_types: program.account_types.len(),
+    };
 
-    let mut md = String::new();
-    md.push_str(&format!("# Audit report — {}\n\n", program.name));
-    md.push_str(&format!(
-        "**Active scenario**: `{}`  ·  **Scenarios**: {}  ·  **Total steps**: {}  ·  **Total findings**: {}\n\n",
-        active, scenarios.len(), total_steps, total_findings,
-    ));
+    // Reuse the shared markdown renderer (header + metadata + program +
+    // methodology + severity matrix + findings detail). Only the per-scenario
+    // step listing stays here because step records belong to ExplorationStep,
+    // which is owned by ilold-session-core but printed with Solana semantics
+    // (compute units, error from runtime_trace).
+    let journal_pairs: Vec<(&str, &ilold_session_core::journal::types::AuditJournal)> =
+        scenarios.iter().map(|(n, s)| (*n, &s.journal)).collect();
+    let mut md = export_markdown_multi(
+        &journal_pairs,
+        Some(&prog_section),
+        metadata,
+        program.instructions.len(),
+    );
 
-    md.push_str("## Program\n\n");
-    md.push_str(&format!("- Program ID: `{}`\n", program.program_id));
-    md.push_str(&format!("- Instructions: {}\n", program.instructions.len()));
-    md.push_str(&format!("- Account types: {}\n\n", program.account_types.len()));
-
-    md.push_str("## Findings (all scenarios)\n\n");
-    let mut any = false;
+    // Per-scenario step listing — Solana-specific (no Solidity counterpart).
+    use std::fmt::Write;
+    writeln!(md, "## Scenarios\n").unwrap();
+    writeln!(md, "**Active**: `{active}`\n").unwrap();
     for (scn_name, session) in &scenarios {
-        for f in &session.journal.findings {
-            any = true;
-            md.push_str(&format!(
-                "### {} — [{:?}] {}\n\n_scenario: `{}` · recorded at {}_\n\n{}\n\n",
-                f.id, f.severity, f.title, scn_name, f.created_at, f.description,
-            ));
-        }
-    }
-    if !any {
-        md.push_str("_(no findings recorded)_\n\n");
-    }
-
-    for (scn_name, session) in &scenarios {
-        md.push_str(&format!("## Scenario: `{}`\n\n", scn_name));
-        md.push_str(&format!("**Steps**: {}\n\n", session.steps.len()));
+        writeln!(md, "### `{scn_name}` — {} steps\n", session.steps.len()).unwrap();
         if session.steps.is_empty() {
-            md.push_str("_(no steps)_\n\n");
+            writeln!(md, "_(no steps)_\n").unwrap();
             continue;
         }
         for (i, s) in session.steps.iter().enumerate() {
@@ -639,12 +647,12 @@ where
                 .and_then(|v| v.get("error"))
                 .and_then(|v| v.as_str());
             let mark = if err.is_some() { "FAIL" } else { "OK" };
-            md.push_str(&format!("- **#{i}** `{}` — {} ({} CU)\n", s.function, mark, cu));
+            writeln!(md, "- **#{i}** `{}` — {} ({} CU)", s.function, mark, cu).unwrap();
             if let Some(e) = err {
-                md.push_str(&format!("  - error: `{e}`\n"));
+                writeln!(md, "  - error: `{e}`").unwrap();
             }
         }
-        md.push('\n');
+        writeln!(md).unwrap();
     }
 
     let bytes = md.len();

@@ -109,6 +109,7 @@ fn finding_and_note_and_status_record_journal() {
         Severity::High,
         "missing signer check".into(),
         "switch_power should require admin".into(),
+        None,
         "2026-05-06T00:00:00Z",
     ) {
         SolanaCommandResult::FindingAdded { id } => assert!(!id.is_empty()),

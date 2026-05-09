@@ -1394,13 +1394,23 @@ fn handle_solana_input(
         }
         "fi" | "finding" => {
             if arg.is_empty() {
-                println!("  Usage: finding <severity> <title>");
+                println!("  Usage: finding <severity> <title> [--rec=\"...\"]");
                 println!("  Severity: critical | high | medium | low | info");
                 return InputResult::Continue;
             }
-            let parts: Vec<&str> = arg.splitn(2, ' ').collect();
+            // Strip a trailing --rec="..." (or unquoted) before splitting
+            // severity + title so the title can contain spaces.
+            let (rest, rec): (&str, Option<String>) = match arg.find("--rec=") {
+                Some(idx) => {
+                    let head = arg[..idx].trim_end();
+                    let tail = &arg[idx + "--rec=".len()..];
+                    (head, Some(strip_quotes(tail).to_string()))
+                }
+                None => (arg, None),
+            };
+            let parts: Vec<&str> = rest.splitn(2, ' ').collect();
             if parts.len() < 2 {
-                println!("  Usage: finding <severity> <title>");
+                println!("  Usage: finding <severity> <title> [--rec=\"...\"]");
                 return InputResult::Continue;
             }
             let severity = match normalize_severity(parts[0]) {
@@ -1414,7 +1424,12 @@ fn handle_solana_input(
                 }
             };
             let body = serde_json::json!({
-                "Finding": {"severity": severity, "title": parts[1], "description": ""}
+                "Finding": {
+                    "severity": severity,
+                    "title": parts[1],
+                    "description": "",
+                    "recommendation": rec,
+                }
             });
             dispatch_solana(handle, client, base_url, contract, body, steps)
         }
@@ -1520,14 +1535,34 @@ fn handle_solana_input(
             serde_json::json!("Findings"),
             steps,
         ),
-        "export" | "ex" => dispatch_solana(
-            handle,
-            client,
-            base_url,
-            contract,
-            serde_json::json!("Export"),
-            steps,
-        ),
+        "export" | "ex" => {
+            // Parse optional --auditor=, --version=, --date= flags. Anything
+            // else is an error so a typo never produces a half-empty
+            // deliverable.
+            let mut auditor: Option<String> = None;
+            let mut version: Option<String> = None;
+            let mut date: Option<String> = None;
+            for tok in arg.split_whitespace() {
+                if let Some(v) = tok.strip_prefix("--auditor=") { auditor = Some(strip_quotes(v).to_string()); }
+                else if let Some(v) = tok.strip_prefix("--version=") { version = Some(strip_quotes(v).to_string()); }
+                else if let Some(v) = tok.strip_prefix("--date=") { date = Some(strip_quotes(v).to_string()); }
+                else {
+                    println!("  Unknown flag: {tok}. Use --auditor= / --version= / --date= (or no flags)");
+                    return InputResult::Continue;
+                }
+            }
+            let metadata = if auditor.is_some() || version.is_some() || date.is_some() {
+                Some(serde_json::json!({
+                    "auditor": auditor,
+                    "project_version": version,
+                    "audit_date": date,
+                }))
+            } else {
+                None
+            };
+            let body = serde_json::json!({"Export": {"metadata": metadata}});
+            dispatch_solana(handle, client, base_url, contract, body, steps)
+        }
         "who" => {
             if arg.is_empty() {
                 println!("  Usage: who <account_type>  (e.g. who Pool)");
@@ -2433,6 +2468,19 @@ fn parse_trace_args(arg: &str) -> TraceArgs {
         }
     }
     TraceArgs { target, depth, reverts, expand, interactive }
+}
+
+/// Strip a single surrounding pair of double or single quotes from a CLI flag
+/// value (`--rec="hello world"` → `hello world`). No-op when not quoted.
+fn strip_quotes(s: &str) -> &str {
+    let s = s.trim();
+    if (s.starts_with('"') && s.ends_with('"') && s.len() >= 2)
+        || (s.starts_with('\'') && s.ends_with('\'') && s.len() >= 2)
+    {
+        &s[1..s.len() - 1]
+    } else {
+        s
+    }
 }
 
 fn normalize_severity(input: &str) -> Option<&'static str> {
