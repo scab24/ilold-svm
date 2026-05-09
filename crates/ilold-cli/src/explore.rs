@@ -2091,6 +2091,35 @@ fn print_solana_result(result: &SolanaCommandResult) {
                 }
             }
         }
+        SolanaCommandResult::CallFailed {
+            instruction,
+            logs_excerpt,
+            compute_units,
+            error,
+        } => {
+            // Failed Calls are NOT appended to the timeline (Solana mirrors
+            // Solidity's "session steps are valid entries" model). The
+            // auditor still sees full diagnostics here, and can record the
+            // attempt manually with `note "tried X, blocked"` or `finding`.
+            println!(
+                "  {} {}: {} {}",
+                c_danger("✗"),
+                c_danger("FAILED"),
+                c_accent(instruction),
+                c_muted(&format!("({} CU, not recorded)", compute_units)),
+            );
+            println!("    {} {}", c_danger("error:"), error);
+            for log in logs_excerpt {
+                if log.contains("AnchorError")
+                    || log.contains("failed:")
+                    || log.contains("panicked")
+                {
+                    println!("    {}", c_danger(log));
+                } else {
+                    println!("    {}", c_muted(log));
+                }
+            }
+        }
         SolanaCommandResult::StepRemoved { remaining } => {
             println!("  {} step undone ({} remaining)", c_ok("✓"), remaining);
         }

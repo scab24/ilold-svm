@@ -63,7 +63,7 @@ fn add_solana_step_runs_switch_power_against_real_program() {
         .expect("switch_power ix");
 
     let mut session = ExplorationSession::new("lever", "ilold");
-    let step = add_solana_step(
+    let outcome = add_solana_step(
         &mut session,
         &program,
         switch,
@@ -76,23 +76,16 @@ fn add_solana_step_runs_switch_power_against_real_program() {
     )
     .expect("add_solana_step");
 
-    assert_eq!(step.function, "switch_power");
-    let trace = step.runtime_trace.as_ref().expect("runtime_trace populated");
+    let step_index = outcome
+        .step_index
+        .expect("Call should succeed and produce a session step");
+    assert_eq!(session.steps[step_index].function, "switch_power");
     assert!(
-        trace.get("error").map(|v| v.is_null()).unwrap_or(true),
+        outcome.trace.error.is_none(),
         "transaction errored: {:?}",
-        trace.get("error")
+        outcome.trace.error,
     );
-    let logs = trace
-        .get("logs")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-    let joined = logs
-        .iter()
-        .filter_map(|v| v.as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
+    let joined = outcome.trace.logs.join("\n");
     assert!(
         joined.contains("pulling the power switch"),
         "expected lever log line, got:\n{joined}"

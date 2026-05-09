@@ -133,12 +133,23 @@ pub enum SolanaCommandResult {
         logs_excerpt: Vec<String>,
         account_diffs_count: usize,
         compute_units: u64,
-        /// VM-level error message when the Call failed (e.g. AnchorError) —
-        /// the step is still recorded so the auditor's attempted-attack trail
-        /// stays intact, but the field marks it as failed for every UI
-        /// surface (CLI prefix [FAILED], canvas red border, inspector badge).
+        /// Always None for StepAdded — kept for backwards-compat with clients
+        /// that read this field. Failed Calls now produce `CallFailed` so the
+        /// scenario timeline only contains transactions that actually mutated
+        /// state (Solidity-aligned model).
         #[serde(default)]
         error: Option<String>,
+    },
+    /// The VM rejected the Call (Anchor constraint, custom `require!`, etc.).
+    /// No step is appended to the session and no canvas broadcast is emitted
+    /// — the scenario timeline stays clean. The CLI prints the error + logs
+    /// inline so the auditor sees exactly what happened, and they can record
+    /// the attempt manually with `note` or `finding` if it is worth keeping.
+    CallFailed {
+        instruction: String,
+        logs_excerpt: Vec<String>,
+        compute_units: u64,
+        error: String,
     },
     StepRemoved {
         remaining: usize,

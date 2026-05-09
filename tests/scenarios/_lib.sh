@@ -39,9 +39,18 @@ step_failed() {
 }
 
 call_failed_in_logs() {
-  # $1 is the JSON response from a Call; returns 0 if logs show AnchorError.
-  echo "$1" | jq -r '.StepAdded.logs_excerpt[]? // empty' \
-    | grep -qE 'AnchorError|failed:|panicked'
+  # $1 is the JSON response from a Call. Solana now distinguishes
+  # CallFailed (VM rejected, no step recorded) from StepAdded (success).
+  # We accept either signal.
+  local key
+  key=$(echo "$1" | jq -r 'keys[0] // empty')
+  case "$key" in
+    CallFailed) return 0 ;;
+    *)
+      echo "$1" | jq -r '.StepAdded.logs_excerpt[]? // empty' \
+        | grep -qE 'AnchorError|failed:|panicked'
+      ;;
+  esac
 }
 
 setup_users() {

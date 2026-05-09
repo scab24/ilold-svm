@@ -280,7 +280,7 @@ pub fn execute_call(
         }
     }
 
-    if let Err(e) = add_solana_step(
+    let outcome = match add_solana_step(
         session,
         program,
         &ix,
@@ -291,45 +291,36 @@ pub fn execute_call(
         timestamp,
         Some(call_payload),
     ) {
-        return SolanaCommandResult::Error {
-            message: format!("{e:?}"),
-        };
-    }
+        Ok(o) => o,
+        Err(e) => {
+            return SolanaCommandResult::Error {
+                message: format!("{e:?}"),
+            }
+        }
+    };
 
-    let step_index = session.steps.len() - 1;
-    let step = session.steps.last().expect("step pushed");
-    let trace = step.runtime_trace.clone().unwrap_or(Value::Null);
-    let logs_excerpt: Vec<String> = trace
-        .get("logs")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .take(10)
-                .collect()
-        })
-        .unwrap_or_default();
-    let account_diffs_count = trace
-        .get("account_diffs")
-        .and_then(|v| v.as_array())
-        .map(|a| a.len())
-        .unwrap_or(0);
-    let compute_units = trace
-        .get("compute_units")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    let error = trace
-        .get("error")
-        .and_then(|v| v.as_str())
-        .map(String::from);
+    let trace = &outcome.trace;
+    let logs_excerpt: Vec<String> = trace.logs.iter().take(10).cloned().collect();
+    let compute_units = trace.compute_units;
 
-    SolanaCommandResult::StepAdded {
-        step_index,
-        instruction: step.function.clone(),
-        logs_excerpt,
-        account_diffs_count,
-        compute_units,
-        error,
+    match outcome.step_index {
+        Some(idx) => SolanaCommandResult::StepAdded {
+            step_index: idx,
+            instruction: ix.name.clone(),
+            logs_excerpt,
+            account_diffs_count: trace.account_diffs.len(),
+            compute_units,
+            error: None,
+        },
+        None => SolanaCommandResult::CallFailed {
+            instruction: ix.name.clone(),
+            logs_excerpt,
+            compute_units,
+            error: trace
+                .error
+                .clone()
+                .unwrap_or_else(|| "unknown VM error".to_string()),
+        },
     }
 }
 

@@ -15,9 +15,23 @@ use crate::error::SolanaError;
 use crate::execute::{build_instruction, build_transaction, VmHost};
 use crate::model::{InstructionDef, ProgramDef};
 
+/// Outcome of executing a Call against the VM.
+///
+/// `step_index = Some(N)` means the call succeeded and was appended to
+/// `session.steps[N]`. `step_index = None` means the VM rejected the call
+/// (Anchor constraint, custom `require!`, runtime panic) — we deliberately
+/// do NOT push a step in that case so the scenario timeline only contains
+/// runs that actually mutated state. Mirrors how Solidity's `c <fn>` only
+/// records valid entry points; the auditor still gets the full trace via
+/// the `trace` field for inspection.
+pub struct StepOutcome {
+    pub step_index: Option<usize>,
+    pub trace: RuntimeTrace,
+}
+
 #[allow(clippy::too_many_arguments)]
-pub fn add_solana_step<'a>(
-    session: &'a mut ExplorationSession,
+pub fn add_solana_step(
+    session: &mut ExplorationSession,
     program: &ProgramDef,
     ix: &InstructionDef,
     vm: &mut VmHost,
@@ -26,7 +40,7 @@ pub fn add_solana_step<'a>(
     extra_signers: &[&Keypair],
     timestamp: &str,
     call_payload: Option<Value>,
-) -> Result<&'a ExplorationStep, SolanaError> {
+) -> Result<StepOutcome, SolanaError> {
     let step_index = session.steps.len();
     let types = &program.types;
 
@@ -87,6 +101,14 @@ pub fn add_solana_step<'a>(
         ),
     };
 
+    // Failed Calls never reach the timeline: the auditor wanted to try the
+    // attack, the VM blocked it, and the canonical model is "session steps
+    // are real successful transactions". The full trace is still returned
+    // so the CLI can print logs / CU / error.
+    if runtime_trace.error.is_some() {
+        return Ok(StepOutcome { step_index: None, trace: runtime_trace });
+    }
+
     let trace_value = serde_json::to_value(&runtime_trace).ok();
 
     session.steps.push(ExplorationStep {
@@ -105,13 +127,12 @@ pub fn add_solana_step<'a>(
             timestamp: timestamp.into(),
         });
 
-    session
-        .steps
-        .last()
-        .ok_or_else(|| SolanaError::VmOperationFailed(
-            "step push succeeded but session.steps.last() is empty".into(),
-        ))
+    Ok(StepOutcome {
+        step_index: Some(step_index),
+        trace: runtime_trace,
+    })
 }
+
 
 fn compute_diffs(
     pre: &[(Address, Option<Account>)],

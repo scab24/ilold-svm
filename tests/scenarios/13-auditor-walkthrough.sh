@@ -16,25 +16,30 @@ for n in admin pool alice alice_stake bob bob_stake carol carol_stake dave dave_
 done
 echo "    PASS users created (10)"; PASS=$((PASS+1))
 
-# Helper: pretty-print a Call response in REPL style.
+# Helper: pretty-print a Call response in REPL style. After T-R48 a failed
+# Call returns CallFailed (no step recorded) instead of StepAdded.error.
 print_call() {
   local label="$1"; local resp="$2"
   local key=$(echo "$resp" | jq -r 'keys[0]')
-  if [ "$key" = "StepAdded" ]; then
-    local idx=$(echo "$resp" | jq -r '.StepAdded.step_index')
-    local ix=$(echo "$resp" | jq -r '.StepAdded.instruction')
-    local cu=$(echo "$resp" | jq -r '.StepAdded.compute_units')
-    local diffs=$(echo "$resp" | jq -r '.StepAdded.account_diffs_count')
-    local err=$(echo "$resp" | jq -r '.StepAdded.error // empty')
-    if [ -n "$err" ]; then
-      echo "      ✗ step $idx [FAILED]: $ix ($cu CU, $diffs diffs)  ← $label"
+  case "$key" in
+    StepAdded)
+      local idx=$(echo "$resp" | jq -r '.StepAdded.step_index')
+      local ix=$(echo "$resp" | jq -r '.StepAdded.instruction')
+      local cu=$(echo "$resp" | jq -r '.StepAdded.compute_units')
+      local diffs=$(echo "$resp" | jq -r '.StepAdded.account_diffs_count')
+      echo "      ✓ step $idx [ok]:    $ix ($cu CU, $diffs diffs)  ← $label"
+      ;;
+    CallFailed)
+      local ix=$(echo "$resp" | jq -r '.CallFailed.instruction')
+      local cu=$(echo "$resp" | jq -r '.CallFailed.compute_units')
+      local err=$(echo "$resp" | jq -r '.CallFailed.error')
+      echo "      ✗ FAILED (not recorded): $ix ($cu CU)  ← $label"
       echo "        error: $err"
-    else
-      echo "      ✓ step $idx [ok]:     $ix ($cu CU, $diffs diffs)  ← $label"
-    fi
-  else
-    echo "      ✗ Error response for $label: $(echo "$resp" | jq -c '.')"
-  fi
+      ;;
+    *)
+      echo "      ✗ Error response for $label: $(echo "$resp" | jq -c '.')"
+      ;;
+  esac
 }
 
 # ── Path 1 — happy path baseline ───────────────────────────────────────────
@@ -161,15 +166,24 @@ HAS_DECODED=$(echo "$STEP1" | jq -r '.StepDetail.diff_summary[]?.decoded_after |
   && { echo "    PASS step diff carries decoded_after"; PASS=$((PASS+1)); } \
   || { echo "    FAIL step diff missing decoded_after"; FAIL=$((FAIL+1)); }
 
-# ── Failed-step error field on the response (T-R47 fix) ────────────────────
+# ── Failed call returns CallFailed and does NOT pollute the timeline ───────
 echo
-echo "  -- failed Call carries .StepAdded.error (T-R47 fix) --"
+echo "  -- failed Call returns CallFailed, no step appended (T-R48 fix) --"
 post '{"contract":"staking","command":"Clear"}' >/dev/null
 post '{"contract":"staking","command":{"Call":{"ix":"initialize_pool","args":{"reward_rate":10},"accounts":{"pool":"pool","admin":"admin"},"signers":["pool","admin"]}}}' >/dev/null
+LEN_BEFORE=$(post '{"contract":"staking","command":"Session"}' | jq -r '.SessionView.steps | length')
 FAIL_RESP=$(post '{"contract":"staking","command":{"Call":{"ix":"initialize_pool","args":{"reward_rate":999},"accounts":{"pool":"pool","admin":"admin"},"signers":["pool","admin"]}}}')
-ERR=$(echo "$FAIL_RESP" | jq -r '.StepAdded.error // empty')
+KEY=$(echo "$FAIL_RESP" | jq -r 'keys[0]')
+LEN_AFTER=$(post '{"contract":"staking","command":"Session"}' | jq -r '.SessionView.steps | length')
+[ "$KEY" = "CallFailed" ] \
+  && { echo "    PASS response variant is CallFailed"; PASS=$((PASS+1)); } \
+  || { echo "    FAIL expected CallFailed got $KEY"; FAIL=$((FAIL+1)); }
+[ "$LEN_BEFORE" = "$LEN_AFTER" ] \
+  && { echo "    PASS session length unchanged ($LEN_BEFORE → $LEN_AFTER)"; PASS=$((PASS+1)); } \
+  || { echo "    FAIL failed call polluted the timeline ($LEN_BEFORE → $LEN_AFTER)"; FAIL=$((FAIL+1)); }
+ERR=$(echo "$FAIL_RESP" | jq -r '.CallFailed.error // empty')
 [ -n "$ERR" ] \
-  && { echo "    PASS failed call carries error: $(echo "$ERR" | head -c 60)..."; PASS=$((PASS+1)); } \
-  || { echo "    FAIL failed call did not carry .StepAdded.error"; FAIL=$((FAIL+1)); }
+  && { echo "    PASS error message present: $(echo "$ERR" | head -c 60)..."; PASS=$((PASS+1)); } \
+  || { echo "    FAIL CallFailed.error missing"; FAIL=$((FAIL+1)); }
 
 scenario_summary "$NAME"
