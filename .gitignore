@@ -13,3 +13,6 @@ Thumbs.db
 
 # Environment
 .env
+
+# Internal SDD working notes
+/docs/sdd/
