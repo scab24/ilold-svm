@@ -1466,23 +1466,61 @@ fn handle_solana_input(
         }
         "save" => {
             if arg.is_empty() {
-                println!("  Usage: save <name>");
+                println!("  Usage: save <name> [--with-keypairs]");
                 return InputResult::Continue;
             }
-            let body = serde_json::json!({"contract": contract, "command": "SaveSession"});
+            // SDD-03: parse the optional --with-keypairs flag. The flag may
+            // come before or after <name>; everything else is rejected so a
+            // typo never silently saves without secrets.
+            let mut with_keypairs = false;
+            let mut name: Option<&str> = None;
+            for tok in arg.split_whitespace() {
+                if tok == "--with-keypairs" {
+                    with_keypairs = true;
+                } else if tok.starts_with("--") {
+                    println!(
+                        "  Unknown flag: {tok}. Use --with-keypairs (or no flags)."
+                    );
+                    return InputResult::Continue;
+                } else if name.is_none() {
+                    name = Some(tok);
+                } else {
+                    println!("  Usage: save <name> [--with-keypairs]");
+                    return InputResult::Continue;
+                }
+            }
+            let name = match name {
+                Some(n) => n,
+                None => {
+                    println!("  Usage: save <name> [--with-keypairs]");
+                    return InputResult::Continue;
+                }
+            };
+            let body = serde_json::json!({
+                "contract": contract,
+                "command": {"SaveSession": {"with_keypairs": with_keypairs}},
+            });
             match send_solana_command(handle, client, base_url, &body) {
                 Ok(SolanaCommandResult::SessionSaved { json }) => {
                     let dir = dirs::home_dir()
                         .map(|h| h.join(".ilold").join("sessions"))
                         .unwrap_or_else(|| std::path::PathBuf::from(".ilold/sessions"));
                     std::fs::create_dir_all(&dir).ok();
-                    let path = dir.join(format!("{}.json", arg));
+                    let path = dir.join(format!("{}.json", name));
                     match std::fs::write(&path, &json) {
-                        Ok(_) => println!(
-                            "  {} Saved to {}",
-                            c_ok("✓"),
-                            c_accent(&path.display().to_string())
-                        ),
+                        Ok(_) => {
+                            println!(
+                                "  {} Saved to {}",
+                                c_ok("✓"),
+                                c_accent(&path.display().to_string())
+                            );
+                            if with_keypairs {
+                                eprintln!(
+                                    "  {} bundle includes plaintext test keypairs — do NOT commit it",
+                                    c_warn("⚠ "),
+                                );
+                            }
+                        }
                         Err(e) => eprintln!("  {} Write failed: {}", c_danger("✗"), e),
                     }
                 }
@@ -1512,6 +1550,17 @@ fn handle_solana_input(
                     return InputResult::Continue;
                 }
             };
+            // SDD-03: warn the auditor at load time when the bundle carries
+            // plaintext keypairs, so accidental git commits get a visible
+            // reminder. Cheap detection — we already have the JSON in memory.
+            if json.contains("\"keypairs_present\": true")
+                || json.contains("\"keypairs_present\":true")
+            {
+                eprintln!(
+                    "  {} bundle contains plaintext test keypairs — do NOT commit *.json files like this",
+                    c_warn("⚠ "),
+                );
+            }
             let body = serde_json::json!({
                 "contract": contract,
                 "command": {"LoadSession": {"json": json}}

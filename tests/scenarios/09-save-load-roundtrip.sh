@@ -11,7 +11,7 @@ expect_ok_call "init"            "$(init_pool)"
 expect_ok_call "alice stake 888" "$(stake_as alice alice_stake 888)"
 expect_eq "pre-save=888" "888" "$(pool_total_staked)"
 
-SAVED=$(post '{"contract":"staking","command":"SaveSession"}' | jq -r '.SessionSaved.json')
+SAVED=$(post '{"contract":"staking","command":{"SaveSession":{}}}' | jq -r '.SessionSaved.json')
 post '{"contract":"staking","command":"Clear"}' >/dev/null
 # After Clear, the VM rewinds to pre-step-0 — pool account doesn't exist yet,
 # so the State view either omits it (empty string) or jq returns "null".

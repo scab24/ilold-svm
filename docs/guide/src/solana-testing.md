@@ -82,7 +82,7 @@ Type `?` for the help. Two-terminal flows (one for `serve`, one for
 | `status <ix> <state>` | Mark instruction reviewed / suspicious / etc. |
 | `findings` / `fl` | List recorded findings. |
 | `export [--auditor="..."] [--version="..."] [--date=YYYY-MM-DD]` / `ex` | Markdown report aggregating audit metadata, severity matrix, methodology, findings (with step index + recommendation when set) and per-scenario steps from ALL scenarios. |
-| `save <name>` / `load <name>` | Persist / restore a session JSON in `~/.ilold/sessions/`. |
+| `save <name> [--with-keypairs]` / `load <name>` | Persist / restore a session JSON in `~/.ilold/sessions/`. The optional `--with-keypairs` flag embeds the per-scenario user keypairs in plaintext so the next `load` reproduces the exact same pubkeys (and any PDAs derived from them). Default OFF; the CLI prints a warning at save and load when the bundle carries secrets. |
 
 ## 4. Differences vs Solidity
 
@@ -111,7 +111,7 @@ implemented.
 bash tests/scenarios/run.sh
 ```
 
-12 scenarios under `tests/scenarios/` (11 bash + 1 optional python WebSocket
+13 scenarios under `tests/scenarios/` (12 bash + 1 optional python WebSocket
 test that runs when `python3` and `pip install websockets` are available).
 Each spawns a fresh `ilold serve`
 on port 8081 (override with `ILOLD_TEST_PORT`) and aggregates pass/fail.
@@ -154,7 +154,7 @@ ilold[staking → … → stake]> timeline <pool-pubkey>
 ilold[staking → … → stake]> finding High "missing reentrancy guard" --rec="Apply checks-effects-interactions"
 ilold[staking → … → stake]> findings
 ilold[staking → … → stake]> export --auditor="Demo Auditor" --version="v0.1.0" --date=2026-05-09
-ilold[staking → … → stake]> save my-audit
+ilold[staking → … → stake]> save my-audit --with-keypairs
 ilold[staking → … → stake]> clear
 ilold[staking]> load my-audit
 ```
@@ -184,10 +184,13 @@ To stress the UI specifically (race fix in audit round 10):
 
 - `slice`, `trace`, `sequence` analysis for Solana require a handler
   AST and are deferred (Phase 2 in the SDD roadmap).
-- `Save → Load` regenerates user keypairs on the next session, so
-  programs that hash signer pubkeys into PDAs will see different
-  derived addresses after `load`. Tracked under
-  `docs/internal/sdd-roadmap.md` — topic 3.
+- By default `Save → Load` regenerates user keypairs, so PDAs that
+  depend on a signer pubkey come back at different addresses. Pass
+  `--with-keypairs` to `save` to opt into deterministic reload — the
+  resulting JSON embeds the test keypairs in plaintext, so do NOT
+  commit those bundles to public repositories. The CLI prints a
+  reminder both when saving and when loading a bundle with the
+  `keypairs_present: true` header.
 - `time-warp` advances `unix_timestamp` linearly; negative deltas do
   not reverse `slot`.
 - `who` uses snake_case → PascalCase heuristic to map account fields

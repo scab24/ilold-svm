@@ -56,7 +56,17 @@ pub enum SolanaCommand {
         ix: String,
         status: ReviewStatus,
     },
-    SaveSession,
+    /// Persist the active scenario store. Backwards compatible with the legacy
+    /// unit form `"SaveSession"` (no embedded keypairs).
+    #[serde(alias = "SaveSession")]
+    SaveSession {
+        /// SDD-03: when true, the resulting JSON also embeds the per-scenario
+        /// user keypairs in plaintext so a future LoadSession reproduces the
+        /// same pubkeys (and any PDAs derived from them). Default false keeps
+        /// the original "save the timeline shape" behaviour.
+        #[serde(default)]
+        with_keypairs: bool,
+    },
     LoadSession {
         json: String,
     },

@@ -119,15 +119,37 @@ impl ScenarioStore {
     }
 
     /// Serialize the entire store as v2 JSON (`{ version: 2, contract, active,
-    /// scenarios, order }`). All scenarios + their `forked_from` chains travel
-    /// together so a load reconstructs the full state.
-    pub fn save_to_json(&self) -> Result<String, String> {
+    /// scenarios, order, [keypairs_present, keypairs] }`). When `opts.keypairs`
+    /// is `Some`, the file embeds the per-scenario user keypairs as 64-byte
+    /// arrays so a future load can rehydrate the same identities (PDAs and
+    /// signatures match across save/load). The boolean header
+    /// `keypairs_present` lets a reader detect a bundle with secrets without
+    /// parsing the body — see SDD-03 design.md threat-model section.
+    pub fn save_to_json(&self, opts: SaveOpts<'_>) -> Result<String, String> {
+        let (keypairs_present, keypairs) = match opts.keypairs {
+            Some(map) => {
+                let serialised: HashMap<String, HashMap<String, Vec<u8>>> = map
+                    .iter()
+                    .map(|(scn, users)| {
+                        let inner: HashMap<String, Vec<u8>> = users
+                            .iter()
+                            .map(|(name, kp)| (name.clone(), kp.to_bytes().to_vec()))
+                            .collect();
+                        (scn.clone(), inner)
+                    })
+                    .collect();
+                (true, Some(serialised))
+            }
+            None => (false, None),
+        };
         let file = ScenarioStoreFile {
             version: 2,
             contract: self.contract.clone(),
             active: self.active.clone(),
             scenarios: self.sessions.clone(),
             order: self.order.clone(),
+            keypairs_present,
+            keypairs,
         };
         serde_json::to_string_pretty(&file).map_err(|e| format!("Serialize failed: {e}"))
     }
@@ -136,21 +158,32 @@ impl ScenarioStore {
     /// falls back to v1 (bare `ExplorationSession`) and wraps it as a single
     /// `main` scenario. Any structural anomaly (active not in scenarios,
     /// empty order) is repaired so the returned store is always valid.
-    pub fn load_from_json(json: &str) -> Result<Self, String> {
+    pub fn load_from_json(json: &str) -> Result<(Self, Option<KeypairBundle>), String> {
         match serde_json::from_str::<ScenarioStoreFile>(json) {
-            Ok(file) => Self::from_file(file),
+            Ok(file) => {
+                let raw_kps = file.keypairs.clone();
+                let store = Self::from_file(file)?;
+                let bundle = match raw_kps {
+                    Some(map) => Some(decode_keypair_bundle(map)?),
+                    None => None,
+                };
+                Ok((store, bundle))
+            }
             Err(_) => match serde_json::from_str::<ExplorationSession>(json) {
                 Ok(legacy) => {
                     let contract = legacy.contract.clone();
                     let mut sessions = HashMap::new();
                     sessions.insert(DEFAULT_SCENARIO.to_string(), legacy);
-                    Ok(Self {
-                        version: 2,
-                        contract,
-                        active: DEFAULT_SCENARIO.to_string(),
-                        sessions,
-                        order: vec![DEFAULT_SCENARIO.to_string()],
-                    })
+                    Ok((
+                        Self {
+                            version: 2,
+                            contract,
+                            active: DEFAULT_SCENARIO.to_string(),
+                            sessions,
+                            order: vec![DEFAULT_SCENARIO.to_string()],
+                        },
+                        None,
+                    ))
                 }
                 Err(e) => Err(format!("Deserialize failed: {e}")),
             },
@@ -193,6 +226,9 @@ impl ScenarioStore {
 /// type to keep private fields private and allow the wire format to evolve
 /// independently. v1 saves are bare `ExplorationSession` JSON — they're
 /// detected by the failed parse + retry in `ScenarioStore::load_from_json`.
+///
+/// SDD-03 added the optional `keypairs_present` / `keypairs` pair, both
+/// `#[serde(default)]` so older v2 saves keep loading.
 #[derive(Serialize, Deserialize)]
 struct ScenarioStoreFile {
     version: u32,
@@ -200,6 +236,51 @@ struct ScenarioStoreFile {
     active: String,
     scenarios: HashMap<String, ExplorationSession>,
     order: Vec<String>,
+    #[serde(default)]
+    keypairs_present: bool,
+    #[serde(default)]
+    keypairs: Option<HashMap<String, HashMap<String, Vec<u8>>>>,
+}
+
+/// Bundle of per-scenario, per-user-name keypairs surfaced by
+/// `ScenarioStore::load_from_json`. Solana's LoadSession dispatcher uses it
+/// to rehydrate `solana.users` before the replay loop runs.
+pub type KeypairBundle = HashMap<String, HashMap<String, Keypair>>;
+
+/// Options for `ScenarioStore::save_to_json`. Today only `keypairs` is
+/// configurable; future work (encrypted bundle) will extend this struct
+/// without breaking call sites.
+pub struct SaveOpts<'a> {
+    pub keypairs: Option<&'a HashMap<String, HashMap<String, Keypair>>>,
+}
+
+impl<'a> SaveOpts<'a> {
+    pub fn none() -> Self {
+        Self { keypairs: None }
+    }
+}
+
+fn decode_keypair_bundle(
+    raw: HashMap<String, HashMap<String, Vec<u8>>>,
+) -> Result<KeypairBundle, String> {
+    let mut out: KeypairBundle = HashMap::new();
+    for (scn, users) in raw {
+        let mut inner: HashMap<String, Keypair> = HashMap::new();
+        for (name, bytes) in users {
+            if bytes.len() != 64 {
+                return Err(format!(
+                    "keypair for {scn}/{name} must be 64 bytes, got {}",
+                    bytes.len()
+                ));
+            }
+            let kp = Keypair::try_from(bytes.as_slice()).map_err(|_| {
+                format!("invalid keypair bytes for {scn}/{name} (ed25519 decode failed)")
+            })?;
+            inner.insert(name, kp);
+        }
+        out.insert(scn, inner);
+    }
+    Ok(out)
 }
 
 pub struct SolidityState {

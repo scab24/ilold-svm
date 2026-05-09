@@ -283,7 +283,9 @@ pub async fn handle_command(
         }
         SessionCommand::SaveSession => {
             let active_before = scenarios_guard.active().to_string();
-            let result = match scenarios_guard.save_to_json() {
+            // Solidity flow does not persist keypairs (no LiteSVM users to
+            // reproduce); SDD-03 keypairs feature is Solana-only.
+            let result = match scenarios_guard.save_to_json(crate::state::SaveOpts::none()) {
                 Ok(json) => CommandResult::SessionSaved { json },
                 Err(message) => CommandResult::Error { message },
             };
@@ -294,7 +296,7 @@ pub async fn handle_command(
         }
         SessionCommand::LoadSession { json } => {
             let result = match ScenarioStore::load_from_json(&json) {
-                Ok(loaded) => {
+                Ok((loaded, _kp_bundle)) => {
                     let contract = loaded.contract.clone();
                     let step_names: Vec<String> = loaded
                         .active_session()
@@ -373,9 +375,36 @@ async fn handle_solana_command(
         return Ok(Json(serde_json::to_value(result).unwrap_or(Value::Null)));
     }
 
-    if matches!(command, SolanaCommand::SaveSession) {
+    if let SolanaCommand::SaveSession { with_keypairs } = &command {
         let scenarios = state.scenarios.read().unwrap();
-        let result = match scenarios.save_to_json() {
+        // When `with_keypairs` is set, snapshot the in-memory user keypairs
+        // (cloned via `insecure_clone` like the Fork path does — same
+        // semantics, no key derivation) and pass them to save_to_json so
+        // the resulting JSON can be replayed deterministically. Default
+        // remains the lighter "shape only" save.
+        let users_snapshot = if *with_keypairs {
+            let users_lock = solana.users.read().unwrap();
+            let cloned: std::collections::HashMap<
+                String,
+                std::collections::HashMap<String, Keypair>,
+            > = users_lock
+                .iter()
+                .map(|(scn, map)| {
+                    let inner: std::collections::HashMap<String, Keypair> = map
+                        .iter()
+                        .map(|(name, kp)| (name.clone(), kp.insecure_clone()))
+                        .collect();
+                    (scn.clone(), inner)
+                })
+                .collect();
+            Some(cloned)
+        } else {
+            None
+        };
+        let opts = crate::state::SaveOpts {
+            keypairs: users_snapshot.as_ref(),
+        };
+        let result = match scenarios.save_to_json(opts) {
             Ok(json) => SolanaCommandResult::SessionSaved { json },
             Err(message) => SolanaCommandResult::Error { message },
         };
@@ -387,7 +416,7 @@ async fn handle_solana_command(
         let mut users_lock = solana.users.write().unwrap();
         let mut snapshots = solana.step_snapshots.write().unwrap();
         let result = match ScenarioStore::load_from_json(&json) {
-            Ok(loaded) => {
+            Ok((loaded, kp_bundle)) => {
                 let prog = loaded.contract.clone();
                 let step_names: Vec<String> = loaded
                     .active_session()
@@ -400,6 +429,19 @@ async fn handle_solana_command(
                 // Drop existing VMs/snapshot stacks; we rebuild from scratch.
                 vms.clear();
                 snapshots.clear();
+
+                // SDD-03: rehydrate the per-scenario users map from the saved
+                // keypair bundle BEFORE replay runs, so that signers and PDAs
+                // come back identical. When the bundle is absent (legacy save
+                // without `--with-keypairs`) the existing `Keypair::new` path
+                // inside replay still works — pubkeys regenerate, which is
+                // the long-standing behaviour.
+                if let Some(bundle) = kp_bundle {
+                    users_lock.clear();
+                    for (scn, kps) in bundle {
+                        users_lock.insert(scn, kps);
+                    }
+                }
 
                 // Rebuild a VM per scenario by replaying each step from its
                 // saved call_payload. Steps without payload (legacy saves)
@@ -627,7 +669,7 @@ async fn handle_solana_command(
         SolanaCommand::Timeline { pubkey } => {
             execute_timeline(session, &program, &pubkey, &active_scenario)
         }
-        SolanaCommand::SaveSession
+        SolanaCommand::SaveSession { .. }
         | SolanaCommand::LoadSession { .. }
         | SolanaCommand::Scenario { .. } => unreachable!("handled above"),
     };
