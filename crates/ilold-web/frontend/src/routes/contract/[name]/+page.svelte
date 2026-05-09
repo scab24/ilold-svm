@@ -849,9 +849,19 @@
     await refreshSolanaUsers();
   }
 
+  // Guard against navigation race: an async onMount that awaits multiple
+  // network calls can complete AFTER the user navigates to a different
+  // contract, overwriting the new contract's state with the old one's
+  // data. mountToken is captured before the first await; if the user
+  // navigates we bump cancel via onDestroy and the guard short-circuits.
+  let mountCancelled = $state(false);
+  onDestroy(() => { mountCancelled = true; });
+
   onMount(async () => {
     const contractName = page.params.name;
     if (!contractName) return;
+    const expected = contractName;
+    const stillFresh = () => !mountCancelled && page.params.name === expected;
     // Graph store is global — stale nodes from a previous contract must be
     // wiped or they'd pollute this contract's canvas (and leave the sidebar
     // out of sync because local Sets re-init empty on re-mount).
@@ -864,12 +874,15 @@
     setSearchContext(contractName);
     try {
       const pm = await getProjectMap();
+      if (!stillFresh()) return;
       kind = pm.kind === 'solana' ? 'solana' : 'solidity';
       if (kind === 'solana') {
         try {
-          solanaProgram = await getProgram(contractName);
+          const prog = await getProgram(contractName);
+          if (!stillFresh()) return;
+          solanaProgram = prog;
         } catch {
-          error = `Program "${contractName}" not found`;
+          if (stillFresh()) error = `Program "${contractName}" not found`;
           return;
         }
         projectMap = [];
@@ -877,18 +890,27 @@
         return;
       }
       projectMap = pm.contracts ?? [];
-      contract = await getContract(contractName);
+      const ctr = await getContract(contractName);
+      if (!stillFresh()) return;
+      contract = ctr;
       const callgraphData = await getCallGraph(contractName);
+      if (!stillFresh()) return;
       callgraphRaw = callgraphData;
       // Sequences/analysis are Solidity-only; expected to 400 for Solana.
-      try { seqTree = await getSequences(contractName); } catch (e) {
-        if (kind !== 'solana') console.warn('getSequences failed:', e);
+      try {
+        const tree = await getSequences(contractName);
+        if (stillFresh()) seqTree = tree;
+      } catch (e) {
+        if (stillFresh() && kind !== 'solana') console.warn('getSequences failed:', e);
       }
-      try { seqAnalysis = await getSequenceAnalysis(contractName); } catch (e) {
-        if (kind !== 'solana') console.warn('getSequenceAnalysis failed:', e);
+      try {
+        const analysis = await getSequenceAnalysis(contractName);
+        if (stillFresh()) seqAnalysis = analysis;
+      } catch (e) {
+        if (stillFresh() && kind !== 'solana') console.warn('getSequenceAnalysis failed:', e);
       }
     } catch (e) {
-      error = `Contract "${contractName}" not found`;
+      if (stillFresh()) error = `Contract "${contractName}" not found`;
     }
   });
 
@@ -1884,7 +1906,7 @@
       />
     {/if}
 
-    <Legend {mode} />
+    <Legend {mode} {kind} />
   {/if}
 </div>
 
