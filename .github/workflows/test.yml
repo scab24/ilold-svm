@@ -1,0 +1,65 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    paths:
+      - 'crates/**'
+      - 'tests/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/**'
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  cargo-tests:
+    name: cargo test --workspace --release
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cargo-tests
+
+      - name: Build workspace (release)
+        run: cargo build --workspace --release
+
+      - name: Run unit + integration tests
+        run: cargo test --workspace --release
+
+  scenario-suite:
+    name: tests/scenarios/run.sh
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: scenario-suite
+
+      - name: Build ilold CLI binary
+        run: cargo build --release --bin ilold -p ilold-cli
+
+      - name: Install python websockets (optional)
+        run: |
+          python3 -m pip install --user websockets || \
+            echo "websockets unavailable — runner will skip ws-broadcast.py"
+
+      - name: Run scenario suite
+        run: bash tests/scenarios/run.sh
