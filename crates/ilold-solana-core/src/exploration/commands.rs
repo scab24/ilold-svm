@@ -61,6 +61,17 @@ pub enum SolanaCommand {
     Scenario {
         sub: ScenarioAction,
     },
+    Step {
+        index: usize,
+    },
+    Findings,
+    Export,
+    Who {
+        account_type: String,
+    },
+    Timeline {
+        pubkey: String,
+    },
 }
 
 fn default_initial_lamports() -> u64 {
@@ -182,24 +193,94 @@ pub enum SolanaCommandResult {
     ScenarioDeleted {
         name: String,
     },
+    StepDetail {
+        step_index: usize,
+        instruction: String,
+        runtime_trace: Option<Value>,
+        diff_summary: Vec<StepDiffSummary>,
+    },
+    FindingsList {
+        items: Vec<FindingSummary>,
+    },
+    Exported {
+        markdown: String,
+        bytes: usize,
+    },
+    WhoList {
+        account_type: String,
+        instructions: Vec<WhoEntry>,
+    },
+    TimelineView {
+        pubkey: String,
+        label: Option<String>,
+        entries: Vec<TimelineEntry>,
+    },
     Error {
         message: String,
     },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StepDiffSummary {
+    pub address: String,
+    pub name: Option<String>,
+    pub lamports_delta: i128,
+    pub data_changed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FindingSummary {
+    pub id: String,
+    pub severity: String,
+    pub title: String,
+    pub description: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WhoEntry {
+    pub instruction: String,
+    pub account_field: String,
+    pub writable: bool,
+    pub signer: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimelineEntry {
+    pub step_index: usize,
+    pub instruction: String,
+    pub scenario: String,
+    pub lamports_delta: i128,
+    pub data_changed: bool,
+    pub before_decoded: Option<Value>,
+    pub after_decoded: Option<Value>,
 }
 
 pub fn canvas_patch_from_solana(
     result: &SolanaCommandResult,
     active_scenario: &str,
 ) -> Option<CanvasPatch> {
+    use ilold_session_core::exploration::canvas::RuntimeMeta;
     match result {
-        SolanaCommandResult::StepAdded { instruction, step_index, .. } => {
-            Some(CanvasPatch::AddNode {
-                scenario: active_scenario.to_string(),
-                function: instruction.clone(),
-                access: AccessLevel::Public,
-                step_index: *step_index,
-            })
-        }
+        SolanaCommandResult::StepAdded {
+            instruction,
+            step_index,
+            logs_excerpt,
+            account_diffs_count,
+            compute_units,
+        } => Some(CanvasPatch::AddNode {
+            scenario: active_scenario.to_string(),
+            function: instruction.clone(),
+            access: AccessLevel::Public,
+            step_index: *step_index,
+            runtime: Some(RuntimeMeta {
+                compute_units: *compute_units,
+                diffs_count: *account_diffs_count,
+                logs_excerpt: logs_excerpt.clone(),
+                error: None,
+                trace: None,
+            }),
+        }),
         SolanaCommandResult::StepRemoved { .. } => Some(CanvasPatch::RemoveLastNode {
             scenario: active_scenario.to_string(),
         }),

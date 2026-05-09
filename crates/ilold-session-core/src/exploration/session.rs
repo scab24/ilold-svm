@@ -30,6 +30,12 @@ pub struct ExplorationStep {
     pub trace_config: TraceConfig,
     #[serde(default)]
     pub runtime_trace: Option<serde_json::Value>,
+    /// Solana-only: the original Call inputs (args, accounts, signer names) so
+    /// LoadSession can replay the step against a fresh VM and reconstruct the
+    /// post-step accounts state. None for Solidity (no replay) or for steps
+    /// that came from an older save without this field.
+    #[serde(default)]
+    pub call_payload: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -169,6 +175,7 @@ mod tests {
             flow_tree: None,
             trace_config: TraceConfig::default(),
             runtime_trace: None,
+            call_payload: None,
         });
         s.steps.push(ExplorationStep {
             function: "withdraw".into(),
@@ -176,6 +183,7 @@ mod tests {
             flow_tree: None,
             trace_config: TraceConfig::default(),
             runtime_trace: None,
+            call_payload: None,
         });
         assert_eq!(s.current_sequence(), vec!["deposit", "withdraw"]);
         s.clear();
@@ -210,6 +218,7 @@ mod tests {
             flow_tree: None,
             trace_config: TraceConfig::default(),
             runtime_trace: None,
+            call_payload: None,
         });
         s.steps.push(ExplorationStep {
             function: "withdraw".into(),
@@ -227,6 +236,7 @@ mod tests {
             flow_tree: None,
             trace_config: TraceConfig::default(),
             runtime_trace: None,
+            call_payload: None,
         });
 
         let summaries = s.variable_summary();

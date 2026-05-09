@@ -21,6 +21,7 @@ use ilold_core::slicing::{build_slice_result, SliceDirection, SliceResult};
 use ilold_session_core::exploration::scenario::ScenarioAction as SharedScenarioAction;
 use ilold_solana_core::exploration::{
     canvas_patch_from_solana, execute_airdrop, execute_back, execute_call, execute_clear,
+    execute_export, execute_findings_list, execute_step, execute_timeline, execute_who,
     execute_finding, execute_funcs, execute_inspect, execute_note, execute_pda, execute_session,
     execute_state, execute_status, execute_time_warp, execute_users, execute_users_new,
     SolanaCommand, SolanaCommandResult,
@@ -382,6 +383,9 @@ async fn handle_solana_command(
     }
     if let SolanaCommand::LoadSession { json } = command {
         let mut scenarios = state.scenarios.write().unwrap();
+        let mut vms = solana.vms.write().unwrap();
+        let mut users_lock = solana.users.write().unwrap();
+        let mut snapshots = solana.step_snapshots.write().unwrap();
         let result = match ScenarioStore::load_from_json(&json) {
             Ok(loaded) => {
                 let prog = loaded.contract.clone();
@@ -392,9 +396,114 @@ async fn handle_solana_command(
                     .map(|s| s.function.clone())
                     .collect();
                 *scenarios = loaded;
-                SolanaCommandResult::SessionLoaded {
-                    program: prog,
-                    steps: step_names,
+
+                // Drop existing VMs/snapshot stacks; we rebuild from scratch.
+                vms.clear();
+                snapshots.clear();
+
+                // Rebuild a VM per scenario by replaying each step from its
+                // saved call_payload. Steps without payload (legacy saves)
+                // can't replay, so we still boot the VM but leave its state
+                // un-mutated; the timeline remains visible but inspect/state
+                // will reflect genesis. This is the only feasible compromise
+                // without breaking older snapshots.
+                let mut replay_errors: Vec<String> = Vec::new();
+                let scenario_names: Vec<String> = scenarios.names().to_vec();
+                for scn_name in &scenario_names {
+                    let mut vm = match ilold_solana_core::execute::VmHost::boot(
+                        solana.program_artifacts.clone(),
+                    ) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            replay_errors.push(format!("boot {scn_name}: {e:?}"));
+                            continue;
+                        }
+                    };
+                    let scn_users = users_lock
+                        .entry(scn_name.clone())
+                        .or_insert_with(std::collections::HashMap::new);
+                    // Re-airdrop existing users into the freshly booted VM so
+                    // replayed Calls can pay for `init` constraints.
+                    const REPLAY_LAMPORTS: u64 = 10_000_000_000;
+                    for kp in scn_users.values() {
+                        use solana_keypair::Signer;
+                        let _ = vm.airdrop(kp.pubkey(), REPLAY_LAMPORTS);
+                    }
+                    let mut stack: Vec<ilold_solana_core::execute::StateSnapshot> = Vec::new();
+                    let session = match scenarios.get_mut(scn_name) {
+                        Some(s) => s,
+                        None => continue,
+                    };
+                    let steps_clone = session.steps.clone();
+                    for (idx, step) in steps_clone.iter().enumerate() {
+                        let payload = match &step.call_payload {
+                            Some(p) => p,
+                            None => continue,
+                        };
+                        let ix_name = payload.get("ix").and_then(|v| v.as_str()).unwrap_or("");
+                        let args = payload.get("args").cloned().unwrap_or(Value::Null);
+                        let accounts: std::collections::HashMap<String, String> = payload
+                            .get("accounts")
+                            .and_then(|v| v.as_object())
+                            .map(|m| {
+                                m.iter()
+                                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        let signers: Vec<String> = payload
+                            .get("signers")
+                            .and_then(|v| v.as_array())
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(|v| v.as_str().map(String::from))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        let pre = vm.snapshot_state();
+                        // We replay against the current session in scn_users.
+                        // Calls that reference users not yet recreated will
+                        // fail; we record the error but continue so the rest
+                        // of the timeline still loads.
+                        let res = ilold_solana_core::exploration::execute::execute_call(
+                            &program,
+                            ix_name,
+                            args,
+                            accounts,
+                            signers,
+                            scn_users,
+                            session,
+                            &mut vm,
+                            "load-replay",
+                        );
+                        if matches!(res, ilold_solana_core::exploration::SolanaCommandResult::StepAdded { .. }) {
+                            stack.push(pre);
+                            // execute_call appended a NEW step at the end. The
+                            // replayed timeline now has duplicate entries, so
+                            // we pop the freshly-added step and keep the saved
+                            // one (preserves runtime_trace from original run).
+                            session.steps.pop();
+                        } else if let ilold_solana_core::exploration::SolanaCommandResult::Error { message } = res {
+                            replay_errors.push(format!("{scn_name}#{idx}: {message}"));
+                        }
+                    }
+                    vms.insert(scn_name.clone(), vm);
+                    snapshots.insert(scn_name.clone(), stack);
+                }
+
+                if replay_errors.is_empty() {
+                    SolanaCommandResult::SessionLoaded {
+                        program: prog,
+                        steps: step_names,
+                    }
+                } else {
+                    SolanaCommandResult::Error {
+                        message: format!(
+                            "loaded session but {} step(s) failed to replay: {}",
+                            replay_errors.len(),
+                            replay_errors.join("; ")
+                        ),
+                    }
                 }
             }
             Err(message) => SolanaCommandResult::Error { message },
@@ -409,6 +518,7 @@ async fn handle_solana_command(
     let mut scenarios = state.scenarios.write().unwrap();
     let mut vms = solana.vms.write().unwrap();
     let mut users = solana.users.write().unwrap();
+    let mut snapshots = solana.step_snapshots.write().unwrap();
     let active_scenario = scenarios.active().to_string();
 
     let vm = vms.get_mut(&active_scenario).ok_or((
@@ -419,7 +529,17 @@ async fn handle_solana_command(
         StatusCode::INTERNAL_SERVER_ERROR,
         format!("users registry for scenario '{active_scenario}' missing"),
     ))?;
+    let stack = snapshots
+        .entry(active_scenario.clone())
+        .or_insert_with(Vec::new);
     let session = scenarios.active_session_mut();
+
+    // Pre-Call snapshot: taken BEFORE dispatching so Back can rewind to here.
+    // Computed only for Call; everything else doesn't mutate VM state.
+    let pre_call_snapshot = match &command {
+        SolanaCommand::Call { .. } => Some(vm.snapshot_state()),
+        _ => None,
+    };
 
     let result = match command {
         SolanaCommand::Funcs => execute_funcs(&program),
@@ -451,8 +571,34 @@ async fn handle_solana_command(
             vm,
             &timestamp,
         ),
-        SolanaCommand::Back => execute_back(session),
-        SolanaCommand::Clear => execute_clear(session),
+        SolanaCommand::Back => {
+            let r = execute_back(session);
+            if matches!(r, SolanaCommandResult::StepRemoved { .. }) {
+                if let Some(snap) = stack.pop() {
+                    if let Err(e) = vm.restore_state(snap) {
+                        return Ok(Json(serde_json::to_value(SolanaCommandResult::Error {
+                            message: format!("Back: rewind VM failed: {e:?}"),
+                        }).unwrap_or(Value::Null)));
+                    }
+                }
+            }
+            r
+        }
+        SolanaCommand::Clear => {
+            // Rewind VM to pre-step-0 (the snapshot taken before the very first
+            // Call). Without this the VM keeps the post-execution state and the
+            // next Call operates on contaminated accounts. If the stack is empty
+            // (no Calls yet, or already rewound), Clear is a no-op for the VM.
+            if let Some(genesis) = stack.first().cloned() {
+                if let Err(e) = vm.restore_state(genesis) {
+                    return Ok(Json(serde_json::to_value(SolanaCommandResult::Error {
+                        message: format!("Clear: rewind VM failed: {e:?}"),
+                    }).unwrap_or(Value::Null)));
+                }
+            }
+            stack.clear();
+            execute_clear(session)
+        }
         SolanaCommand::Finding {
             severity,
             title,
@@ -462,10 +608,23 @@ async fn handle_solana_command(
         SolanaCommand::Status { ix, status } => {
             execute_status(session, &program, &ix, status, &timestamp)
         }
+        SolanaCommand::Step { index } => execute_step(session, index),
+        SolanaCommand::Findings => execute_findings_list(session),
+        SolanaCommand::Export => execute_export(session, &program, &active_scenario),
+        SolanaCommand::Who { account_type } => execute_who(&program, &account_type),
+        SolanaCommand::Timeline { pubkey } => {
+            execute_timeline(session, &program, &pubkey, &active_scenario)
+        }
         SolanaCommand::SaveSession
         | SolanaCommand::LoadSession { .. }
         | SolanaCommand::Scenario { .. } => unreachable!("handled above"),
     };
+
+    // Persist the pre-Call snapshot only when the Call actually appended a
+    // step. Failed Calls already left the VM untouched, so no rewind needed.
+    if let (Some(snap), SolanaCommandResult::StepAdded { .. }) = (pre_call_snapshot, &result) {
+        stack.push(snap);
+    }
 
     if let Some(patch) = canvas_patch_from_solana(&result, &active_scenario) {
         state.session_tx.send(patch).ok();
@@ -586,7 +745,7 @@ fn solana_scenario_action(
                     };
                 }
             };
-            let new_vm = match ilold_solana_core::execute::VmHost::restore(snap) {
+            let mut new_vm = match ilold_solana_core::execute::VmHost::restore(snap) {
                 Ok(v) => v,
                 Err(e) => {
                     return SolanaCommandResult::Error {
@@ -594,6 +753,26 @@ fn solana_scenario_action(
                     };
                 }
             };
+
+            // Fork at a specific step requires rewinding the cloned VM to that
+            // step's pre-Call snapshot (otherwise VM has the full timeline's
+            // state but the cloned `steps` are truncated — auditor sees diverging
+            // state vs timeline). origin_stack[N] is the snapshot taken right
+            // before step N executed; restoring it produces the state where
+            // exactly steps [0..N) have run.
+            let mut snapshots = solana.step_snapshots.write().unwrap();
+            let origin_stack = snapshots.entry(from.clone()).or_insert_with(Vec::new);
+            let cloned_stack: Vec<ilold_solana_core::execute::StateSnapshot> =
+                origin_stack.iter().take(effective).cloned().collect();
+            if let Some(rewind_to) = origin_stack.get(effective) {
+                if let Err(e) = new_vm.restore_state(rewind_to.clone()) {
+                    return SolanaCommandResult::Error {
+                        message: format!("rewind branch VM to step {effective}: {e:?}"),
+                    };
+                }
+            }
+            // If effective == origin_stack.len() the branch keeps the full state
+            // (no rewind needed) — typical "fork at HEAD" usage.
 
             let mut users = solana.users.write().unwrap();
             let cloned_users: std::collections::HashMap<String, Keypair> = users
@@ -608,6 +787,7 @@ fn solana_scenario_action(
             scenarios.insert(name.clone(), cloned);
             vms.insert(name.clone(), new_vm);
             users.insert(name.clone(), cloned_users);
+            snapshots.insert(name.clone(), cloned_stack);
             SolanaCommandResult::ScenarioForked {
                 from,
                 to: name,
@@ -633,6 +813,7 @@ fn solana_scenario_action(
             scenarios.remove(&name);
             solana.vms.write().unwrap().remove(&name);
             solana.users.write().unwrap().remove(&name);
+            solana.step_snapshots.write().unwrap().remove(&name);
             SolanaCommandResult::ScenarioDeleted { name }
         }
     }

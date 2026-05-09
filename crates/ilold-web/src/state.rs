@@ -217,6 +217,11 @@ pub struct SolanaState {
     pub program_artifacts: Vec<(Address, Vec<u8>)>,
     pub vms: RwLock<HashMap<String, VmHost>>,
     pub users: RwLock<HashMap<String, HashMap<String, Keypair>>>,
+    /// Per-scenario stack of pre-Call snapshots, indexed by step. Used by
+    /// `Back` to rewind the VM state and by `Fork(at_step=N)` to seed the
+    /// new scenario's VM with the N-th snapshot. Cleared on `Clear` and
+    /// truncated on `Back`. Empty after `LoadSession` (replay rebuilds it).
+    pub step_snapshots: RwLock<HashMap<String, Vec<ilold_solana_core::execute::StateSnapshot>>>,
 }
 
 pub enum Backend {
@@ -317,12 +322,17 @@ impl AppState {
         let mut users: HashMap<String, HashMap<String, Keypair>> = HashMap::new();
         users.insert(DEFAULT_SCENARIO.to_string(), HashMap::new());
 
+        let mut step_snapshots: HashMap<String, Vec<ilold_solana_core::execute::StateSnapshot>> =
+            HashMap::new();
+        step_snapshots.insert(DEFAULT_SCENARIO.to_string(), Vec::new());
+
         Ok(Self {
             backend: Backend::Solana(SolanaState {
                 project,
                 program_artifacts,
                 vms: RwLock::new(vms),
                 users: RwLock::new(users),
+                step_snapshots: RwLock::new(step_snapshots),
             }),
             annotations: RwLock::new(Vec::new()),
             scenarios: RwLock::new(ScenarioStore::new_for_contract(default_program)),

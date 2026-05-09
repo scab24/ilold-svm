@@ -14,7 +14,8 @@ use crate::model::{AccountTypeDef, ProgramDef, SeedSpec};
 
 use super::add_step::add_solana_step;
 use super::commands::{
-    AccountSummary, InstructionEntry, PdaEntry, SolanaCommandResult, UserEntry,
+    AccountSummary, FindingSummary, InstructionEntry, PdaEntry, SolanaCommandResult,
+    StepDiffSummary, TimelineEntry, UserEntry, WhoEntry,
 };
 
 const DEFAULT_USER_LAMPORTS: u64 = 10_000_000_000;
@@ -213,6 +214,16 @@ pub fn execute_call(
         }
     };
 
+    // Capture original inputs so LoadSession can replay this Call against a
+    // fresh VM. We serialize the user-name strings (not the resolved pubkeys)
+    // because user keypairs are recreated on Load — same name, same pubkey.
+    let call_payload = serde_json::json!({
+        "ix": ix_name,
+        "args": args.clone(),
+        "accounts": accounts_input.clone(),
+        "signers": signer_names.clone(),
+    });
+
     let mut accounts: HashMap<String, Address> = HashMap::new();
     for (key, raw) in accounts_input {
         if let Some(kp) = users.get(&raw) {
@@ -278,6 +289,7 @@ pub fn execute_call(
         accounts,
         &extra_signers,
         timestamp,
+        Some(call_payload),
     ) {
         return SolanaCommandResult::Error {
             message: format!("{e:?}"),
@@ -506,5 +518,220 @@ fn decode_account_bytes(
             decode_defined_fields(&mut cursor, fields.as_ref(), types).ok()
         }
         _ => None,
+    }
+}
+
+pub fn execute_step(
+    session: &ExplorationSession,
+    index: usize,
+) -> SolanaCommandResult {
+    let step = match session.steps.get(index) {
+        Some(s) => s,
+        None => {
+            return SolanaCommandResult::Error {
+                message: format!(
+                    "step {index} out of range (session has {} steps)",
+                    session.steps.len()
+                ),
+            };
+        }
+    };
+    let runtime_trace = step.runtime_trace.clone();
+    let diff_summary: Vec<StepDiffSummary> = runtime_trace
+        .as_ref()
+        .and_then(|v| v.get("account_diffs").and_then(|d| d.as_array()))
+        .map(|arr| {
+            arr.iter()
+                .map(|d| StepDiffSummary {
+                    address: d.get("address").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    name: d.get("name").and_then(|v| v.as_str()).map(String::from),
+                    lamports_delta: d
+                        .get("lamports_delta")
+                        .and_then(|v| v.as_i64())
+                        .map(|n| n as i128)
+                        .unwrap_or(0),
+                    data_changed: d
+                        .get("before")
+                        .and_then(|v| v.as_array())
+                        .zip(d.get("after").and_then(|v| v.as_array()))
+                        .map(|(b, a)| b != a)
+                        .unwrap_or(false),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    SolanaCommandResult::StepDetail {
+        step_index: index,
+        instruction: step.function.clone(),
+        runtime_trace,
+        diff_summary,
+    }
+}
+
+pub fn execute_findings_list(session: &ExplorationSession) -> SolanaCommandResult {
+    let items: Vec<FindingSummary> = session
+        .journal
+        .findings
+        .iter()
+        .map(|f: &Finding| FindingSummary {
+            id: f.id.clone(),
+            severity: format!("{:?}", f.severity),
+            title: f.title.clone(),
+            description: f.description.clone(),
+            created_at: f.created_at.clone(),
+        })
+        .collect();
+    SolanaCommandResult::FindingsList { items }
+}
+
+pub fn execute_export(
+    session: &ExplorationSession,
+    program: &ProgramDef,
+    scenario: &str,
+) -> SolanaCommandResult {
+    let mut md = String::new();
+    md.push_str(&format!("# Audit report — {} ({})\n\n", program.name, scenario));
+    md.push_str(&format!("**Steps**: {}\n", session.steps.len()));
+    md.push_str(&format!("**Findings**: {}\n\n", session.journal.findings.len()));
+
+    md.push_str("## Sequence\n\n");
+    if session.steps.is_empty() {
+        md.push_str("_(no steps recorded)_\n\n");
+    } else {
+        for (i, s) in session.steps.iter().enumerate() {
+            let cu = s.runtime_trace.as_ref()
+                .and_then(|v| v.get("compute_units"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let err = s.runtime_trace.as_ref()
+                .and_then(|v| v.get("error"))
+                .and_then(|v| v.as_str());
+            let mark = if err.is_some() { "FAIL" } else { "OK" };
+            md.push_str(&format!("- **#{i}** `{}` — {} ({} CU)\n", s.function, mark, cu));
+            if let Some(e) = err {
+                md.push_str(&format!("  - error: `{e}`\n"));
+            }
+        }
+        md.push('\n');
+    }
+
+    md.push_str("## Findings\n\n");
+    if session.journal.findings.is_empty() {
+        md.push_str("_(no findings)_\n\n");
+    } else {
+        for f in &session.journal.findings {
+            md.push_str(&format!(
+                "### {} — [{:?}] {}\n\n{}\n\n_recorded at {}_\n\n",
+                f.id, f.severity, f.title, f.description, f.created_at
+            ));
+        }
+    }
+
+    md.push_str("## Program\n\n");
+    md.push_str(&format!("- Program ID: `{}`\n", program.program_id));
+    md.push_str(&format!("- Instructions: {}\n", program.instructions.len()));
+    md.push_str(&format!("- Account types: {}\n\n", program.account_types.len()));
+
+    let bytes = md.len();
+    SolanaCommandResult::Exported { markdown: md, bytes }
+}
+
+pub fn execute_who(
+    program: &ProgramDef,
+    account_type: &str,
+) -> SolanaCommandResult {
+    // Heuristic: an account field name maps to its type by snake_case → PascalCase
+    // (e.g. `pool` → `Pool`, `user_stake` → `UserStake`). Anchor IDL doesn't
+    // carry the explicit type-of-account in the instruction shape, so we
+    // approximate by name match. False positives possible if naming diverges.
+    fn snake_to_pascal(s: &str) -> String {
+        s.split('_')
+            .filter(|p| !p.is_empty())
+            .map(|p| {
+                let mut c = p.chars();
+                match c.next() {
+                    None => String::new(),
+                    Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                }
+            })
+            .collect()
+    }
+    let target = account_type.to_string();
+    let mut hits: Vec<WhoEntry> = Vec::new();
+    for ix in &program.instructions {
+        for acc in &ix.accounts {
+            if snake_to_pascal(&acc.name) == target || acc.name == target {
+                hits.push(WhoEntry {
+                    instruction: ix.name.clone(),
+                    account_field: acc.name.clone(),
+                    writable: acc.writable,
+                    signer: acc.signer,
+                });
+            }
+        }
+    }
+    SolanaCommandResult::WhoList {
+        account_type: target,
+        instructions: hits,
+    }
+}
+
+pub fn execute_timeline(
+    session: &ExplorationSession,
+    program: &ProgramDef,
+    pubkey: &str,
+    active_scenario: &str,
+) -> SolanaCommandResult {
+    let mut entries: Vec<TimelineEntry> = Vec::new();
+    let mut label: Option<String> = None;
+    for (idx, step) in session.steps.iter().enumerate() {
+        let trace = match &step.runtime_trace {
+            Some(t) => t,
+            None => continue,
+        };
+        let diffs = match trace.get("account_diffs").and_then(|v| v.as_array()) {
+            Some(a) => a,
+            None => continue,
+        };
+        for d in diffs {
+            let addr = d.get("address").and_then(|v| v.as_str()).unwrap_or("");
+            if addr != pubkey {
+                continue;
+            }
+            if label.is_none() {
+                label = d.get("name").and_then(|v| v.as_str()).map(String::from);
+            }
+            let lamports_delta = d
+                .get("lamports_delta")
+                .and_then(|v| v.as_i64())
+                .map(|n| n as i128)
+                .unwrap_or(0);
+            let data_changed = d
+                .get("before")
+                .and_then(|v| v.as_array())
+                .zip(d.get("after").and_then(|v| v.as_array()))
+                .map(|(b, a)| b != a)
+                .unwrap_or(false);
+            // Try to decode before/after using IDL discriminators.
+            let decode = |bytes_v: Option<&Value>| -> Option<Value> {
+                let arr = bytes_v.and_then(|v| v.as_array())?;
+                let bytes: Vec<u8> = arr.iter().filter_map(|b| b.as_u64().map(|n| n as u8)).collect();
+                decode_account_bytes(&bytes, &program.account_types, &program.types)
+            };
+            entries.push(TimelineEntry {
+                step_index: idx,
+                instruction: step.function.clone(),
+                scenario: active_scenario.to_string(),
+                lamports_delta,
+                data_changed,
+                before_decoded: decode(d.get("before")),
+                after_decoded: decode(d.get("after")),
+            });
+        }
+    }
+    SolanaCommandResult::TimelineView {
+        pubkey: pubkey.to_string(),
+        label,
+        entries,
     }
 }

@@ -121,6 +121,7 @@ mod tests {
             flow_tree: None,
             trace_config: TraceConfig::default(),
             runtime_trace: None,
+            call_payload: None,
         }
     }
 

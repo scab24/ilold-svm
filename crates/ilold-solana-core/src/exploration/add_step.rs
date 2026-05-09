@@ -25,6 +25,7 @@ pub fn add_solana_step<'a>(
     accounts: HashMap<String, Address>,
     extra_signers: &[&Keypair],
     timestamp: &str,
+    call_payload: Option<Value>,
 ) -> Result<&'a ExplorationStep, SolanaError> {
     let step_index = session.steps.len();
     let types = &program.types;
@@ -41,6 +42,11 @@ pub fn add_solana_step<'a>(
     let blockhash = vm.svm().latest_blockhash();
     let tx = build_transaction(instruction.clone(), vm.payer(), extra_signers, blockhash)?;
     let result = vm.svm_mut().send_transaction(tx);
+    // LiteSVM does NOT rotate the blockhash automatically. Two Calls in the same
+    // session would collide (BlockhashNotFound) and the second silently fails
+    // with cu=0 / no state mutation. Expire after every send so the next Call
+    // gets a fresh blockhash.
+    vm.svm_mut().expire_blockhash();
 
     let (runtime_trace, mutations) = match result {
         Ok(meta) => {
@@ -89,6 +95,7 @@ pub fn add_solana_step<'a>(
         flow_tree: None,
         trace_config: TraceConfig::default(),
         runtime_trace: trace_value,
+        call_payload,
     });
 
     session

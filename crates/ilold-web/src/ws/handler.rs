@@ -29,7 +29,14 @@ enum ServerMessage {
     #[serde(rename = "error")]
     Error { message: String },
     #[serde(rename = "session_add_node")]
-    SessionAddNode { scenario: String, function: String, access: AccessLevel, step_index: usize },
+    SessionAddNode {
+        scenario: String,
+        function: String,
+        access: AccessLevel,
+        step_index: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        runtime: Option<ilold_session_core::exploration::canvas::RuntimeMeta>,
+    },
     #[serde(rename = "session_remove_node")]
     SessionRemoveNode { scenario: String },
     #[serde(rename = "session_clear")]
@@ -59,8 +66,8 @@ pub async fn ws_handler(
 
 fn server_message_from_patch(patch: CanvasPatch) -> ServerMessage {
     match patch {
-        CanvasPatch::AddNode { scenario, function, access, step_index } => {
-            ServerMessage::SessionAddNode { scenario, function, access, step_index }
+        CanvasPatch::AddNode { scenario, function, access, step_index, runtime } => {
+            ServerMessage::SessionAddNode { scenario, function, access, step_index, runtime }
         }
         CanvasPatch::RemoveLastNode { scenario } => ServerMessage::SessionRemoveNode { scenario },
         CanvasPatch::ClearAll { scenario } => ServerMessage::SessionClear { scenario },

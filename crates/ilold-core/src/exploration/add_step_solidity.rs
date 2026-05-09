@@ -68,6 +68,7 @@ pub fn add_solidity_step<'a>(
         flow_tree: flow_tree_value,
         trace_config,
         runtime_trace: None,
+            call_payload: None,
     });
 
     session.journal.record(JournalEntry::SequenceExplored {

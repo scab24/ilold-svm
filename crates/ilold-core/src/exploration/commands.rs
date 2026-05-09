@@ -155,6 +155,7 @@ pub fn canvas_patch_from(result: &CommandResult, active_scenario: &str) -> Optio
                 function: function.clone(),
                 access: access.clone(),
                 step_index: *step_index,
+                runtime: None,
             })
         }
         CommandResult::StepRemoved { .. } => Some(CanvasPatch::RemoveLastNode {

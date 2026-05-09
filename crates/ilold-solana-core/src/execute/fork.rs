@@ -77,3 +77,69 @@ impl VmSnapshot {
         Ok(kp.pubkey())
     }
 }
+
+/// Lightweight snapshot used between steps within the same VM. Skips the
+/// `programs` blob (kept loaded in the VmHost) so each entry costs ~accounts
+/// bytes instead of MBs. Restoring is done in-place via `restore_state`.
+#[derive(Clone)]
+pub struct StateSnapshot {
+    pub accounts: Vec<(Address, AccountSharedData)>,
+    pub clock: Clock,
+}
+
+impl VmHost {
+    pub fn snapshot_state(&self) -> StateSnapshot {
+        let accounts = self
+            .svm()
+            .accounts_db()
+            .inner
+            .iter()
+            .map(|(k, v)| (*k, v.clone()))
+            .collect();
+        StateSnapshot {
+            accounts,
+            clock: self.svm().get_sysvar::<Clock>(),
+        }
+    }
+
+    /// Replace the in-memory account/clock state with `snap` while keeping
+    /// the loaded programs intact. Used by Back to rewind a single step
+    /// without paying the cost of re-adding programs.
+    pub fn restore_state(&mut self, snap: StateSnapshot) -> Result<(), SolanaError> {
+        let live: std::collections::HashSet<Address> =
+            self.svm().accounts_db().inner.keys().copied().collect();
+        let snap_keys: std::collections::HashSet<Address> =
+            snap.accounts.iter().map(|(k, _)| *k).collect();
+
+        // Drop accounts created after the snapshot — set_account with an
+        // empty Account zeroes the slot which LiteSVM treats as absent.
+        let to_drop: Vec<Address> = live.difference(&snap_keys).copied().collect();
+        for pk in to_drop {
+            let empty: solana_account::Account = solana_account::Account::default();
+            self.svm_mut().set_account(pk, empty).map_err(|e| {
+                SolanaError::VmOperationFailed(format!("drop account {pk}: {e:?}"))
+            })?;
+        }
+
+        let upgradeable = solana_sdk_ids::bpf_loader_upgradeable::id();
+        const PROGRAMDATA_DISCRIMINATOR_BYTE: u8 = 3;
+        use solana_account::ReadableAccount;
+        let (programdata, other): (Vec<_>, Vec<_>) =
+            snap.accounts.iter().cloned().partition(|(_, acc)| {
+                acc.owner() == &upgradeable
+                    && acc.data().first() == Some(&PROGRAMDATA_DISCRIMINATOR_BYTE)
+            });
+        for (pk, acc) in programdata {
+            self.svm_mut().set_account(pk, acc.into()).map_err(|e| {
+                SolanaError::VmOperationFailed(format!("restore programdata {pk}: {e:?}"))
+            })?;
+        }
+        for (pk, acc) in other {
+            self.svm_mut().set_account(pk, acc.into()).map_err(|e| {
+                SolanaError::VmOperationFailed(format!("restore account {pk}: {e:?}"))
+            })?;
+        }
+        self.svm_mut().set_sysvar(&snap.clock);
+        Ok(())
+    }
+}
