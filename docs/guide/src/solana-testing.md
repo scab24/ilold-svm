@@ -111,7 +111,9 @@ implemented.
 bash tests/scenarios/run.sh
 ```
 
-12 scenarios under `tests/scenarios/`. Each spawns a fresh `ilold serve`
+11 scenarios under `tests/scenarios/` (10 bash + 1 optional python WebSocket
+test that runs when `python3` and `pip install websockets` are available).
+Each spawns a fresh `ilold serve`
 on port 8081 (override with `ILOLD_TEST_PORT`) and aggregates pass/fail.
 Adding a scenario:
 
