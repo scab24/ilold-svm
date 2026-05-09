@@ -63,6 +63,29 @@ for f in "$DIR"/[0-9][0-9]-*.sh; do
 done
 
 echo
+# Optional WebSocket broadcast test — requires python3 + websockets.
+WS_PY="$DIR/ws-broadcast.py"
+if [ -f "$WS_PY" ] && command -v python3 >/dev/null 2>&1 \
+   && python3 -c 'import websockets' 2>/dev/null; then
+  echo "## ws-broadcast (python3 + websockets)"
+  start_serve || { echo "  skipped ws-broadcast (serve down)"; }
+  set +e
+  python3 "$WS_PY" 2>&1
+  ws_exit=$?
+  set -e
+  stop_serve
+  if [ "$ws_exit" = "0" ]; then
+    SCENARIOS_OK+=("ws-broadcast")
+    TOTAL_PASS=$((TOTAL_PASS + 1))
+  else
+    SCENARIOS_FAIL+=("ws-broadcast")
+    TOTAL_FAIL=$((TOTAL_FAIL + 1))
+  fi
+else
+  echo "## ws-broadcast — skipped (need python3 + 'pip install websockets')"
+fi
+
+echo
 echo "================================================================"
 echo " SUMMARY: ${#SCENARIOS_OK[@]} scenarios green, ${#SCENARIOS_FAIL[@]} scenarios red"
 echo "          $TOTAL_PASS assertions passed / $TOTAL_FAIL failed"
