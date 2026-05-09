@@ -1392,6 +1392,52 @@ fn handle_solana_input(
             let body = serde_json::json!({"Note": {"text": arg}});
             dispatch_solana(handle, client, base_url, contract, body, steps)
         }
+        "fi" | "finding" => {
+            if arg.is_empty() {
+                println!("  Usage: finding <severity> <title>");
+                println!("  Severity: critical | high | medium | low | info");
+                return InputResult::Continue;
+            }
+            let parts: Vec<&str> = arg.splitn(2, ' ').collect();
+            if parts.len() < 2 {
+                println!("  Usage: finding <severity> <title>");
+                return InputResult::Continue;
+            }
+            let severity = match normalize_severity(parts[0]) {
+                Some(s) => s,
+                None => {
+                    println!(
+                        "  {}",
+                        c_danger("Invalid severity. Valid: critical, high, medium, low, info")
+                    );
+                    return InputResult::Continue;
+                }
+            };
+            let body = serde_json::json!({
+                "Finding": {"severity": severity, "title": parts[1], "description": ""}
+            });
+            dispatch_solana(handle, client, base_url, contract, body, steps)
+        }
+        "seq" | "sequence" => {
+            // Solana lacks the dedicated sequence-narrative endpoint; fall back
+            // to the Session view which renders the step list with CU/diffs.
+            dispatch_solana(
+                handle,
+                client,
+                base_url,
+                contract,
+                serde_json::json!("Session"),
+                steps,
+            )
+        }
+        "browser" => {
+            println!(
+                "  {} Web UI not yet available in explore mode.",
+                c_muted("·")
+            );
+            println!("  {} API running at {}/api/", c_muted("·"), base_url);
+            InputResult::Continue
+        }
         "step" | "st" => {
             let idx: usize = match arg.trim().parse() {
                 Ok(n) => n,
