@@ -323,19 +323,45 @@ fn repl_loop(
 
     // Initial prompt sync in --attach mode: pick up steps from other terminals
     if state.is_none() {
-        if let Some(server_steps) = sync_steps(&handle, &client, &base_url, &contract) {
+        if let Some(server_steps) = sync_steps(&handle, &client, &base_url, &contract, backend) {
             steps = server_steps;
             prompt.steps = steps.clone();
+        }
+        if backend == BackendKind::Solana {
+            if let Some(active) = sync_active_scenario(&handle, &client, &base_url, &contract) {
+                scenario_name = active;
+                prompt.scenario = scenario_name.clone();
+            }
+            if let Some(scns) = sync_scenarios(&handle, &client, &base_url, &contract) {
+                if let Ok(mut comp) = completer.lock() {
+                    comp.scenarios = scns;
+                }
+            }
         }
     }
 
     loop {
         // Sync prompt from server in --attach mode (catches changes from other terminals)
         if state.is_none() {
-            if let Some(server_steps) = sync_steps(&handle, &client, &base_url, &contract) {
+            if let Some(server_steps) = sync_steps(&handle, &client, &base_url, &contract, backend) {
                 if server_steps != steps {
                     steps = server_steps;
                     prompt.steps = steps.clone();
+                }
+            }
+            if backend == BackendKind::Solana {
+                if let Some(active) = sync_active_scenario(&handle, &client, &base_url, &contract) {
+                    if active != scenario_name {
+                        scenario_name = active;
+                        prompt.scenario = scenario_name.clone();
+                    }
+                }
+                if let Some(scns) = sync_scenarios(&handle, &client, &base_url, &contract) {
+                    if let Ok(mut comp) = completer.lock() {
+                        if comp.scenarios != scns {
+                            comp.scenarios = scns;
+                        }
+                    }
                 }
             }
         }
@@ -1123,6 +1149,32 @@ fn handle_solana_input(
                 steps,
             )
         }
+        "funcs-all" | "fa" => {
+            match fetch_program_detail(handle, client, base_url, contract) {
+                Ok(p) => print_solana_funcs_all(&p),
+                Err(e) => eprintln!("  {}", c_danger(&format!("fetch program: {e}"))),
+            }
+            InputResult::Continue
+        }
+        "info" | "i" => {
+            if arg.is_empty() {
+                println!("  Usage: info <instruction>");
+                return InputResult::Continue;
+            }
+            match fetch_program_detail(handle, client, base_url, contract) {
+                Ok(p) => print_solana_ix_info(&p, arg),
+                Err(e) => eprintln!("  {}", c_danger(&format!("fetch program: {e}"))),
+            }
+            InputResult::Continue
+        }
+        "vars" | "v" | "vars-all" | "va" => {
+            let verbose = matches!(cmd.as_str(), "vars-all" | "va");
+            match fetch_program_detail(handle, client, base_url, contract) {
+                Ok(p) => print_solana_vars(&p, verbose),
+                Err(e) => eprintln!("  {}", c_danger(&format!("fetch program: {e}"))),
+            }
+            InputResult::Continue
+        }
         "state" => dispatch_solana(
             handle,
             client,
@@ -1340,6 +1392,112 @@ fn handle_solana_input(
             let body = serde_json::json!({"Note": {"text": arg}});
             dispatch_solana(handle, client, base_url, contract, body, steps)
         }
+        "step" | "st" => {
+            let idx: usize = match arg.trim().parse() {
+                Ok(n) => n,
+                Err(_) => {
+                    println!("  Usage: step <index>");
+                    return InputResult::Continue;
+                }
+            };
+            let body = serde_json::json!({"Step": {"index": idx}});
+            dispatch_solana(handle, client, base_url, contract, body, steps)
+        }
+        "save" => {
+            if arg.is_empty() {
+                println!("  Usage: save <name>");
+                return InputResult::Continue;
+            }
+            let body = serde_json::json!({"contract": contract, "command": "SaveSession"});
+            match send_solana_command(handle, client, base_url, &body) {
+                Ok(SolanaCommandResult::SessionSaved { json }) => {
+                    let dir = dirs::home_dir()
+                        .map(|h| h.join(".ilold").join("sessions"))
+                        .unwrap_or_else(|| std::path::PathBuf::from(".ilold/sessions"));
+                    std::fs::create_dir_all(&dir).ok();
+                    let path = dir.join(format!("{}.json", arg));
+                    match std::fs::write(&path, &json) {
+                        Ok(_) => println!(
+                            "  {} Saved to {}",
+                            c_ok("✓"),
+                            c_accent(&path.display().to_string())
+                        ),
+                        Err(e) => eprintln!("  {} Write failed: {}", c_danger("✗"), e),
+                    }
+                }
+                Ok(other) => print_solana_result(&other),
+                Err(e) => eprintln!("  {}", c_danger(&e)),
+            }
+            InputResult::Continue
+        }
+        "load" => {
+            if arg.is_empty() {
+                println!("  Usage: load <name>");
+                return InputResult::Continue;
+            }
+            let dir = dirs::home_dir()
+                .map(|h| h.join(".ilold").join("sessions"))
+                .unwrap_or_else(|| std::path::PathBuf::from(".ilold/sessions"));
+            let path = dir.join(format!("{}.json", arg));
+            let json = match std::fs::read_to_string(&path) {
+                Ok(j) => j,
+                Err(e) => {
+                    eprintln!(
+                        "  {} File not found: {} ({})",
+                        c_danger("✗"),
+                        path.display(),
+                        e
+                    );
+                    return InputResult::Continue;
+                }
+            };
+            let body = serde_json::json!({
+                "contract": contract,
+                "command": {"LoadSession": {"json": json}}
+            });
+            match send_solana_command(handle, client, base_url, &body) {
+                Ok(SolanaCommandResult::SessionLoaded { steps: loaded, .. }) => {
+                    *steps = loaded;
+                    println!("  {} Session loaded ({} steps)", c_ok("✓"), steps.len());
+                    return InputResult::UpdatePrompt;
+                }
+                Ok(other) => print_solana_result(&other),
+                Err(e) => eprintln!("  {}", c_danger(&e)),
+            }
+            InputResult::Continue
+        }
+        "findings" | "fl" => dispatch_solana(
+            handle,
+            client,
+            base_url,
+            contract,
+            serde_json::json!("Findings"),
+            steps,
+        ),
+        "export" | "ex" => dispatch_solana(
+            handle,
+            client,
+            base_url,
+            contract,
+            serde_json::json!("Export"),
+            steps,
+        ),
+        "who" => {
+            if arg.is_empty() {
+                println!("  Usage: who <account_type>  (e.g. who Pool)");
+                return InputResult::Continue;
+            }
+            let body = serde_json::json!({"Who": {"account_type": arg}});
+            dispatch_solana(handle, client, base_url, contract, body, steps)
+        }
+        "timeline" | "tl" => {
+            if arg.is_empty() {
+                println!("  Usage: timeline <pubkey>");
+                return InputResult::Continue;
+            }
+            let body = serde_json::json!({"Timeline": {"pubkey": arg}});
+            dispatch_solana(handle, client, base_url, contract, body, steps)
+        }
         "status" => {
             let parts: Vec<&str> = arg.split_whitespace().collect();
             if parts.len() != 2 {
@@ -1554,6 +1712,88 @@ fn coerce_kv(raw: &str, ty: &serde_json::Value) -> serde_json::Value {
         }
     }
     serde_json::Value::String(raw.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn staking_initialize_pool() -> serde_json::Value {
+        serde_json::json!({
+            "name": "staking",
+            "instructions": [{
+                "name": "initialize_pool",
+                "args": [{ "name": "reward_rate", "type": "u64" }],
+                "accounts": [
+                    { "name": "pool", "writable": true, "signer": true },
+                    { "name": "admin", "writable": true, "signer": true },
+                    { "name": "system_program", "address": "11111111111111111111111111111111" }
+                ]
+            }]
+        })
+    }
+
+    #[test]
+    fn kv_parser_distributes_args_and_accounts() {
+        let program = staking_initialize_pool();
+        let body = build_call_from_kv(
+            &program,
+            "initialize_pool",
+            "reward_rate=10 pool=pool admin=admin",
+        )
+        .expect("kv parse");
+        assert_eq!(body["Call"]["ix"], "initialize_pool");
+        assert_eq!(body["Call"]["args"]["reward_rate"], 10);
+        assert_eq!(body["Call"]["accounts"]["pool"], "pool");
+        assert_eq!(body["Call"]["accounts"]["admin"], "admin");
+        let signers: Vec<_> = body["Call"]["signers"].as_array().unwrap().iter().collect();
+        assert!(signers.iter().any(|v| v.as_str() == Some("pool")));
+        assert!(signers.iter().any(|v| v.as_str() == Some("admin")));
+    }
+
+    #[test]
+    fn kv_parser_supports_no_signer_override() {
+        let program = staking_initialize_pool();
+        let body = build_call_from_kv(
+            &program,
+            "initialize_pool",
+            "reward_rate=10 pool=pool admin=admin --no-signer=admin",
+        )
+        .expect("kv parse");
+        let signers: Vec<&str> = body["Call"]["signers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(signers.contains(&"pool"));
+        assert!(!signers.contains(&"admin"));
+    }
+
+    #[test]
+    fn kv_parser_rejects_unknown_key() {
+        let program = staking_initialize_pool();
+        let err = build_call_from_kv(
+            &program,
+            "initialize_pool",
+            "reward_rate=10 ghost=foo",
+        )
+        .unwrap_err();
+        assert!(err.contains("ghost"), "got: {err}");
+    }
+
+    #[test]
+    fn kv_parser_omits_constant_accounts_from_form() {
+        let program = staking_initialize_pool();
+        let body = build_call_from_kv(
+            &program,
+            "initialize_pool",
+            "reward_rate=10 pool=pool admin=admin",
+        )
+        .expect("kv parse");
+        // system_program should not be sent — backend resolves it from spec.address
+        assert!(body["Call"]["accounts"].get("system_program").is_none());
+    }
 }
 
 fn send_solana_command(
@@ -1810,6 +2050,115 @@ fn print_solana_result(result: &SolanaCommandResult) {
         SolanaCommandResult::ScenarioDeleted { name } => {
             println!("  {} scenario {} deleted", c_ok("✓"), name);
         }
+        SolanaCommandResult::StepDetail { step_index, instruction, runtime_trace, diff_summary } => {
+            println!("  {} step {} · {}", c_accent("·"), step_index, c_accent(instruction));
+            if let Some(trace) = runtime_trace {
+                if let Some(cu) = trace.get("compute_units").and_then(|v| v.as_u64()) {
+                    println!("    {} {} CU", c_muted("compute units:"), cu);
+                }
+                if let Some(err) = trace.get("error").and_then(|v| v.as_str()) {
+                    println!("    {} {}", c_danger("error:"), err);
+                }
+                if let Some(logs) = trace.get("logs").and_then(|v| v.as_array()) {
+                    println!("    {} ({} lines)", c_muted("logs:"), logs.len());
+                    for line in logs.iter().take(20) {
+                        if let Some(s) = line.as_str() {
+                            println!("      {}", c_muted(s));
+                        }
+                    }
+                    if logs.len() > 20 {
+                        println!("      {}", c_muted(&format!("... +{} more", logs.len() - 20)));
+                    }
+                }
+            }
+            if !diff_summary.is_empty() {
+                println!("    {} ({})", c_muted("account diffs:"), diff_summary.len());
+                for d in diff_summary {
+                    let label = d.name.clone().unwrap_or_else(|| d.address.clone());
+                    let lam = if d.lamports_delta != 0 {
+                        format!("Δlamports={}", d.lamports_delta)
+                    } else {
+                        String::new()
+                    };
+                    let dat = if d.data_changed { "data changed" } else { "" };
+                    println!("      {} {}  {}  {}", c_accent("·"), label, c_muted(&lam), c_muted(dat));
+                }
+            }
+        }
+        SolanaCommandResult::FindingsList { items } => {
+            if items.is_empty() {
+                println!("  {}", c_muted("no findings recorded"));
+            } else {
+                for f in items {
+                    println!(
+                        "  {} {} [{}] {}",
+                        c_accent(&f.id),
+                        c_warn(&f.severity),
+                        c_muted(&f.created_at),
+                        c_accent(&f.title)
+                    );
+                    if !f.description.is_empty() {
+                        println!("    {}", c_muted(&f.description));
+                    }
+                }
+            }
+        }
+        SolanaCommandResult::Exported { markdown, bytes } => {
+            println!("  {} markdown report ({} bytes)", c_ok("✓"), bytes);
+            println!();
+            for line in markdown.lines() {
+                println!("  {}", line);
+            }
+        }
+        SolanaCommandResult::WhoList { account_type, instructions } => {
+            if instructions.is_empty() {
+                println!("  {} no instruction references account_type '{}'", c_muted("·"), account_type);
+            } else {
+                println!("  {} '{}' referenced by:", c_accent("·"), c_accent(account_type));
+                for w in instructions {
+                    let mut flags = Vec::new();
+                    if w.signer { flags.push("signer"); }
+                    if w.writable { flags.push("writable"); }
+                    println!(
+                        "    {} {} (as {}) {}",
+                        c_accent("·"),
+                        c_accent(&w.instruction),
+                        w.account_field,
+                        c_muted(&flags.join(" "))
+                    );
+                }
+            }
+        }
+        SolanaCommandResult::TimelineView { pubkey, label, entries } => {
+            let header = label.clone().unwrap_or_else(|| pubkey.clone());
+            println!("  {} timeline for {} ({})", c_accent("·"), c_accent(&header), c_muted(pubkey));
+            if entries.is_empty() {
+                println!("    {}", c_muted("no mutations recorded for this pubkey"));
+            } else {
+                for e in entries {
+                    let lam = if e.lamports_delta != 0 {
+                        format!(" Δlamports={}", e.lamports_delta)
+                    } else {
+                        String::new()
+                    };
+                    let dat = if e.data_changed { " data" } else { "" };
+                    println!(
+                        "    {} #{} {} ({}){}{}",
+                        c_accent("·"),
+                        e.step_index,
+                        c_accent(&e.instruction),
+                        e.scenario,
+                        c_muted(&lam),
+                        c_muted(dat)
+                    );
+                    if let Some(after) = &e.after_decoded {
+                        let s = serde_json::to_string(after).unwrap_or_default();
+                        let preview = if s.len() > 200 { format!("{}…", &s[..200]) } else { s };
+                        println!("        {}", c_muted(&preview));
+                    }
+                }
+            }
+        }
         SolanaCommandResult::Error { message } => {
             eprintln!("  {} {}", c_danger("✗"), message);
         }
@@ -1854,19 +2203,29 @@ fn sync_scenarios(
 }
 
 /// Fetch current session steps from the server (for --attach prompt sync).
+/// Dispatches by backend kind: Solidity uses `CommandResult::SessionView`,
+/// Solana uses `SolanaCommandResult::SessionView` (different shape, same name).
 fn sync_steps(
     handle: &tokio::runtime::Handle,
     client: &reqwest::Client,
     base_url: &str,
     contract: &str,
+    backend: BackendKind,
 ) -> Option<Vec<String>> {
     let body = serde_json::json!({
         "contract": contract,
         "command": "Session"
     });
-    match send_command(handle, client, base_url, &body) {
-        Ok(CommandResult::SessionView { steps, .. }) => Some(steps),
-        _ => None,
+    if backend == BackendKind::Solana {
+        match send_solana_command(handle, client, base_url, &body) {
+            Ok(SolanaCommandResult::SessionView { steps, .. }) => Some(steps),
+            _ => None,
+        }
+    } else {
+        match send_command(handle, client, base_url, &body) {
+            Ok(CommandResult::SessionView { steps, .. }) => Some(steps),
+            _ => None,
+        }
     }
 }
 
@@ -2153,6 +2512,222 @@ fn print_programs(state: &std::sync::Arc<ilold_web::state::AppState>, current: &
             c_muted(&p.program_id.to_string()),
             marker
         );
+    }
+    println!();
+}
+
+fn idl_type_label(ty: &serde_json::Value) -> String {
+    if let Some(s) = ty.as_str() {
+        return s.to_string();
+    }
+    if let Some(obj) = ty.as_object() {
+        if let Some(d) = obj.get("defined") {
+            if let Some(s) = d.as_str() {
+                return s.to_string();
+            }
+            if let Some(n) = d.get("name").and_then(|v| v.as_str()) {
+                return n.to_string();
+            }
+        }
+        if let Some(inner) = obj.get("option") {
+            return format!("Option<{}>", idl_type_label(inner));
+        }
+        if let Some(inner) = obj.get("vec") {
+            return format!("Vec<{}>", idl_type_label(inner));
+        }
+        if let Some(inner) = obj.get("array") {
+            return format!("[{}]", idl_type_label(inner));
+        }
+    }
+    ty.to_string()
+}
+
+fn print_solana_funcs_all(program: &serde_json::Value) {
+    let arr = match program.get("instructions").and_then(|v| v.as_array()) {
+        Some(a) => a,
+        None => {
+            println!("  {}", c_muted("No instructions"));
+            return;
+        }
+    };
+    println!();
+    let max_name = arr
+        .iter()
+        .filter_map(|ix| ix.get("name").and_then(|n| n.as_str()))
+        .map(|n| n.chars().count())
+        .max()
+        .unwrap_or(0);
+    for ix in arr {
+        let name = ix.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+        let args = ix.get("args").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+        let accs = ix.get("accounts").and_then(|v| v.as_array());
+        let acc_count = accs.map(|a| a.len()).unwrap_or(0);
+        let signers = accs
+            .map(|a| {
+                a.iter()
+                    .filter(|x| x.get("signer").and_then(|s| s.as_bool()).unwrap_or(false))
+                    .count()
+            })
+            .unwrap_or(0);
+        let pdas = accs
+            .map(|a| a.iter().filter(|x| x.get("pda").is_some()).count())
+            .unwrap_or(0);
+        let writables = accs
+            .map(|a| {
+                a.iter()
+                    .filter(|x| x.get("writable").and_then(|s| s.as_bool()).unwrap_or(false))
+                    .count()
+            })
+            .unwrap_or(0);
+        let padded = fmt::pad_right(name, max_name);
+        println!(
+            "  {} {}  {}",
+            c_accent("[ix]"),
+            padded,
+            c_muted(&format!(
+                "args={args}  accs={acc_count}  signers={signers}  writables={writables}  pdas={pdas}"
+            ))
+        );
+    }
+    println!();
+}
+
+fn print_solana_ix_info(program: &serde_json::Value, ix_name: &str) {
+    let arr = program.get("instructions").and_then(|v| v.as_array());
+    let ix = arr.and_then(|a| {
+        a.iter()
+            .find(|x| x.get("name").and_then(|n| n.as_str()) == Some(ix_name))
+    });
+    let ix = match ix {
+        Some(v) => v,
+        None => {
+            eprintln!("  {}", c_danger(&format!("instruction '{ix_name}' not found")));
+            return;
+        }
+    };
+    println!();
+    println!("  {} {}", c_accent("instruction"), ix_name);
+    if let Some(disc) = ix.get("discriminator").and_then(|v| v.as_array()) {
+        let bytes: Vec<String> = disc.iter().filter_map(|b| b.as_u64()).map(|n| format!("{n:02x}")).collect();
+        println!("  {} {}", c_muted("discriminator"), bytes.join(" "));
+    }
+    let args = ix.get("args").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    println!();
+    println!("  {} ({})", c_accent("args"), args.len());
+    if args.is_empty() {
+        println!("    {}", c_muted("(none)"));
+    } else {
+        let max = args
+            .iter()
+            .filter_map(|a| a.get("name").and_then(|n| n.as_str()).map(|s| s.chars().count()))
+            .max()
+            .unwrap_or(0);
+        for a in &args {
+            let name = a.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+            let ty = a.get("type").cloned().unwrap_or(serde_json::Value::Null);
+            println!(
+                "    {} {} {}",
+                c_accent("·"),
+                fmt::pad_right(name, max),
+                c_muted(&idl_type_label(&ty))
+            );
+        }
+    }
+    let accs = ix
+        .get("accounts")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    println!();
+    println!("  {} ({})", c_accent("accounts"), accs.len());
+    if accs.is_empty() {
+        println!("    {}", c_muted("(none)"));
+    } else {
+        let max = accs
+            .iter()
+            .filter_map(|a| a.get("name").and_then(|n| n.as_str()).map(|s| s.chars().count()))
+            .max()
+            .unwrap_or(0);
+        for a in &accs {
+            let name = a.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+            let signer = a.get("signer").and_then(|s| s.as_bool()).unwrap_or(false);
+            let writable = a.get("writable").and_then(|s| s.as_bool()).unwrap_or(false);
+            let pda = a.get("pda").is_some();
+            let constant = a.get("address").and_then(|v| v.as_str());
+            let mut flags = Vec::new();
+            if signer { flags.push("signer"); }
+            if writable { flags.push("writable"); }
+            if pda { flags.push("pda"); }
+            let suffix = if let Some(addr) = constant {
+                format!("const {addr}")
+            } else {
+                flags.join(" ")
+            };
+            println!(
+                "    {} {} {}",
+                c_accent("·"),
+                fmt::pad_right(name, max),
+                c_muted(&suffix)
+            );
+        }
+    }
+    println!();
+}
+
+fn print_solana_vars(program: &serde_json::Value, verbose: bool) {
+    let arr = match program.get("account_types").and_then(|v| v.as_array()) {
+        Some(a) => a,
+        None => {
+            println!("  {}", c_muted("No account types"));
+            return;
+        }
+    };
+    println!();
+    if arr.is_empty() {
+        println!("  {}", c_muted("No account types declared in IDL"));
+        println!();
+        return;
+    }
+    for at in arr {
+        let name = at.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+        let disc = at
+            .get("discriminator")
+            .and_then(|v| v.as_array())
+            .map(|d| {
+                d.iter()
+                    .filter_map(|b| b.as_u64())
+                    .map(|n| format!("{n:02x}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .unwrap_or_default();
+        println!("  {} {} {}", c_accent("[T]"), name, c_muted(&disc));
+        if verbose {
+            let fields = at
+                .pointer("/layout/type/fields")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            if fields.is_empty() {
+                println!("    {}", c_muted("(opaque or zero-copy layout)"));
+            } else {
+                let max = fields
+                    .iter()
+                    .filter_map(|f| f.get("name").and_then(|n| n.as_str()).map(|s| s.chars().count()))
+                    .max()
+                    .unwrap_or(0);
+                for f in &fields {
+                    let fname = f.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                    let fty = f.get("type").cloned().unwrap_or(serde_json::Value::Null);
+                    println!(
+                        "    {} {} {}",
+                        c_accent("·"),
+                        fmt::pad_right(fname, max),
+                        c_muted(&idl_type_label(&fty))
+                    );
+                }
+            }
+        }
     }
     println!();
 }
@@ -2741,35 +3316,50 @@ fn print_help_for(backend: BackendKind) {
     let groups: &[(&str, &[(&str, &str, &str)])] = match backend {
         BackendKind::Solana => &[
             ("Session", &[
-                ("c",  "call <ix> <json>", "Send instruction (json: {args, accounts, signers})"),
-                ("b",  "back",             "Remove last step"),
-                ("cl", "clear",            "Reset session"),
-                ("",   "state",            "Decoded view of mutated accounts"),
-                ("s",  "session",          "Steps + scenario summary"),
-            ]),
-            ("Solana", &[
-                ("",   "users",            "List keypairs"),
-                ("",   "users new <name> [lamports]", "Create + airdrop"),
-                ("",   "airdrop <user> <lamports>", "Top up balance"),
-                ("tw", "time-warp <secs>", "Advance Clock"),
-                ("",   "pda <ix>",         "List declared PDAs of an instruction"),
-                ("",   "inspect <pubkey>", "Decode account by discriminator"),
+                ("c",  "call <ix> arg=val acc=user", "Concise: keys auto-distributed; signers auto from IDL"),
+                ("",   "call <ix> {json}",  "Full control with explicit args/accounts/signers"),
+                ("",   "  --signer=a,b",    "Add signers (override IDL defaults)"),
+                ("",   "  --no-signer=a",   "Remove a signer (simulate negative cases)"),
+                ("b",  "back",              "Remove last step from active scenario"),
+                ("cl", "clear",             "Reset active scenario steps"),
+                ("",   "state",             "Decoded view of accounts mutated this session"),
+                ("s",  "session",           "Active scenario summary (steps + findings)"),
             ]),
             ("Programs", &[
-                ("ct", "programs",         "List programs in workspace"),
-                ("",   "use <program>",    "Switch active program"),
-                ("",   "funcs",            "List instructions of active program"),
+                ("ct", "programs (alias contracts)", "List programs in workspace"),
+                ("",   "use <program>",     "Switch active program"),
+                ("f",  "funcs (alias functions)", "List instructions of active program"),
+                ("fa", "funcs-all",         "Instructions with arg/account/signer/pda counts"),
+                ("i",  "info <ix>",         "Detail an instruction: args (typed), accounts (flags), discriminator"),
+                ("v",  "vars",              "List declared account types with discriminators"),
+                ("va", "vars-all",          "Account types with their decoded field layout"),
+            ]),
+            ("Solana runtime", &[
+                ("",   "users",             "List keypairs in active scenario"),
+                ("",   "users new <name> [lamports]", "Create keypair + airdrop (default 10 SOL)"),
+                ("",   "airdrop <user> <lamports>", "Top up an existing keypair"),
+                ("tw", "time-warp <secs>",  "Advance Clock unix_timestamp + slot"),
+                ("",   "pda <ix>",          "List PDAs declared by an instruction (symbolic)"),
+                ("",   "inspect <pubkey>",  "Read VM account, decode by Anchor discriminator"),
+            ]),
+            ("Analysis", &[
+                ("st", "step <index>",      "Re-inspect a step: CU, logs, diffs"),
+                ("",   "who <account_type>", "List instructions referencing this account type (e.g. who Pool)"),
+                ("tl", "timeline <pubkey>",  "Cross-step mutation history of an account, decoded"),
             ]),
             ("Findings", &[
-                ("fi", "finding <sev> <t>", "Record a finding"),
-                ("n",  "note <text>",       "Add note"),
-                ("",   "status <ix> <st>",  "Change review status"),
-                ("sc", "scenario <sub>",    "new|list|switch|fork|delete"),
+                ("fi", "finding <sev> <title>", "Record a security finding"),
+                ("fl", "findings",          "List recorded findings"),
+                ("n",  "note <text>",       "Add annotation to active sequence"),
+                ("",   "status <ix> <s>",   "Set review status: open|reviewed|finding"),
+                ("ex", "export",            "Markdown report: sequence + findings + program info"),
+                ("sc", "scenario <sub>",    "new|list|switch|fork|delete <name> [step]"),
             ]),
             ("Workspace", &[
-                ("",   "save <name>",      "Save session JSON"),
-                ("",   "load <name>",      "Load session JSON"),
-                ("q",  "quit/exit",        "Exit"),
+                ("",   "save <name>",       "Save active scenario JSON to disk"),
+                ("",   "load <name>",       "Load scenario JSON from disk"),
+                ("?",  "help",              "Print this help"),
+                ("q",  "quit/exit",         "Exit"),
             ]),
         ],
         _ => &[
@@ -2862,6 +3452,13 @@ fn print_inline_help(cmd: &str) {
         (&["save"],           "save <name>",                     "Save session to disk. Example: save my-audit"),
         (&["load"],           "load <name>",                     "Load session from disk. Example: load my-audit"),
         (&["browser"],        "browser",                         "Open the web UI in a browser."),
+        // Solana-specific commands:
+        (&["users"],          "users [new <name> [<lamports>]]", "List or create keypairs in active scenario."),
+        (&["airdrop", "air"], "airdrop <name> <lamports>",       "Top up a user's SOL balance."),
+        (&["tw", "time-warp"],"time-warp <delta_seconds>",       "Warp the Clock sysvar (positive forward, negative back)."),
+        (&["pda"],            "pda <instruction>",               "List declared PDAs of an instruction (Anchor IDL)."),
+        (&["inspect", "acc"], "inspect <pubkey>",                "Decode an account by Anchor discriminator."),
+        (&["programs", "progs"], "programs",                     "List programs in the workspace (Solana)."),
     ];
 
     for (aliases, usage, desc) in entries {
