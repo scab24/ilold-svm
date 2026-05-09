@@ -318,6 +318,10 @@ pub fn execute_call(
         .get("compute_units")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
+    let error = trace
+        .get("error")
+        .and_then(|v| v.as_str())
+        .map(String::from);
 
     SolanaCommandResult::StepAdded {
         step_index,
@@ -325,6 +329,7 @@ pub fn execute_call(
         logs_excerpt,
         account_diffs_count,
         compute_units,
+        error,
     }
 }
 
@@ -534,6 +539,7 @@ fn decode_account_bytes(
 pub fn execute_step(
     session: &ExplorationSession,
     index: usize,
+    program: &ProgramDef,
 ) -> SolanaCommandResult {
     let step = match session.steps.get(index) {
         Some(s) => s,
@@ -552,20 +558,27 @@ pub fn execute_step(
         .and_then(|v| v.get("account_diffs").and_then(|d| d.as_array()))
         .map(|arr| {
             arr.iter()
-                .map(|d| StepDiffSummary {
-                    address: d.get("address").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                    name: d.get("name").and_then(|v| v.as_str()).map(String::from),
-                    lamports_delta: d
-                        .get("lamports_delta")
-                        .and_then(|v| v.as_i64())
-                        .map(|n| n as i128)
-                        .unwrap_or(0),
-                    data_changed: d
-                        .get("before")
-                        .and_then(|v| v.as_array())
-                        .zip(d.get("after").and_then(|v| v.as_array()))
-                        .map(|(b, a)| b != a)
-                        .unwrap_or(false),
+                .map(|d| {
+                    let before_bytes: Option<Vec<u8>> = d.get("before").and_then(|v| v.as_array())
+                        .map(|a| a.iter().filter_map(|b| b.as_u64().map(|n| n as u8)).collect());
+                    let after_bytes: Option<Vec<u8>> = d.get("after").and_then(|v| v.as_array())
+                        .map(|a| a.iter().filter_map(|b| b.as_u64().map(|n| n as u8)).collect());
+                    let decoded_before = before_bytes.as_ref().and_then(|b|
+                        decode_account_bytes(b, &program.account_types, &program.types));
+                    let decoded_after = after_bytes.as_ref().and_then(|b|
+                        decode_account_bytes(b, &program.account_types, &program.types));
+                    StepDiffSummary {
+                        address: d.get("address").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                        name: d.get("name").and_then(|v| v.as_str()).map(String::from),
+                        lamports_delta: d
+                            .get("lamports_delta")
+                            .and_then(|v| v.as_i64())
+                            .map(|n| n as i128)
+                            .unwrap_or(0),
+                        data_changed: before_bytes != after_bytes,
+                        decoded_before,
+                        decoded_after,
+                    }
                 })
                 .collect()
         })
@@ -702,11 +715,20 @@ pub fn execute_who(
 pub fn execute_timeline(
     session: &ExplorationSession,
     program: &ProgramDef,
-    pubkey: &str,
+    raw_target: &str,
     active_scenario: &str,
+    users: &HashMap<String, Keypair>,
 ) -> SolanaCommandResult {
+    // The auditor types `tl alice` or `tl <pubkey>` interchangeably; normalise
+    // to the on-wire pubkey before walking the diffs.
+    let resolved_label = users.get(raw_target).map(|_| raw_target.to_string());
+    let pubkey = match users.get(raw_target) {
+        Some(kp) => kp.pubkey().to_string(),
+        None => raw_target.to_string(),
+    };
+    let pubkey = pubkey.as_str();
     let mut entries: Vec<TimelineEntry> = Vec::new();
-    let mut label: Option<String> = None;
+    let mut label: Option<String> = resolved_label;
     for (idx, step) in session.steps.iter().enumerate() {
         let trace = match &step.runtime_trace {
             Some(t) => t,

@@ -651,7 +651,7 @@ async fn handle_solana_command(
         SolanaCommand::Status { ix, status } => {
             execute_status(session, &program, &ix, status, &timestamp)
         }
-        SolanaCommand::Step { index } => execute_step(session, index),
+        SolanaCommand::Step { index } => execute_step(session, index, &program),
         SolanaCommand::Findings => execute_findings_list(session),
         SolanaCommand::Export { metadata } => {
             // Export aggregates findings and step lists across ALL scenarios so
@@ -667,7 +667,7 @@ async fn handle_solana_command(
         }
         SolanaCommand::Who { account_type } => execute_who(&program, &account_type),
         SolanaCommand::Timeline { pubkey } => {
-            execute_timeline(session, &program, &pubkey, &active_scenario)
+            execute_timeline(session, &program, &pubkey, &active_scenario, scenario_users)
         }
         SolanaCommand::SaveSession { .. }
         | SolanaCommand::LoadSession { .. }

@@ -388,14 +388,24 @@
         {/if}
 
       {:else if selectedNode._type === 'trace'}
+        {#if selectedNode.error}
+          <div class="trace-failed-banner">
+            <strong>FAILED</strong>
+            <span class="trace-failed-msg">{selectedNode.error}</span>
+          </div>
+        {/if}
         <div class="d-row"><span class="d-label">Step</span><span>#{selectedNode.stepIndex}</span></div>
         <div class="d-row"><span class="d-label">Instruction</span><span>{selectedNode.instruction}</span></div>
+        <div class="d-row"><span class="d-label">Status</span>
+          {#if selectedNode.error}
+            <span class="text-danger">FAILED — VM rejected the call (step kept as audit trail; use back to drop it)</span>
+          {:else}
+            <span style="color: var(--color-success)">ok</span>
+          {/if}
+        </div>
         <div class="d-row"><span class="d-label">Compute units</span><span>{selectedNode.computeUnits}</span></div>
         <div class="d-row"><span class="d-label">Account diffs</span><span>{selectedNode.diffsCount}</span></div>
         <div class="d-row"><span class="d-label">Scenario</span><span>{selectedNode.scenario}</span></div>
-        {#if selectedNode.error}
-          <div class="d-row"><span class="d-label">Error</span><span class="text-danger">{selectedNode.error}</span></div>
-        {/if}
         {#if selectedNode.logsExcerpt && selectedNode.logsExcerpt.length > 0}
           <div class="d-section-label">Logs</div>
           <pre class="trace-logs">{selectedNode.logsExcerpt.join('\n')}</pre>
@@ -406,6 +416,24 @@
 {/if}
 
 <style>
+  .trace-failed-banner {
+    border: 1px solid var(--color-danger);
+    background: rgba(220, 80, 80, 0.08);
+    border-radius: 6px;
+    padding: 8px 12px;
+    margin-bottom: 8px;
+    color: var(--color-danger);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .trace-failed-msg {
+    font-size: 11px;
+    font-family: var(--font-mono, monospace);
+    word-break: break-word;
+    color: var(--color-text);
+    opacity: 0.85;
+  }
   .trace-logs {
     background: var(--color-hover);
     border: 1px solid var(--color-border-subtle);

@@ -1967,6 +1967,82 @@ fn apply_solana_result_to_steps(result: &SolanaCommandResult, steps: &mut Vec<St
     }
 }
 
+/// Render a JSON object's fields as `key value` lines, aligning the keys.
+/// Used by `state` and step diff printers when the account is decoded.
+fn print_decoded_fields(value: &serde_json::Value, indent: &str) {
+    if let serde_json::Value::Object(map) = value {
+        let max = map.keys().map(|k| k.chars().count()).max().unwrap_or(0);
+        for (k, v) in map {
+            let val = match v {
+                serde_json::Value::String(s) => s.clone(),
+                _ => serde_json::to_string(v).unwrap_or_default(),
+            };
+            println!(
+                "{}{} {}",
+                indent,
+                c_muted(&format!("{:width$}", k, width = max)),
+                val,
+            );
+        }
+    }
+}
+
+/// Diff two JSON objects key-by-key and print only the keys that changed.
+/// Format: `field_name  before → after`. Unchanged keys are skipped so the
+/// auditor sees exactly what mutated.
+fn print_decoded_diff(
+    before: &serde_json::Value,
+    after: &serde_json::Value,
+    indent: &str,
+) {
+    let (a, b) = match (before, after) {
+        (serde_json::Value::Object(a), serde_json::Value::Object(b)) => (a, b),
+        _ => {
+            println!(
+                "{}{}",
+                indent,
+                c_muted("decoded shape changed (not an object diff)"),
+            );
+            return;
+        }
+    };
+    let mut keys: Vec<&String> = a.keys().chain(b.keys()).collect();
+    keys.sort();
+    keys.dedup();
+    let max = keys.iter().map(|k| k.chars().count()).max().unwrap_or(0);
+    let mut any = false;
+    for k in keys {
+        let lhs = a.get(k);
+        let rhs = b.get(k);
+        if lhs == rhs {
+            continue;
+        }
+        any = true;
+        let s_lhs = lhs
+            .map(|v| match v {
+                serde_json::Value::String(s) => s.clone(),
+                _ => serde_json::to_string(v).unwrap_or_default(),
+            })
+            .unwrap_or_else(|| "<absent>".into());
+        let s_rhs = rhs
+            .map(|v| match v {
+                serde_json::Value::String(s) => s.clone(),
+                _ => serde_json::to_string(v).unwrap_or_default(),
+            })
+            .unwrap_or_else(|| "<absent>".into());
+        println!(
+            "{}{}  {} → {}",
+            indent,
+            c_muted(&format!("{:width$}", k, width = max)),
+            c_muted(&s_lhs),
+            s_rhs,
+        );
+    }
+    if !any {
+        println!("{}{}", indent, c_muted("(no decoded field changed)"));
+    }
+}
+
 fn print_solana_result(result: &SolanaCommandResult) {
     println!();
     match result {
@@ -1976,14 +2052,18 @@ fn print_solana_result(result: &SolanaCommandResult) {
             logs_excerpt,
             account_diffs_count,
             compute_units,
+            error,
         } => {
             // The Call appended the step regardless of VM outcome — the
-            // auditor must see whether it actually executed. Anchor reports
-            // failure via "AnchorError" / "failed:" / "panicked" in logs.
-            let failed = logs_excerpt.iter().any(|l| {
-                let s = l.as_str();
-                s.contains("AnchorError") || s.contains("failed:") || s.contains("panicked")
-            });
+            // auditor must see whether it actually executed. Prefer the
+            // structured `error` field; fall back to the historical log
+            // scan when the field is missing (shouldn't happen post-T-R47
+            // but kept for resilience against legacy save replays).
+            let failed = error.is_some()
+                || logs_excerpt.iter().any(|l| {
+                    let s = l.as_str();
+                    s.contains("AnchorError") || s.contains("failed:") || s.contains("panicked")
+                });
             let (mark, label) = if failed {
                 (c_danger("✗").to_string(), c_danger("FAILED").to_string())
             } else {
@@ -2042,19 +2122,42 @@ fn print_solana_result(result: &SolanaCommandResult) {
                 println!("  {}", c_muted("No accounts mutated yet"));
             }
             for a in accounts {
-                let decoded = a
-                    .decoded
-                    .as_ref()
-                    .map(|v| serde_json::to_string(v).unwrap_or_default())
-                    .unwrap_or_else(|| "<not decoded>".into());
                 println!(
-                    "  {} {} {} {} {}",
+                    "  {} {} {} {}",
                     c_accent("[A]"),
-                    a.label,
+                    c_accent(&a.label),
                     c_muted(&format!("({} lamports)", a.lamports)),
                     c_muted(&a.pubkey),
-                    c_muted(&decoded)
                 );
+                match a.decoded.as_ref() {
+                    None => {
+                        println!("      {}", c_muted("<not decoded>"));
+                    }
+                    Some(serde_json::Value::Object(map)) => {
+                        let max = map
+                            .keys()
+                            .map(|k| k.chars().count())
+                            .max()
+                            .unwrap_or(0);
+                        for (k, v) in map {
+                            let val = match v {
+                                serde_json::Value::String(s) => s.clone(),
+                                _ => serde_json::to_string(v).unwrap_or_default(),
+                            };
+                            println!(
+                                "      {} {}",
+                                c_muted(&format!("{:width$}", k, width = max)),
+                                val,
+                            );
+                        }
+                    }
+                    Some(other) => {
+                        println!(
+                            "      {}",
+                            c_muted(&serde_json::to_string(other).unwrap_or_default()),
+                        );
+                    }
+                }
             }
         }
         SolanaCommandResult::SessionView {
@@ -2226,12 +2329,36 @@ fn print_solana_result(result: &SolanaCommandResult) {
                 for d in diff_summary {
                     let label = d.name.clone().unwrap_or_else(|| d.address.clone());
                     let lam = if d.lamports_delta != 0 {
-                        format!("Δlamports={}", d.lamports_delta)
+                        format!(" Δlamports={}", d.lamports_delta)
                     } else {
                         String::new()
                     };
-                    let dat = if d.data_changed { "data changed" } else { "" };
-                    println!("      {} {}  {}  {}", c_accent("·"), label, c_muted(&lam), c_muted(dat));
+                    println!(
+                        "      {} {}{}",
+                        c_accent("·"),
+                        c_accent(&label),
+                        c_muted(&lam),
+                    );
+                    // Field-level before/after diff. We compare two JSON objects
+                    // and print only the keys that actually changed, plus a
+                    // "(new account)" marker when there was no `before`.
+                    match (d.decoded_before.as_ref(), d.decoded_after.as_ref()) {
+                        (None, None) => {
+                            if d.data_changed {
+                                println!("        {}", c_muted("data changed (not decoded)"));
+                            }
+                        }
+                        (None, Some(after)) => {
+                            println!("        {}", c_muted("(new account, decoded fields:)"));
+                            print_decoded_fields(after, "          ");
+                        }
+                        (Some(_), None) => {
+                            println!("        {}", c_muted("(account closed)"));
+                        }
+                        (Some(before), Some(after)) => {
+                            print_decoded_diff(before, after, "        ");
+                        }
+                    }
                 }
             }
         }

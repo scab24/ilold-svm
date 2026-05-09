@@ -785,12 +785,16 @@
       const runtime = (msg as any).runtime;
       if (!runtime) return;
       const key = `${msg.scenario}:${msg.step_index}`;
+      const logs: string[] = runtime.logs_excerpt ?? [];
+      const inferredError = logs.find((l: string) =>
+        l.includes('AnchorError') || l.includes('failed:') || l.includes('panicked')
+      );
       const next = new Map(solanaRuntimeByStep);
       next.set(key, {
         computeUnits: runtime.compute_units ?? 0,
         diffsCount: runtime.diffs_count ?? 0,
-        logsExcerpt: runtime.logs_excerpt ?? [],
-        error: runtime.error ?? null,
+        logsExcerpt: logs,
+        error: runtime.error ?? inferredError ?? null,
       });
       solanaRuntimeByStep = next;
     });
@@ -838,11 +842,20 @@
       const scenario = getActiveScenario() ?? 'main';
       const runtimeKey = `${scenario}:${sa.step_index}`;
       const next = new Map(solanaRuntimeByStep);
+      // SDD T-R47: StepAdded now carries the structured error from the VM
+      // (None when the Call succeeded). Falls back to scanning the logs for
+      // the historical AnchorError / failed: / panicked markers when the
+      // field is absent — covers older saves replayed in this session.
+      const explicitError: string | null = (sa.error as string | null | undefined) ?? null;
+      const logs: string[] = sa.logs_excerpt ?? [];
+      const inferredError = logs.find((l) =>
+        l.includes('AnchorError') || l.includes('failed:') || l.includes('panicked')
+      );
       next.set(runtimeKey, {
         computeUnits: sa.compute_units ?? 0,
         diffsCount: sa.account_diffs_count ?? 0,
-        logsExcerpt: sa.logs_excerpt ?? [],
-        error: null,
+        logsExcerpt: logs,
+        error: explicitError ?? inferredError ?? null,
       });
       solanaRuntimeByStep = next;
     }

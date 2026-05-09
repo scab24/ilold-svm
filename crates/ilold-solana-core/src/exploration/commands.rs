@@ -133,6 +133,12 @@ pub enum SolanaCommandResult {
         logs_excerpt: Vec<String>,
         account_diffs_count: usize,
         compute_units: u64,
+        /// VM-level error message when the Call failed (e.g. AnchorError) —
+        /// the step is still recorded so the auditor's attempted-attack trail
+        /// stays intact, but the field marks it as failed for every UI
+        /// surface (CLI prefix [FAILED], canvas red border, inspector badge).
+        #[serde(default)]
+        error: Option<String>,
     },
     StepRemoved {
         remaining: usize,
@@ -241,6 +247,13 @@ pub struct StepDiffSummary {
     pub name: Option<String>,
     pub lamports_delta: i128,
     pub data_changed: bool,
+    /// Anchor-decoded snapshot of the account before the Call ran. None when
+    /// the discriminator did not match a known type (e.g. system accounts).
+    #[serde(default)]
+    pub decoded_before: Option<Value>,
+    /// Anchor-decoded snapshot after the Call. Same caveat as `decoded_before`.
+    #[serde(default)]
+    pub decoded_after: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -283,6 +296,7 @@ pub fn canvas_patch_from_solana(
             logs_excerpt,
             account_diffs_count,
             compute_units,
+            error,
         } => Some(CanvasPatch::AddNode {
             scenario: active_scenario.to_string(),
             function: instruction.clone(),
@@ -292,7 +306,7 @@ pub fn canvas_patch_from_solana(
                 compute_units: *compute_units,
                 diffs_count: *account_diffs_count,
                 logs_excerpt: logs_excerpt.clone(),
-                error: None,
+                error: error.clone(),
                 trace: None,
             }),
         }),
