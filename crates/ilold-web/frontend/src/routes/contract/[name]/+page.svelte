@@ -517,22 +517,20 @@
     });
   });
 
-  // Session mode visibility filter: hide every non-session node and every
-  // non-session-path edge so the canvas shows the scenarios tree alone.
-  // Switching mode back unhides — no state is destroyed.
+  // Mode visibility filter: in session mode show only session nodes/edges; in
+  // any other mode hide them. Nodes are kept in the graph so switching back
+  // restores them without re-painting.
   $effect(() => {
     const currentMode = mode;
-    // Wrapped in untrack: setNodes/setEdges would otherwise re-trigger this
-    // effect via getNodes()/getEdges() subscriptions.
     untrack(() => {
       setNodes(getNodes().map((n) => {
-        const isSessionNode = (n.data as any)._sessionStep === true;
-        const shouldHide = currentMode === 'session' && !isSessionNode;
+        const isSessionNode = (n.data as any)?._sessionStep === true;
+        const shouldHide = currentMode === 'session' ? !isSessionNode : isSessionNode;
         return n.hidden === shouldHide ? n : { ...n, hidden: shouldHide };
       }));
       setEdges(getEdges().map((e) => {
         const isSessionEdge = (e.data as any)?._type === 'session-path';
-        const shouldHide = currentMode === 'session' && !isSessionEdge;
+        const shouldHide = currentMode === 'session' ? !isSessionEdge : isSessionEdge;
         return e.hidden === shouldHide ? e : { ...e, hidden: shouldHide };
       }));
     });
@@ -689,7 +687,20 @@
       addEdges(composedEdges);
 
       solanaTraceCount = tree.nodes.length;
-      if (flowApi) flowApi.fitView({ padding: 0.2, duration: 300 });
+
+      // Drop runtime entries whose trace node no longer exists (after Clear,
+      // Back, scenario delete) so a re-execute of the same step doesn't show
+      // stale CU/logs from a previous run.
+      const liveKeys = new Set(tree.nodes.map((n) => `${n._scenario}:${n.stepIndex}`));
+      let mutated = false;
+      const next = new Map(solanaRuntimeByStep);
+      for (const k of next.keys()) {
+        if (!liveKeys.has(k)) {
+          next.delete(k);
+          mutated = true;
+        }
+      }
+      if (mutated) solanaRuntimeByStep = next;
     });
   }
 
@@ -762,12 +773,28 @@
     await handleSolanaSubmit(payload, ix);
   }
 
-  $effect(() => {
-    if (kind !== 'solana' || !solanaProgram) return;
+  onMount(() => {
     const unsub = subscribeWs('solana_users_changed', () => {
-      refreshSolanaUsers();
+      if (solanaProgram) refreshSolanaUsers();
     });
-    return () => unsub();
+    // Fill solanaRuntimeByStep from the broadcast so calls executed in another
+    // terminal (CLI, second browser) show CU/diffs/logs in this canvas instead
+    // of "0 CU 0 diffs". Locally-issued calls also flow through here, harmless
+    // because handleSolanaSubmit already wrote the same data.
+    const unsubAdd = subscribeWs('session_add_node', (msg) => {
+      const runtime = (msg as any).runtime;
+      if (!runtime) return;
+      const key = `${msg.scenario}:${msg.step_index}`;
+      const next = new Map(solanaRuntimeByStep);
+      next.set(key, {
+        computeUnits: runtime.compute_units ?? 0,
+        diffsCount: runtime.diffs_count ?? 0,
+        logsExcerpt: runtime.logs_excerpt ?? [],
+        error: runtime.error ?? null,
+      });
+      solanaRuntimeByStep = next;
+    });
+    return () => { unsub(); unsubAdd(); };
   });
 
   async function refreshSolanaUsers() {
@@ -853,8 +880,13 @@
       contract = await getContract(contractName);
       const callgraphData = await getCallGraph(contractName);
       callgraphRaw = callgraphData;
-      try { seqTree = await getSequences(contractName); } catch {}
-      try { seqAnalysis = await getSequenceAnalysis(contractName); } catch {}
+      // Sequences/analysis are Solidity-only; expected to 400 for Solana.
+      try { seqTree = await getSequences(contractName); } catch (e) {
+        if (kind !== 'solana') console.warn('getSequences failed:', e);
+      }
+      try { seqAnalysis = await getSequenceAnalysis(contractName); } catch (e) {
+        if (kind !== 'solana') console.warn('getSequenceAnalysis failed:', e);
+      }
     } catch (e) {
       error = `Contract "${contractName}" not found`;
     }
@@ -1157,22 +1189,18 @@
   }
 
   async function handleSessionClear() {
+    const active = getActiveScenario();
+    const steps = getScenarios().get(active) ?? [];
+    if (steps.length === 0) return;
+    if (!confirm(`Clear all ${steps.length} step(s) from scenario "${active}"?`)) return;
     if (kind === 'solana' && solanaProgram) {
       try {
         await postSolanaCommand('Clear', solanaProgram.name);
-        solanaTraceCount = 0;
-        const composed = composeProgramGraph(solanaProgram);
-        setNodes(composed.nodes);
-        setEdges(composed.edges);
       } catch (e) {
         notifyFailure('session clear', e);
       }
       return;
     }
-    const active = getActiveScenario();
-    const steps = getScenarios().get(active) ?? [];
-    if (steps.length === 0) return;
-    if (!confirm(`Clear all ${steps.length} step(s) from scenario "${active}"?`)) return;
     try {
       await postCommand('Clear', contract?.name);
     } catch (e) {
@@ -1227,7 +1255,7 @@
     // it from an ancestor. `_scenariosPassingThrough` already encodes both
     // cases so the check is a single Array.includes.
     let sessionStep: { stepIndex: number } | undefined;
-    if (data._type === 'function' && data._sessionStep === true) {
+    if ((data._type === 'function' || data._type === 'trace') && data._sessionStep === true) {
       const { _scenariosPassingThrough: scns, _activeScenario: active, stepIndex: idx } = data;
       if (typeof idx === 'number' && active && scns?.includes(active)) {
         sessionStep = { stepIndex: idx };
@@ -1502,10 +1530,14 @@
 
   function switchMode(newMode: 'cfg' | 'sequences' | 'session') {
     if (kind === 'solana') {
-      clearGraph();
+      const toRemove = new Set<string>();
+      for (const n of getNodes()) {
+        const isSessionNode = (n.data as any)?._sessionStep === true;
+        if (!isSessionNode) toRemove.add(n.id);
+      }
+      if (toRemove.size > 0) removeNodesById(toRemove);
       solanaCanvasIxs = new Set();
       solanaExpandedIxs = new Set();
-      solanaTraceCount = 0;
       selectedNode = null;
       mode = newMode;
       return;
@@ -1570,6 +1602,11 @@
     if (kind === 'solana' && solanaProgram) {
       const prog = solanaProgram;
       const cmds: Command[] = [];
+      cmds.push(
+        { id: 'mode:cfg', label: 'Mode: Program', category: 'Mode', icon: '⊟', keywords: ['cfg', 'program', 'instructions'], run: () => switchMode('cfg') },
+        { id: 'mode:sequences', label: 'Mode: Sequences', category: 'Mode', icon: '⇵', keywords: ['seq', 'flow'], run: () => switchMode('sequences') },
+        { id: 'mode:session', label: 'Mode: Session', category: 'Mode', icon: '⎇', keywords: ['scenario', 'session', 'trace'], run: () => switchMode('session') },
+      );
       cmds.push({
         id: 'canvas:center',
         label: 'Center canvas',

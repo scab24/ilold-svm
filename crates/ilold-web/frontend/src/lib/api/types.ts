@@ -16,6 +16,15 @@ export interface SessionAddNode {
   function: string;
   access: AccessLevel;
   step_index: number;
+  /** Solana-only: runtime metadata so other CLIs/browsers see CU/diffs/logs
+   *  without having to re-fetch. None for Solidity (no VM). */
+  runtime?: {
+    compute_units: number;
+    diffs_count: number;
+    logs_excerpt: string[];
+    error?: string | null;
+    trace?: unknown;
+  };
 }
 
 export interface SessionRemoveNode {

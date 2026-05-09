@@ -66,7 +66,10 @@
     return getNodes()
       .filter((n) => (n.data as any)?._type === 'trace')
       .map((n) => n.data as TraceNodeData)
-      .sort((a, b) => a.stepIndex - b.stepIndex);
+      .sort((a, b) => {
+        if (a.scenario !== b.scenario) return a.scenario.localeCompare(b.scenario);
+        return a.stepIndex - b.stepIndex;
+      });
   });
 
   async function handleCreateUser(e: SubmitEvent) {
@@ -97,23 +100,26 @@
 
   let open = $state(true);
   let activeTab: 'timeline' | 'state' | 'inspector' = $state('timeline');
+  // Once the user picks a tab manually we stop auto-switching: otherwise
+  // selecting a node after a fork yanks the user back to Inspector even
+  // though they explicitly clicked Timeline/State.
+  let userPickedTab = $state(false);
 
-  // Auto-switch to the Inspector tab the moment the user selects a node
-  // on the canvas. Mirrors Figma / VSCode — selection should reveal the
-  // details without the user having to hunt for a tab. We only switch on
-  // the null → non-null transition so re-selecting a different node
-  // doesn't keep yanking the user back to this tab mid-navigation.
   let prevSelectedId = $state<string | null>(null);
   $effect(() => {
     const currentId = selectedNode?.id ?? null;
-    // Read the tracker via untrack so writing it at the end doesn't
-    // re-trigger this effect — only selectedNode changes should flow in.
     const prev = untrack(() => prevSelectedId);
-    if (currentId && !prev) {
+    const manual = untrack(() => userPickedTab);
+    if (currentId && !prev && !manual) {
       activeTab = 'inspector';
     }
     prevSelectedId = currentId;
   });
+
+  function pickTab(tab: 'timeline' | 'state' | 'inspector') {
+    activeTab = tab;
+    userPickedTab = true;
+  }
 
   // Reactive view of scenarios (ordered map + active name, both from session store)
   const scenarioEntries = $derived(Array.from(getScenarios().entries()));
@@ -268,21 +274,21 @@
       <button
         class="flex-1 py-2 bg-transparent border-none text-[10px] font-semibold uppercase tracking-wider cursor-pointer transition-colors duration-150 {activeTab === 'timeline' ? 'text-accent' : 'text-text-muted hover:text-text'}"
         style="border-bottom: 2px solid {activeTab === 'timeline' ? 'var(--color-accent)' : 'transparent'};"
-        onclick={() => activeTab = 'timeline'}
+        onclick={() => pickTab('timeline')}
       >
         Timeline
       </button>
       <button
         class="flex-1 py-2 bg-transparent border-none text-[10px] font-semibold uppercase tracking-wider cursor-pointer transition-colors duration-150 {activeTab === 'state' ? 'text-accent' : 'text-text-muted hover:text-text'}"
         style="border-bottom: 2px solid {activeTab === 'state' ? 'var(--color-accent)' : 'transparent'};"
-        onclick={() => activeTab = 'state'}
+        onclick={() => pickTab('state')}
       >
         State
       </button>
       <button
         class="flex-1 py-2 bg-transparent border-none text-[10px] font-semibold uppercase tracking-wider cursor-pointer transition-colors duration-150 {activeTab === 'inspector' ? 'text-accent' : 'text-text-muted hover:text-text'}"
         style="border-bottom: 2px solid {activeTab === 'inspector' ? 'var(--color-accent)' : 'transparent'};"
-        onclick={() => activeTab = 'inspector'}
+        onclick={() => pickTab('inspector')}
         title={selectedNode ? `Inspect: ${selectedNode._funcName || selectedNode.label}` : 'Inspector — select a node to populate'}
       >
         Inspector{#if selectedNode}<span class="ml-1 text-accent-light">●</span>{/if}
@@ -298,7 +304,7 @@
               <div class="solana-empty-hint">Click an instruction in the sidebar and press Execute, or run <code>call &lt;ix&gt; &lt;json&gt;</code> in the terminal.</div>
             </div>
           {/if}
-          {#each traceSteps as step (step.stepIndex)}
+          {#each traceSteps as step (`${step.scenario}:${step.stepIndex}`)}
             <div class="trace-step">
               <div class="trace-step-head">
                 <span class="trace-step-idx">#{step.stepIndex}</span>
