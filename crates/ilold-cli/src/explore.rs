@@ -1893,10 +1893,23 @@ fn print_solana_result(result: &SolanaCommandResult) {
             account_diffs_count,
             compute_units,
         } => {
+            // The Call appended the step regardless of VM outcome — the
+            // auditor must see whether it actually executed. Anchor reports
+            // failure via "AnchorError" / "failed:" / "panicked" in logs.
+            let failed = logs_excerpt.iter().any(|l| {
+                let s = l.as_str();
+                s.contains("AnchorError") || s.contains("failed:") || s.contains("panicked")
+            });
+            let (mark, label) = if failed {
+                (c_danger("✗").to_string(), c_danger("FAILED").to_string())
+            } else {
+                (c_ok("✓").to_string(), c_ok("ok").to_string())
+            };
             println!(
-                "  {} step {}: {} {}",
-                c_ok("✓"),
+                "  {} step {} [{}]: {} {}",
+                mark,
                 step_index,
+                label,
                 c_accent(instruction),
                 c_muted(&format!(
                     "({} CU, {} diffs)",
@@ -1904,7 +1917,14 @@ fn print_solana_result(result: &SolanaCommandResult) {
                 ))
             );
             for log in logs_excerpt {
-                println!("    {}", c_muted(log));
+                if log.contains("AnchorError")
+                    || log.contains("failed:")
+                    || log.contains("panicked")
+                {
+                    println!("    {}", c_danger(log));
+                } else {
+                    println!("    {}", c_muted(log));
+                }
             }
         }
         SolanaCommandResult::StepRemoved { remaining } => {

@@ -610,7 +610,18 @@ async fn handle_solana_command(
         }
         SolanaCommand::Step { index } => execute_step(session, index),
         SolanaCommand::Findings => execute_findings_list(session),
-        SolanaCommand::Export => execute_export(session, &program, &active_scenario),
+        SolanaCommand::Export => {
+            // Export aggregates findings and step lists across ALL scenarios so
+            // the auditor's deliverable reflects the full investigation, not
+            // just the currently-active branch.
+            let names: Vec<String> = scenarios.names().to_vec();
+            let entries: Vec<(&str, &ilold_session_core::exploration::session::ExplorationSession)> =
+                names
+                    .iter()
+                    .filter_map(|n| scenarios.get(n).map(|s| (n.as_str(), s)))
+                    .collect();
+            execute_export(entries, &active_scenario, &program)
+        }
         SolanaCommand::Who { account_type } => execute_who(&program, &account_type),
         SolanaCommand::Timeline { pubkey } => {
             execute_timeline(session, &program, &pubkey, &active_scenario)

@@ -584,20 +584,52 @@ pub fn execute_findings_list(session: &ExplorationSession) -> SolanaCommandResul
     SolanaCommandResult::FindingsList { items }
 }
 
-pub fn execute_export(
-    session: &ExplorationSession,
+pub fn execute_export<'a, I>(
+    scenarios: I,
+    active: &str,
     program: &ProgramDef,
-    scenario: &str,
-) -> SolanaCommandResult {
-    let mut md = String::new();
-    md.push_str(&format!("# Audit report — {} ({})\n\n", program.name, scenario));
-    md.push_str(&format!("**Steps**: {}\n", session.steps.len()));
-    md.push_str(&format!("**Findings**: {}\n\n", session.journal.findings.len()));
+) -> SolanaCommandResult
+where
+    I: IntoIterator<Item = (&'a str, &'a ExplorationSession)>,
+{
+    let scenarios: Vec<(&str, &ExplorationSession)> = scenarios.into_iter().collect();
+    let total_steps: usize = scenarios.iter().map(|(_, s)| s.steps.len()).sum();
+    let total_findings: usize = scenarios.iter().map(|(_, s)| s.journal.findings.len()).sum();
 
-    md.push_str("## Sequence\n\n");
-    if session.steps.is_empty() {
-        md.push_str("_(no steps recorded)_\n\n");
-    } else {
+    let mut md = String::new();
+    md.push_str(&format!("# Audit report — {}\n\n", program.name));
+    md.push_str(&format!(
+        "**Active scenario**: `{}`  ·  **Scenarios**: {}  ·  **Total steps**: {}  ·  **Total findings**: {}\n\n",
+        active, scenarios.len(), total_steps, total_findings,
+    ));
+
+    md.push_str("## Program\n\n");
+    md.push_str(&format!("- Program ID: `{}`\n", program.program_id));
+    md.push_str(&format!("- Instructions: {}\n", program.instructions.len()));
+    md.push_str(&format!("- Account types: {}\n\n", program.account_types.len()));
+
+    md.push_str("## Findings (all scenarios)\n\n");
+    let mut any = false;
+    for (scn_name, session) in &scenarios {
+        for f in &session.journal.findings {
+            any = true;
+            md.push_str(&format!(
+                "### {} — [{:?}] {}\n\n_scenario: `{}` · recorded at {}_\n\n{}\n\n",
+                f.id, f.severity, f.title, scn_name, f.created_at, f.description,
+            ));
+        }
+    }
+    if !any {
+        md.push_str("_(no findings recorded)_\n\n");
+    }
+
+    for (scn_name, session) in &scenarios {
+        md.push_str(&format!("## Scenario: `{}`\n\n", scn_name));
+        md.push_str(&format!("**Steps**: {}\n\n", session.steps.len()));
+        if session.steps.is_empty() {
+            md.push_str("_(no steps)_\n\n");
+            continue;
+        }
         for (i, s) in session.steps.iter().enumerate() {
             let cu = s.runtime_trace.as_ref()
                 .and_then(|v| v.get("compute_units"))
@@ -614,23 +646,6 @@ pub fn execute_export(
         }
         md.push('\n');
     }
-
-    md.push_str("## Findings\n\n");
-    if session.journal.findings.is_empty() {
-        md.push_str("_(no findings)_\n\n");
-    } else {
-        for f in &session.journal.findings {
-            md.push_str(&format!(
-                "### {} — [{:?}] {}\n\n{}\n\n_recorded at {}_\n\n",
-                f.id, f.severity, f.title, f.description, f.created_at
-            ));
-        }
-    }
-
-    md.push_str("## Program\n\n");
-    md.push_str(&format!("- Program ID: `{}`\n", program.program_id));
-    md.push_str(&format!("- Instructions: {}\n", program.instructions.len()));
-    md.push_str(&format!("- Account types: {}\n\n", program.account_types.len()));
 
     let bytes = md.len();
     SolanaCommandResult::Exported { markdown: md, bytes }

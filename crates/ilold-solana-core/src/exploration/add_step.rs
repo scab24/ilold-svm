@@ -105,7 +105,12 @@ pub fn add_solana_step<'a>(
             timestamp: timestamp.into(),
         });
 
-    Ok(session.steps.last().unwrap())
+    session
+        .steps
+        .last()
+        .ok_or_else(|| SolanaError::VmOperationFailed(
+            "step push succeeded but session.steps.last() is empty".into(),
+        ))
 }
 
 fn compute_diffs(

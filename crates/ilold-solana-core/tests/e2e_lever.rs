@@ -72,6 +72,7 @@ fn add_solana_step_runs_switch_power_against_real_program() {
         accounts,
         &[],
         "2026-05-06T00:00:00Z",
+        None,
     )
     .expect("add_solana_step");
 
