@@ -15,6 +15,7 @@
 
 - [Audit Walkthrough](./workflows/audit-walkthrough.md)
 - [Taint Analysis](./workflows/taint-analysis.md)
+- [Solana Support](./solana-support.md)
 
 # Reference
 
