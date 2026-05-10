@@ -16,7 +16,7 @@ use crate::view::describe_seed_view;
 use super::add_step::add_solana_step;
 use super::commands::{
     AccountSummary, FindingSummary, InstructionEntry, PdaEntry, SolanaCommandResult,
-    StepDiffSummary, TimelineEntry, UserEntry, WhoEntry,
+    StepDiffSummary, TimelineEntry, UserEntry, WhoEntry, WhoIxAccount, WhoQueryKind,
 };
 
 const DEFAULT_USER_LAMPORTS: u64 = 10_000_000_000;
@@ -683,27 +683,195 @@ where
 
 pub fn execute_who(
     program: &ProgramDef,
-    account_type: &str,
+    query: &str,
 ) -> SolanaCommandResult {
     let view = program.compute_view();
-    let target = account_type.to_string();
+    let raw = query.trim();
+
+    let resolved_account_type = view
+        .accounts
+        .iter()
+        .find(|a| a.name == raw)
+        .map(|a| a.name.clone())
+        .or_else(|| {
+            let pascal = crate::view::snake_to_pascal(raw);
+            view.accounts
+                .iter()
+                .find(|a| a.name == pascal)
+                .map(|a| a.name.clone())
+        });
+
+    if let Some(name) = resolved_account_type {
+        return who_for_account_type(&view, &name);
+    }
+
+    if let Some(ix) = view.instructions.iter().find(|i| i.name == raw) {
+        return who_for_instruction(&view, ix);
+    }
+
+    if let Some((owner_name, field)) = find_field_owner(&view, raw) {
+        return who_for_field(&view, raw, &owner_name, &field);
+    }
+
+    SolanaCommandResult::WhoList {
+        account_type: raw.to_string(),
+        instructions: Vec::new(),
+        query_kind: WhoQueryKind::NotFound,
+        field_owner: None,
+        field_type: None,
+        owner_fields: None,
+        ix_args: None,
+        ix_discriminator_hex: None,
+        ix_accounts: None,
+    }
+}
+
+fn who_for_account_type(
+    view: &crate::view::ProgramView,
+    type_name: &str,
+) -> SolanaCommandResult {
     let mut hits: Vec<WhoEntry> = Vec::new();
     for ix in &view.instructions {
         for acc in &ix.accounts {
-            if crate::view::snake_to_pascal(&acc.name) == target || acc.name == target {
+            let resolved = resolve_account_type(view, &acc.name);
+            if resolved.as_deref() == Some(type_name) {
                 hits.push(WhoEntry {
                     instruction: ix.name.clone(),
                     account_field: acc.name.clone(),
                     writable: acc.writable,
                     signer: acc.signer,
+                    account_type: resolved,
+                    ix_args: Some(ix.args.clone()),
                 });
             }
         }
     }
+    hits.sort_by(|a, b| a.instruction.cmp(&b.instruction));
+    let owner_fields = view
+        .accounts
+        .iter()
+        .find(|a| a.name == type_name)
+        .map(|a| a.fields.clone());
     SolanaCommandResult::WhoList {
-        account_type: target,
+        account_type: type_name.to_string(),
         instructions: hits,
+        query_kind: WhoQueryKind::AccountType,
+        field_owner: None,
+        field_type: None,
+        owner_fields,
+        ix_args: None,
+        ix_discriminator_hex: None,
+        ix_accounts: None,
     }
+}
+
+fn who_for_instruction(
+    view: &crate::view::ProgramView,
+    ix: &crate::view::IxView,
+) -> SolanaCommandResult {
+    let accounts: Vec<WhoIxAccount> = ix
+        .accounts
+        .iter()
+        .map(|acc| {
+            let resolved = resolve_account_type(view, &acc.name);
+            let fields = resolved.as_ref().and_then(|t| {
+                view.accounts
+                    .iter()
+                    .find(|a| &a.name == t)
+                    .map(|a| a.fields.clone())
+            });
+            WhoIxAccount {
+                name: acc.name.clone(),
+                account_type: resolved,
+                writable: acc.writable,
+                signer: acc.signer,
+                fields,
+            }
+        })
+        .collect();
+    SolanaCommandResult::WhoList {
+        account_type: ix.name.clone(),
+        instructions: Vec::new(),
+        query_kind: WhoQueryKind::Instruction,
+        field_owner: None,
+        field_type: None,
+        owner_fields: None,
+        ix_args: Some(ix.args.clone()),
+        ix_discriminator_hex: Some(ix.discriminator_hex.clone()),
+        ix_accounts: Some(accounts),
+    }
+}
+
+fn who_for_field(
+    view: &crate::view::ProgramView,
+    field_name: &str,
+    owner: &str,
+    field: &crate::view::FieldView,
+) -> SolanaCommandResult {
+    // Heuristic: without source-level analysis we list every ix that touches
+    // the owner account-type as writable. The renderer must surface this.
+    let mut hits: Vec<WhoEntry> = Vec::new();
+    for ix in &view.instructions {
+        for acc in &ix.accounts {
+            let resolved = resolve_account_type(view, &acc.name);
+            if resolved.as_deref() == Some(owner) && acc.writable {
+                hits.push(WhoEntry {
+                    instruction: ix.name.clone(),
+                    account_field: acc.name.clone(),
+                    writable: acc.writable,
+                    signer: acc.signer,
+                    account_type: resolved,
+                    ix_args: Some(ix.args.clone()),
+                });
+                break;
+            }
+        }
+    }
+    hits.sort_by(|a, b| a.instruction.cmp(&b.instruction));
+    let owner_fields = view
+        .accounts
+        .iter()
+        .find(|a| a.name == owner)
+        .map(|a| a.fields.clone());
+    SolanaCommandResult::WhoList {
+        account_type: field_name.to_string(),
+        instructions: hits,
+        query_kind: WhoQueryKind::Field,
+        field_owner: Some(owner.to_string()),
+        field_type: Some(field.ty.clone()),
+        owner_fields,
+        ix_args: None,
+        ix_discriminator_hex: None,
+        ix_accounts: None,
+    }
+}
+
+fn find_field_owner(
+    view: &crate::view::ProgramView,
+    field_name: &str,
+) -> Option<(String, crate::view::FieldView)> {
+    // Stable iteration order: AccountView vector preserves IDL order, which is
+    // the order ProgramDef::from_idl emitted. That is deterministic per-IDL.
+    for acc in &view.accounts {
+        if let Some(f) = acc.fields.iter().find(|f| f.name == field_name) {
+            return Some((acc.name.clone(), f.clone()));
+        }
+    }
+    None
+}
+
+fn resolve_account_type(
+    view: &crate::view::ProgramView,
+    account_name: &str,
+) -> Option<String> {
+    let pascal = crate::view::snake_to_pascal(account_name);
+    if view.accounts.iter().any(|a| a.name == pascal) {
+        return Some(pascal);
+    }
+    if view.accounts.iter().any(|a| a.name == account_name) {
+        return Some(account_name.to_string());
+    }
+    None
 }
 
 pub fn execute_timeline(
@@ -772,5 +940,169 @@ pub fn execute_timeline(
         pubkey: pubkey.to_string(),
         label,
         entries,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::idl::parse_idl;
+
+    const STAKING_JSON: &str = include_str!(
+        "../../../../tests/fixtures/solana/staking/idls/staking.json"
+    );
+    const LEVER_JSON: &str = include_str!("../../tests/fixtures/lever.json");
+
+    fn staking() -> ProgramDef {
+        ProgramDef::from_idl(parse_idl(STAKING_JSON).expect("parse staking"))
+            .expect("build staking ProgramDef")
+    }
+
+    fn lever() -> ProgramDef {
+        ProgramDef::from_idl(parse_idl(LEVER_JSON).expect("parse lever"))
+            .expect("build lever ProgramDef")
+    }
+
+    fn unwrap_who(
+        result: SolanaCommandResult,
+    ) -> (
+        String,
+        Vec<WhoEntry>,
+        WhoQueryKind,
+        Option<String>,
+        Option<Vec<crate::view::FieldView>>,
+        Option<Vec<crate::exploration::commands::WhoIxAccount>>,
+        Option<Vec<crate::view::ArgView>>,
+    ) {
+        match result {
+            SolanaCommandResult::WhoList {
+                account_type,
+                instructions,
+                query_kind,
+                field_owner,
+                owner_fields,
+                ix_accounts,
+                ix_args,
+                ..
+            } => (
+                account_type,
+                instructions,
+                query_kind,
+                field_owner,
+                owner_fields,
+                ix_accounts,
+                ix_args,
+            ),
+            other => panic!("expected WhoList, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn who_resolves_account_type_pool() {
+        let (target, hits, kind, owner, fields, accounts, _) =
+            unwrap_who(execute_who(&staking(), "Pool"));
+        assert_eq!(target, "Pool");
+        assert_eq!(kind, WhoQueryKind::AccountType);
+        assert!(owner.is_none());
+        assert_eq!(hits.len(), 5);
+        let names: Vec<_> = hits.iter().map(|w| w.instruction.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["add_rewards", "claim_rewards", "initialize_pool", "stake", "unstake"]
+        );
+        // Sorted alphabetically for snapshot stability.
+        assert!(hits.iter().all(|w| w.account_type.as_deref() == Some("Pool")));
+        assert!(hits.iter().all(|w| w.ix_args.is_some()));
+        let pool_fields = fields.expect("Pool fields populated");
+        assert!(pool_fields.iter().any(|f| f.name == "total_staked"));
+        assert!(accounts.is_none());
+    }
+
+    #[test]
+    fn who_resolves_lowercase_account_type() {
+        let (target, hits, kind, ..) = unwrap_who(execute_who(&staking(), "pool"));
+        assert_eq!(target, "Pool");
+        assert_eq!(kind, WhoQueryKind::AccountType);
+        assert_eq!(hits.len(), 5);
+    }
+
+    #[test]
+    fn who_resolves_instruction_claim_rewards() {
+        let (target, hits, kind, owner, fields, accounts, args) =
+            unwrap_who(execute_who(&staking(), "claim_rewards"));
+        assert_eq!(target, "claim_rewards");
+        assert_eq!(kind, WhoQueryKind::Instruction);
+        assert!(hits.is_empty());
+        assert!(owner.is_none());
+        assert!(fields.is_none());
+        let accs = accounts.expect("ix_accounts populated");
+        assert!(accs.iter().any(|a| a.name == "pool" && a.account_type.as_deref() == Some("Pool")));
+        assert!(accs
+            .iter()
+            .any(|a| a.name == "user_stake" && a.account_type.as_deref() == Some("UserStake")));
+        // The 'user' signer maps to no account type — must not crash, must be None.
+        assert!(accs
+            .iter()
+            .any(|a| a.name == "user" && a.account_type.is_none() && a.signer));
+        assert!(args.is_some());
+    }
+
+    #[test]
+    fn who_resolves_field_total_staked() {
+        let (target, hits, kind, owner, fields, accounts, _) =
+            unwrap_who(execute_who(&staking(), "total_staked"));
+        assert_eq!(target, "total_staked");
+        assert_eq!(kind, WhoQueryKind::Field);
+        assert_eq!(owner.as_deref(), Some("Pool"));
+        assert!(accounts.is_none());
+        let pool_fields = fields.expect("owner_fields present");
+        assert!(pool_fields.iter().any(|f| f.name == "total_staked"));
+        // All 5 ix that touch Pool as writable.
+        let names: Vec<_> = hits.iter().map(|w| w.instruction.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["add_rewards", "claim_rewards", "initialize_pool", "stake", "unstake"]
+        );
+    }
+
+    #[test]
+    fn who_returns_not_found_for_unknown_query() {
+        let (target, hits, kind, owner, ..) =
+            unwrap_who(execute_who(&staking(), "nonexistent"));
+        assert_eq!(target, "nonexistent");
+        assert_eq!(kind, WhoQueryKind::NotFound);
+        assert!(hits.is_empty());
+        assert!(owner.is_none());
+    }
+
+    #[test]
+    fn who_field_returns_no_writers_when_account_name_does_not_map() {
+        // Edge case: lever declares the IDL account as `power` (snake) but the
+        // type is `PowerStatus` — snake_to_pascal("power") = "Power" ≠
+        // "PowerStatus". Without source-level analysis we can't bridge that gap,
+        // so the heuristic must surface zero writers for `is_on` rather than
+        // guessing. This is a known limitation we surface honestly.
+        let (target, hits, kind, owner, fields, ..) =
+            unwrap_who(execute_who(&lever(), "is_on"));
+        assert_eq!(target, "is_on");
+        assert_eq!(kind, WhoQueryKind::Field);
+        assert_eq!(owner.as_deref(), Some("PowerStatus"));
+        assert!(hits.is_empty(), "no field-name-to-type bridge available");
+        assert!(fields.is_some());
+    }
+
+    #[test]
+    fn who_instruction_handles_system_program_account_kind() {
+        let (_, _, kind, _, _, accounts, _) =
+            unwrap_who(execute_who(&lever(), "initialize"));
+        assert_eq!(kind, WhoQueryKind::Instruction);
+        let accs = accounts.expect("ix_accounts populated");
+        let sys = accs
+            .iter()
+            .find(|a| a.name == "system_program")
+            .expect("system_program present");
+        assert!(sys.account_type.is_none());
+        assert!(!sys.signer && !sys.writable);
+        assert!(sys.fields.is_none());
     }
 }

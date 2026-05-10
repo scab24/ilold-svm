@@ -11,6 +11,23 @@ fn cpi_fixture() -> PathBuf {
         .join("tests/fixtures/solana/cpi")
 }
 
+fn staking_fixture() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("tests/fixtures/solana/staking")
+}
+
+async fn start_staking() -> (reqwest::Client, u16) {
+    let detected = detect(&staking_fixture()).expect("detect staking fixture");
+    let (_state, port) = ilold_web::start_solana_server(detected, 0)
+        .await
+        .expect("start solana server");
+    (reqwest::Client::new(), port)
+}
+
 async fn start_solana() -> (reqwest::Client, u16) {
     let detected = detect(&cpi_fixture()).expect("detect cpi fixture");
     let (_state, port) = ilold_web::start_solana_server(detected, 0)
@@ -435,4 +452,123 @@ async fn solana_vars_returns_account_types() {
         fields[0].get("ty").and_then(|v| v.as_str()),
         Some("bool")
     );
+}
+
+#[tokio::test]
+async fn solana_who_account_type_pool_returns_writers() {
+    let (client, port) = start_staking().await;
+    let result = cmd(
+        &client,
+        port,
+        "staking",
+        serde_json::json!({"Who": {"account_type": "Pool"}}),
+    )
+    .await;
+    let who = result.get("WhoList").expect("WhoList variant");
+    assert_eq!(
+        who.get("query_kind").and_then(|v| v.as_str()),
+        Some("AccountType")
+    );
+    assert_eq!(
+        who.get("account_type").and_then(|v| v.as_str()),
+        Some("Pool")
+    );
+    let ixs = who
+        .get("instructions")
+        .and_then(|v| v.as_array())
+        .expect("instructions array");
+    assert_eq!(ixs.len(), 5);
+    let names: Vec<_> = ixs
+        .iter()
+        .filter_map(|i| i.get("instruction").and_then(|v| v.as_str()))
+        .collect();
+    assert_eq!(
+        names,
+        vec!["add_rewards", "claim_rewards", "initialize_pool", "stake", "unstake"]
+    );
+    let fields = who
+        .get("owner_fields")
+        .and_then(|v| v.as_array())
+        .expect("owner_fields populated for AccountType");
+    assert!(fields.iter().any(|f| f.get("name").and_then(|v| v.as_str()) == Some("total_staked")));
+}
+
+#[tokio::test]
+async fn solana_who_field_total_staked_marks_owner_pool() {
+    let (client, port) = start_staking().await;
+    let result = cmd(
+        &client,
+        port,
+        "staking",
+        serde_json::json!({"Who": {"account_type": "total_staked"}}),
+    )
+    .await;
+    let who = result.get("WhoList").expect("WhoList variant");
+    assert_eq!(who.get("query_kind").and_then(|v| v.as_str()), Some("Field"));
+    assert_eq!(
+        who.get("field_owner").and_then(|v| v.as_str()),
+        Some("Pool")
+    );
+    let ixs = who
+        .get("instructions")
+        .and_then(|v| v.as_array())
+        .expect("instructions array");
+    assert_eq!(ixs.len(), 5);
+}
+
+#[tokio::test]
+async fn solana_who_instruction_claim_rewards_lists_accounts() {
+    let (client, port) = start_staking().await;
+    let result = cmd(
+        &client,
+        port,
+        "staking",
+        serde_json::json!({"Who": {"account_type": "claim_rewards"}}),
+    )
+    .await;
+    let who = result.get("WhoList").expect("WhoList variant");
+    assert_eq!(
+        who.get("query_kind").and_then(|v| v.as_str()),
+        Some("Instruction")
+    );
+    let accs = who
+        .get("ix_accounts")
+        .and_then(|v| v.as_array())
+        .expect("ix_accounts populated");
+    let pool = accs
+        .iter()
+        .find(|a| a.get("name").and_then(|v| v.as_str()) == Some("pool"))
+        .expect("pool account in ix_accounts");
+    assert_eq!(
+        pool.get("account_type").and_then(|v| v.as_str()),
+        Some("Pool")
+    );
+    assert_eq!(pool.get("writable").and_then(|v| v.as_bool()), Some(true));
+    let user = accs
+        .iter()
+        .find(|a| a.get("name").and_then(|v| v.as_str()) == Some("user"))
+        .expect("user signer in ix_accounts");
+    assert!(user.get("account_type").is_none() || user.get("account_type").map(|v| v.is_null()).unwrap_or(false));
+}
+
+#[tokio::test]
+async fn solana_who_unknown_query_returns_not_found() {
+    let (client, port) = start_staking().await;
+    let result = cmd(
+        &client,
+        port,
+        "staking",
+        serde_json::json!({"Who": {"account_type": "foo"}}),
+    )
+    .await;
+    let who = result.get("WhoList").expect("WhoList variant");
+    assert_eq!(
+        who.get("query_kind").and_then(|v| v.as_str()),
+        Some("NotFound")
+    );
+    let ixs = who
+        .get("instructions")
+        .and_then(|v| v.as_array())
+        .expect("instructions array");
+    assert!(ixs.is_empty());
 }

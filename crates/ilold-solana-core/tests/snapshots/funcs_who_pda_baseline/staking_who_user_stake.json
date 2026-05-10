@@ -6,19 +6,50 @@
         "instruction": "claim_rewards",
         "account_field": "user_stake",
         "writable": true,
-        "signer": false
+        "signer": false,
+        "account_type": "UserStake",
+        "ix_args": []
       },
       {
         "instruction": "stake",
         "account_field": "user_stake",
         "writable": true,
-        "signer": true
+        "signer": true,
+        "account_type": "UserStake",
+        "ix_args": [
+          {
+            "name": "amount",
+            "ty": "u64"
+          }
+        ]
       },
       {
         "instruction": "unstake",
         "account_field": "user_stake",
         "writable": true,
-        "signer": false
+        "signer": false,
+        "account_type": "UserStake",
+        "ix_args": [
+          {
+            "name": "amount",
+            "ty": "u64"
+          }
+        ]
+      }
+    ],
+    "query_kind": "AccountType",
+    "owner_fields": [
+      {
+        "name": "user",
+        "ty": "Pubkey"
+      },
+      {
+        "name": "amount",
+        "ty": "u64"
+      },
+      {
+        "name": "claimed_rewards",
+        "ty": "u64"
       }
     ]
   }

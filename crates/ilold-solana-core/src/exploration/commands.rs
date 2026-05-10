@@ -7,7 +7,7 @@ use ilold_session_core::journal::types::{ReviewStatus, Severity};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::view::{AccountView, CouplingPair, IxView};
+use crate::view::{AccountView, ArgView, CouplingPair, FieldView, IxView};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SolanaCommand {
@@ -253,6 +253,20 @@ pub enum SolanaCommandResult {
     WhoList {
         account_type: String,
         instructions: Vec<WhoEntry>,
+        #[serde(default)]
+        query_kind: WhoQueryKind,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        field_owner: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        field_type: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        owner_fields: Option<Vec<FieldView>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ix_args: Option<Vec<ArgView>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ix_discriminator_hex: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ix_accounts: Option<Vec<WhoIxAccount>>,
     },
     TimelineView {
         pubkey: String,
@@ -305,6 +319,35 @@ pub struct WhoEntry {
     pub account_field: String,
     pub writable: bool,
     pub signer: bool,
+    /// Resolved Anchor account type (e.g. "Pool"). None for system / sysvar /
+    /// program / unknown accounts. Lets the renderer show "(as pool: Pool)".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_type: Option<String>,
+    /// Args of the instruction this entry references. Useful when the auditor
+    /// landed on this entry via an AccountType or Field query and wants to see
+    /// what knobs each ix exposes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ix_args: Option<Vec<ArgView>>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub enum WhoQueryKind {
+    #[default]
+    AccountType,
+    Field,
+    Instruction,
+    NotFound,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WhoIxAccount {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_type: Option<String>,
+    pub writable: bool,
+    pub signer: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fields: Option<Vec<FieldView>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

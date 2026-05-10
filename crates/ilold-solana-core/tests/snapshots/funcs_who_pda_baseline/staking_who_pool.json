@@ -6,31 +6,80 @@
         "instruction": "add_rewards",
         "account_field": "pool",
         "writable": true,
-        "signer": false
+        "signer": false,
+        "account_type": "Pool",
+        "ix_args": [
+          {
+            "name": "amount",
+            "ty": "u64"
+          }
+        ]
       },
       {
         "instruction": "claim_rewards",
         "account_field": "pool",
         "writable": true,
-        "signer": false
+        "signer": false,
+        "account_type": "Pool",
+        "ix_args": []
       },
       {
         "instruction": "initialize_pool",
         "account_field": "pool",
         "writable": true,
-        "signer": true
+        "signer": true,
+        "account_type": "Pool",
+        "ix_args": [
+          {
+            "name": "reward_rate",
+            "ty": "u64"
+          }
+        ]
       },
       {
         "instruction": "stake",
         "account_field": "pool",
         "writable": true,
-        "signer": false
+        "signer": false,
+        "account_type": "Pool",
+        "ix_args": [
+          {
+            "name": "amount",
+            "ty": "u64"
+          }
+        ]
       },
       {
         "instruction": "unstake",
         "account_field": "pool",
         "writable": true,
-        "signer": false
+        "signer": false,
+        "account_type": "Pool",
+        "ix_args": [
+          {
+            "name": "amount",
+            "ty": "u64"
+          }
+        ]
+      }
+    ],
+    "query_kind": "AccountType",
+    "owner_fields": [
+      {
+        "name": "admin",
+        "ty": "Pubkey"
+      },
+      {
+        "name": "total_staked",
+        "ty": "u64"
+      },
+      {
+        "name": "total_rewards",
+        "ty": "u64"
+      },
+      {
+        "name": "reward_rate",
+        "ty": "u64"
       }
     ]
   }

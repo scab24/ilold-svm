@@ -5,7 +5,7 @@ pub mod execute;
 pub use add_step::add_solana_step;
 pub use commands::{
     canvas_patch_from_solana, AccountSummary, InstructionEntry, PdaEntry, SolanaCommand,
-    SolanaCommandResult, UserEntry,
+    SolanaCommandResult, UserEntry, WhoEntry, WhoIxAccount, WhoQueryKind,
 };
 pub use execute::{
     execute_airdrop, execute_back, execute_call, execute_clear, execute_coupling,

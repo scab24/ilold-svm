@@ -2422,24 +2422,28 @@ fn print_solana_result(result: &SolanaCommandResult) {
                 println!("  {}", line);
             }
         }
-        SolanaCommandResult::WhoList { account_type, instructions } => {
-            if instructions.is_empty() {
-                println!("  {} no instruction references account_type '{}'", c_muted("·"), account_type);
-            } else {
-                println!("  {} '{}' referenced by:", c_accent("·"), c_accent(account_type));
-                for w in instructions {
-                    let mut flags = Vec::new();
-                    if w.signer { flags.push("signer"); }
-                    if w.writable { flags.push("writable"); }
-                    println!(
-                        "    {} {} (as {}) {}",
-                        c_accent("·"),
-                        c_accent(&w.instruction),
-                        w.account_field,
-                        c_muted(&flags.join(" "))
-                    );
-                }
-            }
+        SolanaCommandResult::WhoList {
+            account_type,
+            instructions,
+            query_kind,
+            field_owner,
+            field_type,
+            owner_fields,
+            ix_args,
+            ix_discriminator_hex,
+            ix_accounts,
+        } => {
+            print_who_list(
+                account_type,
+                instructions,
+                *query_kind,
+                field_owner.as_deref(),
+                field_type.as_deref(),
+                owner_fields.as_deref(),
+                ix_args.as_deref(),
+                ix_discriminator_hex.as_deref(),
+                ix_accounts.as_deref(),
+            );
         }
         SolanaCommandResult::TimelineView { pubkey, label, entries } => {
             let header = label.clone().unwrap_or_else(|| pubkey.clone());
@@ -2641,6 +2645,203 @@ fn print_account_types(accounts: &[ilold_solana_core::view::AccountView]) {
                 fmt::pad_right(&f.name, max),
                 c_muted(&f.ty)
             );
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn print_who_list(
+    target: &str,
+    instructions: &[ilold_solana_core::exploration::commands::WhoEntry],
+    query_kind: ilold_solana_core::exploration::commands::WhoQueryKind,
+    field_owner: Option<&str>,
+    field_type: Option<&str>,
+    owner_fields: Option<&[ilold_solana_core::view::FieldView]>,
+    ix_args: Option<&[ilold_solana_core::view::ArgView]>,
+    ix_discriminator_hex: Option<&str>,
+    ix_accounts: Option<&[ilold_solana_core::exploration::commands::WhoIxAccount]>,
+) {
+    use ilold_solana_core::exploration::commands::WhoQueryKind;
+    match query_kind {
+        WhoQueryKind::AccountType => {
+            println!(
+                "  {} '{}' (account type)",
+                c_accent("·"),
+                c_accent(target)
+            );
+            print_field_summary(owner_fields, "fields");
+            println!();
+            if instructions.is_empty() {
+                println!("  {}", c_muted("not referenced by any instruction"));
+                return;
+            }
+            println!(
+                "  Referenced by {} instruction{}:",
+                instructions.len(),
+                if instructions.len() == 1 { "" } else { "s" }
+            );
+            println!();
+            for w in instructions {
+                print_who_entry_block(w);
+            }
+        }
+        WhoQueryKind::Field => {
+            let owner = field_owner.unwrap_or("?");
+            let ty = field_type.unwrap_or("?");
+            println!(
+                "  {} '{}' (field of {}, type {})",
+                c_accent("·"),
+                c_accent(target),
+                c_accent(owner),
+                c_muted(ty)
+            );
+            print_field_summary(owner_fields, &format!("{owner} struct"));
+            println!();
+            println!(
+                "  {}",
+                c_warn(
+                    "Heuristic: the following instructions write the owner account."
+                )
+            );
+            println!(
+                "  {}",
+                c_muted(
+                    "Without source-level analysis we cannot tell which one(s)"
+                )
+            );
+            println!(
+                "  {}",
+                c_muted("actually mutate this field; cross-check with `step <idx>`.")
+            );
+            println!();
+            if instructions.is_empty() {
+                println!("    {}", c_muted("(no writers found)"));
+                return;
+            }
+            for w in instructions {
+                print_who_entry_block(w);
+            }
+        }
+        WhoQueryKind::Instruction => {
+            println!(
+                "  {} '{}' (instruction)",
+                c_accent("·"),
+                c_accent(target)
+            );
+            match ix_args {
+                Some(args) if !args.is_empty() => {
+                    let parts: Vec<String> = args
+                        .iter()
+                        .map(|a| format!("{}: {}", a.name, a.ty))
+                        .collect();
+                    println!("    args: {}", c_muted(&parts.join(", ")));
+                }
+                _ => println!("    {}", c_muted("args: (none)")),
+            }
+            if let Some(d) = ix_discriminator_hex {
+                println!("    {} {}", c_muted("discriminator"), d);
+            }
+            println!();
+            let accounts = ix_accounts.unwrap_or(&[]);
+            if accounts.is_empty() {
+                println!("  {}", c_muted("touches no accounts"));
+                return;
+            }
+            println!(
+                "  Touches {} account{}:",
+                accounts.len(),
+                if accounts.len() == 1 { "" } else { "s" }
+            );
+            println!();
+            for acc in accounts {
+                print_who_ix_account(acc);
+            }
+        }
+        WhoQueryKind::NotFound => {
+            println!(
+                "  {} no instruction, account type or field references '{}'",
+                c_muted("·"),
+                target
+            );
+        }
+    }
+}
+
+fn print_field_summary(
+    fields: Option<&[ilold_solana_core::view::FieldView]>,
+    label: &str,
+) {
+    match fields {
+        Some(fs) if !fs.is_empty() => {
+            let parts: Vec<String> = fs
+                .iter()
+                .map(|f| format!("{}: {}", f.name, f.ty))
+                .collect();
+            println!("    {}: {}", label, c_muted(&parts.join(", ")));
+        }
+        Some(_) => {
+            println!("    {}: {}", label, c_muted("(opaque or zero-copy layout)"));
+        }
+        None => {}
+    }
+}
+
+fn print_who_entry_block(entry: &ilold_solana_core::exploration::commands::WhoEntry) {
+    let mut flags = Vec::new();
+    if entry.signer {
+        flags.push("signer");
+    }
+    if entry.writable {
+        flags.push("writable");
+    }
+    let flags_str = flags.join(" ");
+    println!(
+        "    {} {} (as {}) {}",
+        c_accent("·"),
+        c_accent(&entry.instruction),
+        entry.account_field,
+        c_muted(&flags_str)
+    );
+    match entry.ix_args.as_ref() {
+        Some(args) if !args.is_empty() => {
+            let parts: Vec<String> = args
+                .iter()
+                .map(|a| format!("{}: {}", a.name, a.ty))
+                .collect();
+            println!("        args: {}", c_muted(&parts.join(", ")));
+        }
+        Some(_) => println!("        {}", c_muted("args: (none)")),
+        None => {}
+    }
+}
+
+fn print_who_ix_account(acc: &ilold_solana_core::exploration::commands::WhoIxAccount) {
+    let type_label = acc
+        .account_type
+        .as_deref()
+        .map(|t| format!("({t})"))
+        .unwrap_or_else(|| "(—)".to_string());
+    let mut flags = Vec::new();
+    if acc.signer {
+        flags.push("signer");
+    }
+    if acc.writable {
+        flags.push("writable");
+    }
+    println!(
+        "    {} {} {} {}",
+        c_accent("·"),
+        c_accent(&acc.name),
+        c_muted(&type_label),
+        c_muted(&flags.join(" "))
+    );
+    if let Some(fs) = acc.fields.as_ref() {
+        if !fs.is_empty() {
+            let parts: Vec<String> = fs
+                .iter()
+                .map(|f| format!("{}: {}", f.name, f.ty))
+                .collect();
+            println!("        struct: {}", c_muted(&parts.join(", ")));
         }
     }
 }
