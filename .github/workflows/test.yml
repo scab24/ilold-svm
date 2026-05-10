@@ -11,6 +11,7 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/**'
+      - 'crates/ilold-web/frontend/**'
 
 env:
   CARGO_TERM_COLOR: always
@@ -63,3 +64,19 @@ jobs:
 
       - name: Run scenario suite
         run: bash tests/scenarios/run.sh
+
+  frontend-cross-check:
+    name: frontend cross-check program-view
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run program-view cross-check
+        working-directory: crates/ilold-web/frontend
+        run: npm run check:program-view

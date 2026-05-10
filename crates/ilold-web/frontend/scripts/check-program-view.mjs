@@ -19,25 +19,62 @@ assert.ok(Array.isArray(view.instructions), 'instructions is array');
 assert.ok(view.instructions.length > 0, 'instructions non-empty');
 assert.ok(Array.isArray(view.accounts), 'accounts is array');
 
-const ix0 = view.instructions[0];
-assert.equal(typeof ix0.name, 'string', 'ix.name is string');
-assert.equal(typeof ix0.discriminator_hex, 'string', 'ix.discriminator_hex is string');
-assert.ok(Array.isArray(ix0.args), 'ix.args is array');
-assert.ok(Array.isArray(ix0.accounts), 'ix.accounts is array');
-for (const a of ix0.args) {
-  assert.equal(typeof a.name, 'string', 'arg.name is string');
-  assert.equal(typeof a.ty, 'string', 'arg.ty is string');
+const KINDS = new Set(['program', 'system', 'sysvar', 'pda', 'other']);
+const SEED_KINDS = new Set(['const', 'arg', 'account']);
+
+function checkSeed(seed, where) {
+  assert.equal(typeof seed, 'object', `${where}: seed is object`);
+  assert.ok(SEED_KINDS.has(seed.kind), `${where}: seed.kind unknown: ${seed.kind}`);
+  if (seed.kind === 'const') {
+    assert.equal(typeof seed.value_hex, 'string', `${where}: const.value_hex is string`);
+    if (seed.value_utf8 !== undefined) {
+      assert.equal(typeof seed.value_utf8, 'string', `${where}: const.value_utf8 is string`);
+    }
+  } else if (seed.kind === 'arg') {
+    assert.equal(typeof seed.name, 'string', `${where}: arg.name is string`);
+    assert.equal(typeof seed.ty, 'string', `${where}: arg.ty is string`);
+  } else if (seed.kind === 'account') {
+    assert.equal(typeof seed.path, 'string', `${where}: account.path is string`);
+  }
 }
-for (const acc of ix0.accounts) {
-  assert.equal(typeof acc.name, 'string', 'ix-account.name is string');
-  assert.equal(typeof acc.path, 'string', 'ix-account.path is string');
-  assert.ok(
-    ['program', 'system', 'sysvar', 'pda', 'other'].includes(acc.kind),
-    `ix-account.kind unknown: ${acc.kind}`,
-  );
-  assert.equal(typeof acc.signer, 'boolean', 'ix-account.signer is boolean');
-  assert.equal(typeof acc.writable, 'boolean', 'ix-account.writable is boolean');
+
+function checkPda(pda, where) {
+  assert.equal(typeof pda, 'object', `${where}: pda is object`);
+  assert.ok(Array.isArray(pda.seeds), `${where}: pda.seeds is array`);
+  pda.seeds.forEach((s, i) => checkSeed(s, `${where}.seeds[${i}]`));
+  if (pda.program !== undefined) {
+    assert.equal(typeof pda.program, 'string', `${where}: pda.program is string`);
+  }
+  if (pda.bump_arg !== undefined) {
+    assert.equal(typeof pda.bump_arg, 'string', `${where}: pda.bump_arg is string`);
+  }
 }
+
+let pdaCount = 0;
+view.instructions.forEach((ix, ixIdx) => {
+  const where = `ix[${ixIdx}] (${ix.name})`;
+  assert.equal(typeof ix.name, 'string', `${where}: name is string`);
+  assert.equal(typeof ix.discriminator_hex, 'string', `${where}: discriminator_hex is string`);
+  assert.ok(Array.isArray(ix.args), `${where}: args is array`);
+  assert.ok(Array.isArray(ix.accounts), `${where}: accounts is array`);
+  for (const a of ix.args) {
+    assert.equal(typeof a.name, 'string', `${where}: arg.name is string`);
+    assert.equal(typeof a.ty, 'string', `${where}: arg.ty is string`);
+  }
+  ix.accounts.forEach((acc, accIdx) => {
+    const accWhere = `${where}.accounts[${accIdx}] (${acc.name})`;
+    assert.equal(typeof acc.name, 'string', `${accWhere}: name is string`);
+    assert.equal(typeof acc.path, 'string', `${accWhere}: path is string`);
+    assert.ok(KINDS.has(acc.kind), `${accWhere}: kind unknown: ${acc.kind}`);
+    assert.equal(typeof acc.signer, 'boolean', `${accWhere}: signer is boolean`);
+    assert.equal(typeof acc.writable, 'boolean', `${accWhere}: writable is boolean`);
+    assert.equal(typeof acc.optional, 'boolean', `${accWhere}: optional is boolean`);
+    if (acc.pda !== undefined) {
+      checkPda(acc.pda, `${accWhere}.pda`);
+      pdaCount += 1;
+    }
+  });
+});
 
 const pool = view.accounts.find((a) => a.name === 'Pool');
 assert.ok(pool, 'Pool account-type present');
@@ -62,4 +99,6 @@ if (view.system_accounts) {
   assert.ok(Array.isArray(view.system_accounts), 'system_accounts is array');
 }
 
-console.log(`ok: ProgramView snapshot matches TS contract (${view.instructions.length} ixs, ${view.accounts.length} account-types)`);
+console.log(
+  `ok: ProgramView snapshot matches TS contract (${view.instructions.length} ixs, ${view.accounts.length} account-types, ${pdaCount} pda accounts)`,
+);

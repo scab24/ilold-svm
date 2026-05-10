@@ -43,6 +43,7 @@
   let solanaExpandedIxs: Set<string> = $state(new Set());
   let solanaUsers: { name: string; pubkey: string; lamports: number }[] = $state([]);
   let solanaTraceCount = $state(0);
+  let hideSystem = $state(false);
   type SolanaRuntimeInfo = {
     computeUnits: number;
     diffsCount: number;
@@ -722,24 +723,19 @@
     });
   }
 
-  function handleSolanaIxExpand(ixName: string) {
+  function isHiddenAccount(accName: string): boolean {
+    if (!hideSystem || !solanaProgram?.system_accounts) return false;
+    return solanaProgram.system_accounts.includes(accName);
+  }
+
+  function paintIxAccounts(ixName: string) {
     if (!solanaProgram) return;
-    if (solanaExpandedIxs.has(ixName)) {
-      const ids = new Set<string>();
-      for (const n of getNodes()) {
-        const data: any = n.data;
-        if (data?._type === 'account' && data.parentInstruction === ixName) ids.add(n.id);
-      }
-      if (ids.size > 0) removeNodesById(ids);
-      solanaExpandedIxs = new Set([...solanaExpandedIxs].filter((n) => n !== ixName));
-      return;
-    }
     const ix = solanaProgram.instructions.find((i) => i.name === ixName);
     if (!ix) return;
     const parent = findNode(`ix:${ixName}`);
     const baseX = parent?.position?.x ?? 0;
     const baseY = (parent?.position?.y ?? 200) - 200;
-    const accounts = ix.accounts ?? [];
+    const accounts = (ix.accounts ?? []).filter((acc) => !isHiddenAccount(acc.name));
     const totalWidth = (accounts.length - 1) * 170;
     const newNodes: any[] = [];
     const newEdges: any[] = [];
@@ -764,18 +760,49 @@
           kind: acc.kind,
         },
       });
+      const edgeColor = acc.writable ? 'var(--color-accent-hover)' : 'var(--color-text-muted)';
       newEdges.push({
         id: `e:${ixName}:${acc.name}`,
         source: `ix:${ixName}`,
         sourceHandle: 't',
         target: id,
         targetHandle: 'b',
-        markerEnd: { type: 'arrowclosed', color: 'var(--color-accent-hover)' },
+        style: acc.writable ? `stroke: ${edgeColor};` : `stroke-dasharray: 5 3; stroke: ${edgeColor};`,
+        markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12, color: edgeColor },
       });
     });
     if (newNodes.length > 0) addNodes(newNodes);
     if (newEdges.length > 0) addEdges(newEdges);
+  }
+
+  function clearIxAccounts(ixName: string) {
+    const ids = new Set<string>();
+    for (const n of getNodes()) {
+      const data: any = n.data;
+      if (data?._type === 'account' && data.parentInstruction === ixName) ids.add(n.id);
+    }
+    if (ids.size > 0) removeNodesById(ids);
+  }
+
+  function handleSolanaIxExpand(ixName: string) {
+    if (!solanaProgram) return;
+    if (solanaExpandedIxs.has(ixName)) {
+      clearIxAccounts(ixName);
+      solanaExpandedIxs = new Set([...solanaExpandedIxs].filter((n) => n !== ixName));
+      return;
+    }
+    paintIxAccounts(ixName);
     solanaExpandedIxs = new Set([...solanaExpandedIxs, ixName]);
+  }
+
+  function handleHideSystemToggle(next: boolean) {
+    if (hideSystem === next) return;
+    hideSystem = next;
+    if (kind !== 'solana' || !solanaProgram) return;
+    for (const ixName of solanaExpandedIxs) {
+      clearIxAccounts(ixName);
+      paintIxAccounts(ixName);
+    }
   }
 
   function handleSolanaRun(name: string) {
@@ -1832,12 +1859,14 @@
       {mode}
       {seqDirection}
       {kind}
+      {hideSystem}
       onmodechange={switchMode}
       onsearch={togglePalette}
       oncenter={() => flowApi?.fitView({ padding: 0.1 })}
       onseqdirection={(dir) => { seqDirection = dir; reorientAllSeqSubtrees(); }}
       onsessionback={handleSessionBack}
       onsessionclear={handleSessionClear}
+      onhidesystem={handleHideSystemToggle}
     />
     <div class="flex-1 flex overflow-hidden h-full">
       <FunctionSidebar

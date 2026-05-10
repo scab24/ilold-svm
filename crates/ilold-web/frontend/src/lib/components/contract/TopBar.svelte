@@ -10,23 +10,27 @@
     mode,
     seqDirection,
     kind = 'solidity',
+    hideSystem = false,
     onmodechange,
     onsearch,
     oncenter,
     onseqdirection,
     onsessionback,
     onsessionclear,
+    onhidesystem,
   }: {
     contractName: string;
     mode: 'cfg' | 'sequences' | 'session';
     seqDirection: 'TB' | 'LR';
     kind?: 'solidity' | 'solana';
+    hideSystem?: boolean;
     onmodechange: (mode: 'cfg' | 'sequences' | 'session') => void;
     onsearch: () => void;
     oncenter: () => void;
     onseqdirection: (dir: 'TB' | 'LR') => void;
     onsessionback: () => void;
     onsessionclear: () => void;
+    onhidesystem?: (next: boolean) => void;
   } = $props();
 
   // Detect Mac to show ⌘ vs Ctrl on the search shortcut chip. Safe on SSR
@@ -127,6 +131,15 @@
       title="Center all nodes in view"
       aria-label="Center canvas"
     >Center</button>
+    {#if kind === 'solana' && onhidesystem}
+      <button
+        class="tool-btn"
+        class:active={hideSystem}
+        onclick={() => onhidesystem(!hideSystem)}
+        title={hideSystem ? 'Show system_program / sysvars / token_program' : 'Hide system_program / sysvars / token_program'}
+        aria-pressed={hideSystem}
+      >{hideSystem ? 'Show system' : 'Hide system'}</button>
+    {/if}
     <span class="divider"></span>
     <button
       class="tool-btn mono"
