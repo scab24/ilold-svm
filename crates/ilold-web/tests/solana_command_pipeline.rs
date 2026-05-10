@@ -572,3 +572,96 @@ async fn solana_who_unknown_query_returns_not_found() {
         .expect("instructions array");
     assert!(ixs.is_empty());
 }
+
+#[tokio::test]
+async fn program_view_endpoint_returns_typed_view() {
+    let (client, port) = start_staking().await;
+    let res = client
+        .get(format!("http://127.0.0.1:{port}/api/program/staking/view"))
+        .send()
+        .await
+        .expect("GET /api/program/staking/view");
+    assert!(res.status().is_success(), "GET /view returned {}", res.status());
+    let view: serde_json::Value = res.json().await.expect("parse /view body");
+
+    assert_eq!(view.get("name").and_then(|v| v.as_str()), Some("staking"));
+    assert!(view.get("program_id").and_then(|v| v.as_str()).is_some());
+
+    let instructions = view
+        .get("instructions")
+        .and_then(|v| v.as_array())
+        .expect("instructions array");
+    assert!(!instructions.is_empty());
+    let ix_names: Vec<&str> = instructions
+        .iter()
+        .filter_map(|i| i.get("name").and_then(|v| v.as_str()))
+        .collect();
+    assert!(ix_names.contains(&"initialize_pool"));
+    assert!(ix_names.contains(&"stake"));
+
+    let init = instructions
+        .iter()
+        .find(|i| i.get("name").and_then(|v| v.as_str()) == Some("initialize_pool"))
+        .expect("initialize_pool entry");
+    assert!(init
+        .get("discriminator_hex")
+        .and_then(|v| v.as_str())
+        .map(|s| s.starts_with("0x"))
+        .unwrap_or(false));
+    let init_args = init.get("args").and_then(|v| v.as_array()).expect("args");
+    assert!(init_args
+        .iter()
+        .any(|a| a.get("name").and_then(|v| v.as_str()) == Some("reward_rate")
+            && a.get("ty").and_then(|v| v.as_str()) == Some("u64")));
+
+    let accounts = view
+        .get("accounts")
+        .and_then(|v| v.as_array())
+        .expect("accounts array");
+    let account_names: Vec<&str> = accounts
+        .iter()
+        .filter_map(|a| a.get("name").and_then(|v| v.as_str()))
+        .collect();
+    assert!(account_names.contains(&"Pool"));
+
+    assert!(view.get("state_coupling").is_some());
+    assert!(view.get("admin_gated").is_some());
+    assert!(view.get("system_accounts").is_some());
+
+    let legacy_res = client
+        .get(format!("http://127.0.0.1:{port}/api/program/staking"))
+        .send()
+        .await
+        .expect("GET legacy /api/program/staking");
+    assert!(legacy_res.status().is_success());
+    let legacy: serde_json::Value = legacy_res.json().await.expect("parse legacy body");
+
+    let legacy_ix_names: Vec<&str> = legacy
+        .get("instructions")
+        .and_then(|v| v.as_array())
+        .expect("legacy instructions")
+        .iter()
+        .filter_map(|i| i.get("name").and_then(|v| v.as_str()))
+        .collect();
+    assert_eq!(legacy_ix_names, ix_names);
+
+    let legacy_account_names: Vec<&str> = legacy
+        .get("account_types")
+        .and_then(|v| v.as_array())
+        .expect("legacy account_types")
+        .iter()
+        .filter_map(|a| a.get("name").and_then(|v| v.as_str()))
+        .collect();
+    assert_eq!(legacy_account_names, account_names);
+}
+
+#[tokio::test]
+async fn program_view_endpoint_returns_404_for_missing_program() {
+    let (client, port) = start_staking().await;
+    let res = client
+        .get(format!("http://127.0.0.1:{port}/api/program/ghost/view"))
+        .send()
+        .await
+        .expect("GET /view ghost");
+    assert_eq!(res.status().as_u16(), 404);
+}

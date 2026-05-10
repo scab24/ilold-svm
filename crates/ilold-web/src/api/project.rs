@@ -4,9 +4,24 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::Json;
 use ilold_solana_core::model::ProgramDef;
+use ilold_solana_core::view::ProgramView;
 use serde::Serialize;
 
 use crate::state::{require_solidity_msg, AppState, Backend};
+
+fn find_solana_program(
+    state: &Arc<AppState>,
+    name: &str,
+) -> Result<ProgramDef, (StatusCode, String)> {
+    let solana = state
+        .solana()
+        .ok_or((StatusCode::BAD_REQUEST, "endpoint is Solana-only".into()))?;
+    solana
+        .project
+        .find_program(name)
+        .cloned()
+        .ok_or((StatusCode::NOT_FOUND, format!("program '{name}' not found")))
+}
 
 #[derive(Serialize)]
 pub struct ProjectSummary {
@@ -119,15 +134,15 @@ pub async fn get_program_detail(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
 ) -> Result<Json<ProgramDef>, (StatusCode, String)> {
-    let solana = state
-        .solana()
-        .ok_or((StatusCode::BAD_REQUEST, "endpoint is Solana-only".into()))?;
-    solana
-        .project
-        .find_program(&name)
-        .cloned()
-        .map(Json)
-        .ok_or((StatusCode::NOT_FOUND, format!("program '{name}' not found")))
+    find_solana_program(&state, &name).map(Json)
+}
+
+pub async fn get_program_view(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Result<Json<ProgramView>, (StatusCode, String)> {
+    let program = find_solana_program(&state, &name)?;
+    Ok(Json(program.compute_view()))
 }
 
 pub async fn get_project_map(

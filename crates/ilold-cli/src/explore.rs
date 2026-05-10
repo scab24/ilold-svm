@@ -12,6 +12,7 @@ use reedline::{
 use ilold_core::classify::entry_points::AccessLevel;
 use ilold_core::exploration::commands::CommandResult;
 use ilold_solana_core::exploration::SolanaCommandResult;
+use ilold_solana_core::view::ProgramView;
 
 use crate::colors::*;
 use crate::fmt;
@@ -1716,74 +1717,32 @@ fn fetch_program_detail(
     client: &reqwest::Client,
     base_url: &str,
     name: &str,
-) -> Result<serde_json::Value, String> {
+) -> Result<ProgramView, String> {
     handle.block_on(async {
         let resp = client
-            .get(format!("{base_url}/api/program/{name}"))
+            .get(format!("{base_url}/api/program/{name}/view"))
             .send()
             .await
             .map_err(|e| format!("request: {e}"))?;
         if !resp.status().is_success() {
             return Err(format!("status {}", resp.status()));
         }
-        resp.json::<serde_json::Value>()
+        resp.json::<ProgramView>()
             .await
             .map_err(|e| format!("parse: {e}"))
     })
 }
 
 fn build_call_from_kv(
-    program: &serde_json::Value,
+    program: &ProgramView,
     ix_name: &str,
     rest: &str,
 ) -> Result<serde_json::Value, String> {
     let ix = program
-        .get("instructions")
-        .and_then(|v| v.as_array())
-        .and_then(|arr| arr.iter().find(|i| i.get("name").and_then(|n| n.as_str()) == Some(ix_name)))
+        .instructions
+        .iter()
+        .find(|i| i.name == ix_name)
         .ok_or_else(|| format!("instruction '{ix_name}' not found in program"))?;
-
-    let arg_keys: std::collections::HashSet<String> = ix
-        .get("args")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|a| a.get("name").and_then(|n| n.as_str()).map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
-    let arg_types: std::collections::HashMap<String, serde_json::Value> = ix
-        .get("args")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|a| {
-                    let n = a.get("name").and_then(|x| x.as_str())?.to_string();
-                    let t = a.get("type").cloned().unwrap_or(serde_json::Value::Null);
-                    Some((n, t))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    let account_keys: std::collections::HashSet<String> = ix
-        .get("accounts")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|a| a.get("name").and_then(|n| n.as_str()).map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
-    let signer_accounts: Vec<String> = ix
-        .get("accounts")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter(|a| a.get("signer").and_then(|s| s.as_bool()).unwrap_or(false))
-                .filter_map(|a| a.get("name").and_then(|n| n.as_str()).map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
 
     let mut args = serde_json::Map::new();
     let mut accounts = serde_json::Map::new();
@@ -1813,16 +1772,17 @@ fn build_call_from_kv(
             Some(kv) => kv,
             None => return Err(format!("expected key=value, got '{token}'")),
         };
-        if arg_keys.contains(key) {
-            let ty = arg_types.get(key).cloned().unwrap_or(serde_json::Value::Null);
-            args.insert(key.to_string(), coerce_kv(value, &ty));
-        } else if account_keys.contains(key) {
+        if let Some(arg) = ix.args.iter().find(|a| a.name == key) {
+            args.insert(key.to_string(), coerce_kv(value, &arg.ty));
+        } else if ix.accounts.iter().any(|a| a.name == key) {
             accounts.insert(key.to_string(), serde_json::Value::String(value.to_string()));
         } else {
+            let arg_list: Vec<String> = ix.args.iter().map(|a| a.name.clone()).collect();
+            let acc_list: Vec<String> = ix.accounts.iter().map(|a| a.name.clone()).collect();
             return Err(format!(
                 "unknown key '{key}'; expected one of args [{}] or accounts [{}]",
-                arg_keys.iter().cloned().collect::<Vec<_>>().join(","),
-                account_keys.iter().cloned().collect::<Vec<_>>().join(",")
+                arg_list.join(","),
+                acc_list.join(",")
             ));
         }
     }
@@ -1832,12 +1792,11 @@ fn build_call_from_kv(
             .into_iter()
             .filter(|n| !signer_negatives.contains(n))
             .collect(),
-        None => signer_accounts
+        None => ix
+            .accounts
             .iter()
-            .filter_map(|name| {
-                let resolved = accounts.get(name).and_then(|v| v.as_str()).map(String::from)?;
-                Some(resolved)
-            })
+            .filter(|a| a.signer)
+            .filter_map(|a| accounts.get(&a.name).and_then(|v| v.as_str()).map(String::from))
             .filter(|n| !signer_negatives.contains(n))
             .collect::<Vec<String>>(),
     };
@@ -1852,25 +1811,23 @@ fn build_call_from_kv(
     }))
 }
 
-fn coerce_kv(raw: &str, ty: &serde_json::Value) -> serde_json::Value {
-    if let Some(s) = ty.as_str() {
-        match s {
-            "bool" => return serde_json::Value::Bool(raw == "true" || raw == "1"),
-            "u8" | "u16" | "u32" | "u64" | "i8" | "i16" | "i32" | "i64" | "f32" | "f64" => {
-                if let Ok(n) = raw.parse::<u64>() {
-                    return serde_json::Value::Number(n.into());
-                }
-                if let Ok(n) = raw.parse::<i64>() {
-                    return serde_json::Value::Number(n.into());
-                }
-                if let Ok(f) = raw.parse::<f64>() {
-                    if let Some(n) = serde_json::Number::from_f64(f) {
-                        return serde_json::Value::Number(n);
-                    }
+fn coerce_kv(raw: &str, ty: &str) -> serde_json::Value {
+    match ty {
+        "bool" => return serde_json::Value::Bool(raw == "true" || raw == "1"),
+        "u8" | "u16" | "u32" | "u64" | "i8" | "i16" | "i32" | "i64" | "f32" | "f64" => {
+            if let Ok(n) = raw.parse::<u64>() {
+                return serde_json::Value::Number(n.into());
+            }
+            if let Ok(n) = raw.parse::<i64>() {
+                return serde_json::Value::Number(n.into());
+            }
+            if let Ok(f) = raw.parse::<f64>() {
+                if let Some(n) = serde_json::Number::from_f64(f) {
+                    return serde_json::Value::Number(n);
                 }
             }
-            _ => {}
         }
+        _ => {}
     }
     serde_json::Value::String(raw.to_string())
 }
@@ -1878,25 +1835,22 @@ fn coerce_kv(raw: &str, ty: &serde_json::Value) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ilold_solana_core::idl::parse_idl;
+    use ilold_solana_core::model::ProgramDef;
 
-    fn staking_initialize_pool() -> serde_json::Value {
-        serde_json::json!({
-            "name": "staking",
-            "instructions": [{
-                "name": "initialize_pool",
-                "args": [{ "name": "reward_rate", "type": "u64" }],
-                "accounts": [
-                    { "name": "pool", "writable": true, "signer": true },
-                    { "name": "admin", "writable": true, "signer": true },
-                    { "name": "system_program", "address": "11111111111111111111111111111111" }
-                ]
-            }]
-        })
+    const STAKING_IDL: &str = include_str!(
+        "../../../tests/fixtures/solana/staking/idls/staking.json"
+    );
+
+    fn staking_view() -> ProgramView {
+        ProgramDef::from_idl(parse_idl(STAKING_IDL).expect("parse staking idl"))
+            .expect("build staking ProgramDef")
+            .compute_view()
     }
 
     #[test]
     fn kv_parser_distributes_args_and_accounts() {
-        let program = staking_initialize_pool();
+        let program = staking_view();
         let body = build_call_from_kv(
             &program,
             "initialize_pool",
@@ -1914,7 +1868,7 @@ mod tests {
 
     #[test]
     fn kv_parser_supports_no_signer_override() {
-        let program = staking_initialize_pool();
+        let program = staking_view();
         let body = build_call_from_kv(
             &program,
             "initialize_pool",
@@ -1933,7 +1887,7 @@ mod tests {
 
     #[test]
     fn kv_parser_rejects_unknown_key() {
-        let program = staking_initialize_pool();
+        let program = staking_view();
         let err = build_call_from_kv(
             &program,
             "initialize_pool",
@@ -1945,14 +1899,13 @@ mod tests {
 
     #[test]
     fn kv_parser_omits_constant_accounts_from_form() {
-        let program = staking_initialize_pool();
+        let program = staking_view();
         let body = build_call_from_kv(
             &program,
             "initialize_pool",
             "reward_rate=10 pool=pool admin=admin",
         )
         .expect("kv parse");
-        // system_program should not be sent — backend resolves it from spec.address
         assert!(body["Call"]["accounts"].get("system_program").is_none());
     }
 }
