@@ -11,7 +11,7 @@ use solana_signer::Signer;
 use crate::decode::borsh::decode_defined_fields;
 use crate::execute::VmHost;
 use crate::model::{AccountTypeDef, ProgramDef};
-use crate::view::SeedView;
+use crate::view::describe_seed_view;
 
 use super::add_step::add_solana_step;
 use super::commands::{
@@ -40,6 +40,38 @@ pub fn execute_funcs(program: &ProgramDef) -> SolanaCommandResult {
         })
         .collect();
     SolanaCommandResult::InstructionList { items }
+}
+
+pub fn execute_info(program: &ProgramDef, ix_name: &str) -> SolanaCommandResult {
+    let view = program.compute_view();
+    let ix = match view.instructions.iter().find(|i| i.name == ix_name) {
+        Some(i) => i.clone(),
+        None => {
+            return SolanaCommandResult::Error {
+                message: format!("instruction '{ix_name}' not found"),
+            };
+        }
+    };
+    let admin_gated = view
+        .admin_gated
+        .as_ref()
+        .map(|set| set.contains(ix_name))
+        .unwrap_or(false);
+    SolanaCommandResult::IxInfo { ix, admin_gated }
+}
+
+pub fn execute_coupling(program: &ProgramDef) -> SolanaCommandResult {
+    let view = program.compute_view();
+    SolanaCommandResult::CouplingList {
+        pairs: view.state_coupling.unwrap_or_default(),
+    }
+}
+
+pub fn execute_vars(program: &ProgramDef) -> SolanaCommandResult {
+    let view = program.compute_view();
+    SolanaCommandResult::AccountTypes {
+        accounts: view.accounts,
+    }
 }
 
 pub fn execute_users(users: &HashMap<String, Keypair>, vm: &VmHost) -> SolanaCommandResult {
@@ -492,34 +524,6 @@ pub fn execute_status(
         timestamp: timestamp.into(),
     });
     SolanaCommandResult::StatusUpdated
-}
-
-fn describe_seed_view(seed: &SeedView) -> String {
-    match seed {
-        SeedView::Const { value_hex, value_utf8 } => match value_utf8 {
-            Some(s) => format!("const:'{s}'"),
-            None => {
-                let bytes = hex_to_bytes(value_hex);
-                format!("const:{:02x?}", bytes)
-            }
-        },
-        SeedView::Account { path } => format!("account:{path}"),
-        SeedView::Arg { name, .. } => format!("arg:{name}"),
-    }
-}
-
-fn hex_to_bytes(value_hex: &str) -> Vec<u8> {
-    let stripped = value_hex.strip_prefix("0x").unwrap_or(value_hex);
-    let mut out = Vec::with_capacity(stripped.len() / 2);
-    let bytes = stripped.as_bytes();
-    let mut i = 0;
-    while i + 1 < bytes.len() {
-        let hi = (bytes[i] as char).to_digit(16).unwrap_or(0) as u8;
-        let lo = (bytes[i + 1] as char).to_digit(16).unwrap_or(0) as u8;
-        out.push((hi << 4) | lo);
-        i += 2;
-    }
-    out
 }
 
 fn decode_account_bytes(

@@ -356,3 +356,83 @@ async fn solana_back_rewinds_vm_state() {
         "switch_power should still run after Back+replay; got: {logs}"
     );
 }
+
+#[tokio::test]
+async fn solana_info_returns_typed_ix_view() {
+    let (client, port) = start_solana().await;
+    let result = cmd(
+        &client,
+        port,
+        "lever",
+        serde_json::json!({"Info": {"ix": "switch_power"}}),
+    )
+    .await;
+    let info = result.get("IxInfo").expect("IxInfo variant");
+    let ix = info.get("ix").expect("ix slice");
+    assert_eq!(
+        ix.get("name").and_then(|v| v.as_str()),
+        Some("switch_power")
+    );
+    let disc = ix
+        .get("discriminator_hex")
+        .and_then(|v| v.as_str())
+        .expect("discriminator_hex");
+    assert!(disc.starts_with("0x") && disc.len() == 18);
+    let args = ix
+        .get("args")
+        .and_then(|v| v.as_array())
+        .expect("args array");
+    assert_eq!(args.len(), 1);
+    assert_eq!(
+        args[0].get("ty").and_then(|v| v.as_str()),
+        Some("string")
+    );
+    assert_eq!(
+        info.get("admin_gated").and_then(|v| v.as_bool()),
+        Some(false)
+    );
+}
+
+#[tokio::test]
+async fn solana_coupling_returns_pairs() {
+    let (client, port) = start_solana().await;
+    let result = cmd(&client, port, "lever", serde_json::json!("Coupling")).await;
+    let pairs = result
+        .get("CouplingList")
+        .and_then(|v| v.get("pairs"))
+        .and_then(|v| v.as_array())
+        .expect("CouplingList.pairs");
+    // lever has 2 ixs both writing `power` → exactly one pair.
+    assert_eq!(pairs.len(), 1);
+    let only = &pairs[0];
+    assert_eq!(only.get("a").and_then(|v| v.as_str()), Some("initialize"));
+    assert_eq!(
+        only.get("b").and_then(|v| v.as_str()),
+        Some("switch_power")
+    );
+}
+
+#[tokio::test]
+async fn solana_vars_returns_account_types() {
+    let (client, port) = start_solana().await;
+    let result = cmd(&client, port, "lever", serde_json::json!("Vars")).await;
+    let accounts = result
+        .get("AccountTypes")
+        .and_then(|v| v.get("accounts"))
+        .and_then(|v| v.as_array())
+        .expect("AccountTypes.accounts");
+    assert_eq!(accounts.len(), 1);
+    assert_eq!(
+        accounts[0].get("name").and_then(|v| v.as_str()),
+        Some("PowerStatus")
+    );
+    let fields = accounts[0]
+        .get("fields")
+        .and_then(|v| v.as_array())
+        .expect("fields");
+    assert_eq!(fields.len(), 1);
+    assert_eq!(
+        fields[0].get("ty").and_then(|v| v.as_str()),
+        Some("bool")
+    );
+}

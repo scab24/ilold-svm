@@ -21,10 +21,11 @@ use ilold_core::slicing::{build_slice_result, SliceDirection, SliceResult};
 use ilold_session_core::exploration::scenario::ScenarioAction as SharedScenarioAction;
 use ilold_solana_core::exploration::{
     canvas_patch_from_solana, execute_airdrop, execute_back, execute_call, execute_clear,
-    execute_export, execute_findings_list, execute_step, execute_timeline, execute_who,
-    execute_finding, execute_funcs, execute_inspect, execute_note, execute_pda, execute_session,
-    execute_state, execute_status, execute_time_warp, execute_users, execute_users_new,
-    SolanaCommand, SolanaCommandResult,
+    execute_coupling, execute_export, execute_findings_list, execute_info, execute_step,
+    execute_timeline, execute_vars, execute_who, execute_finding, execute_funcs,
+    execute_inspect, execute_note, execute_pda, execute_session, execute_state,
+    execute_status, execute_time_warp, execute_users, execute_users_new, SolanaCommand,
+    SolanaCommandResult,
 };
 use solana_keypair::Keypair;
 
@@ -669,6 +670,9 @@ async fn handle_solana_command(
         SolanaCommand::Timeline { pubkey } => {
             execute_timeline(session, &program, &pubkey, &active_scenario, scenario_users)
         }
+        SolanaCommand::Info { ix } => execute_info(&program, &ix),
+        SolanaCommand::Coupling => execute_coupling(&program),
+        SolanaCommand::Vars => execute_vars(&program),
         SolanaCommand::SaveSession { .. }
         | SolanaCommand::LoadSession { .. }
         | SolanaCommand::Scenario { .. } => unreachable!("handled above"),

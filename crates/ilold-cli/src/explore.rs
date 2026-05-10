@@ -1149,32 +1149,41 @@ fn handle_solana_input(
                 steps,
             )
         }
-        "funcs-all" | "fa" => {
-            match fetch_program_detail(handle, client, base_url, contract) {
-                Ok(p) => print_solana_funcs_all(&p),
-                Err(e) => eprintln!("  {}", c_danger(&format!("fetch program: {e}"))),
-            }
-            InputResult::Continue
-        }
+        "funcs-all" | "fa" => dispatch_solana(
+            handle,
+            client,
+            base_url,
+            contract,
+            serde_json::json!("Funcs"),
+            steps,
+        ),
         "info" | "i" => {
             if arg.is_empty() {
                 println!("  Usage: info <instruction>");
                 return InputResult::Continue;
             }
-            match fetch_program_detail(handle, client, base_url, contract) {
-                Ok(p) => print_solana_ix_info(&p, arg),
-                Err(e) => eprintln!("  {}", c_danger(&format!("fetch program: {e}"))),
-            }
-            InputResult::Continue
+            let body = serde_json::json!({"Info": {"ix": arg}});
+            dispatch_solana(handle, client, base_url, contract, body, steps)
         }
-        "vars" | "v" | "vars-all" | "va" => {
-            let verbose = matches!(cmd.as_str(), "vars-all" | "va");
-            match fetch_program_detail(handle, client, base_url, contract) {
-                Ok(p) => print_solana_vars(&p, verbose),
-                Err(e) => eprintln!("  {}", c_danger(&format!("fetch program: {e}"))),
-            }
-            InputResult::Continue
-        }
+        // `vars-all` historically toggled per-field detail. With the typed
+        // backend the verbose form is the only sensible one (fields ship in
+        // the wire format), so both aliases fall through to the same dispatch.
+        "vars" | "v" | "vars-all" | "va" => dispatch_solana(
+            handle,
+            client,
+            base_url,
+            contract,
+            serde_json::json!("Vars"),
+            steps,
+        ),
+        "coupling" | "cp" => dispatch_solana(
+            handle,
+            client,
+            base_url,
+            contract,
+            serde_json::json!("Coupling"),
+            steps,
+        ),
         "state" => dispatch_solana(
             handle,
             client,
@@ -2465,11 +2474,178 @@ fn print_solana_result(result: &SolanaCommandResult) {
                 }
             }
         }
+        SolanaCommandResult::IxInfo { ix, admin_gated } => {
+            print_ix_info(ix, *admin_gated);
+        }
+        SolanaCommandResult::CouplingList { pairs } => {
+            print_coupling_list(pairs);
+        }
+        SolanaCommandResult::AccountTypes { accounts } => {
+            print_account_types(accounts);
+        }
         SolanaCommandResult::Error { message } => {
             eprintln!("  {} {}", c_danger("✗"), message);
         }
     }
     println!();
+}
+
+fn print_ix_info(ix: &ilold_solana_core::view::IxView, admin_gated: bool) {
+    println!();
+    println!("  {} {}", c_accent("instruction"), ix.name);
+    if !ix.discriminator_hex.is_empty() {
+        println!("  {} {}", c_muted("discriminator"), ix.discriminator_hex);
+    }
+    println!();
+    println!("  {} ({})", c_accent("args"), ix.args.len());
+    if ix.args.is_empty() {
+        println!("    {}", c_muted("(none)"));
+    } else {
+        let max = ix
+            .args
+            .iter()
+            .map(|a| a.name.chars().count())
+            .max()
+            .unwrap_or(0);
+        for a in &ix.args {
+            println!(
+                "    {} {} {}",
+                c_accent("·"),
+                fmt::pad_right(&a.name, max),
+                c_muted(&a.ty)
+            );
+        }
+    }
+    println!();
+    println!("  {} ({})", c_accent("accounts"), ix.accounts.len());
+    if ix.accounts.is_empty() {
+        println!("    {}", c_muted("(none)"));
+    } else {
+        let max = ix
+            .accounts
+            .iter()
+            .map(|a| a.name.chars().count())
+            .max()
+            .unwrap_or(0);
+        for a in &ix.accounts {
+            let mut flags: Vec<&str> = Vec::new();
+            if a.signer {
+                flags.push("signer");
+            }
+            if a.writable {
+                flags.push("writable");
+            }
+            if a.optional {
+                flags.push("optional");
+            }
+            let kind_label = match a.kind {
+                ilold_solana_core::view::AccountKind::Program => "program",
+                ilold_solana_core::view::AccountKind::System => "system",
+                ilold_solana_core::view::AccountKind::Sysvar => "sysvar",
+                ilold_solana_core::view::AccountKind::Pda => "pda",
+                ilold_solana_core::view::AccountKind::Other => "other",
+            };
+            let suffix = if let Some(addr) = a.address.as_deref() {
+                format!("{kind_label}  const {addr}")
+            } else if flags.is_empty() {
+                kind_label.to_string()
+            } else {
+                format!("{kind_label}  {}", flags.join(" "))
+            };
+            println!(
+                "    {} {} {}",
+                c_accent("·"),
+                fmt::pad_right(&a.name, max),
+                c_muted(&suffix)
+            );
+        }
+    }
+    let pdas: Vec<&ilold_solana_core::view::IxAccountView> =
+        ix.accounts.iter().filter(|a| a.pda.is_some()).collect();
+    if !pdas.is_empty() {
+        println!();
+        println!("  {} ({})", c_accent("pdas"), pdas.len());
+        for acc in pdas {
+            let pda = acc.pda.as_ref().expect("filtered above");
+            let seeds: Vec<String> = pda
+                .seeds
+                .iter()
+                .map(ilold_solana_core::view::describe_seed_view)
+                .collect();
+            let prog = pda
+                .program
+                .clone()
+                .unwrap_or_else(|| "self".to_string());
+            println!(
+                "    {} {} seeds=[{}] program={}",
+                c_accent("·"),
+                acc.name,
+                seeds.join(", "),
+                c_muted(&prog)
+            );
+        }
+    }
+    println!();
+    let gated_label = if admin_gated {
+        c_warn("true (heuristic)").to_string()
+    } else {
+        c_muted("false").to_string()
+    };
+    println!("  {} {}", c_muted("admin_gated"), gated_label);
+}
+
+fn print_coupling_list(pairs: &[ilold_solana_core::view::CouplingPair]) {
+    if pairs.is_empty() {
+        println!("  {}", c_muted("no instruction pairs share writable accounts"));
+        return;
+    }
+    let max = pairs
+        .iter()
+        .map(|p| p.a.chars().count() + p.b.chars().count() + 5)
+        .max()
+        .unwrap_or(0);
+    for p in pairs {
+        let pair = format!("{}  ↔  {}", p.a, p.b);
+        println!(
+            "  {} {} {}",
+            c_accent("·"),
+            fmt::pad_right(&pair, max),
+            c_muted(&format!("[{}]", p.shared_writable.join(", ")))
+        );
+    }
+}
+
+fn print_account_types(accounts: &[ilold_solana_core::view::AccountView]) {
+    if accounts.is_empty() {
+        println!("  {}", c_muted("No account types declared in IDL"));
+        return;
+    }
+    for at in accounts {
+        println!(
+            "  {} {} {}",
+            c_accent("[T]"),
+            at.name,
+            c_muted(&at.discriminator_hex)
+        );
+        if at.fields.is_empty() {
+            println!("    {}", c_muted("(opaque or zero-copy layout)"));
+            continue;
+        }
+        let max = at
+            .fields
+            .iter()
+            .map(|f| f.name.chars().count())
+            .max()
+            .unwrap_or(0);
+        for f in &at.fields {
+            println!(
+                "    {} {} {}",
+                c_accent("·"),
+                fmt::pad_right(&f.name, max),
+                c_muted(&f.ty)
+            );
+        }
+    }
 }
 
 fn sync_active_scenario(
@@ -2831,222 +3007,6 @@ fn print_programs(state: &std::sync::Arc<ilold_web::state::AppState>, current: &
             c_muted(&p.program_id.to_string()),
             marker
         );
-    }
-    println!();
-}
-
-fn idl_type_label(ty: &serde_json::Value) -> String {
-    if let Some(s) = ty.as_str() {
-        return s.to_string();
-    }
-    if let Some(obj) = ty.as_object() {
-        if let Some(d) = obj.get("defined") {
-            if let Some(s) = d.as_str() {
-                return s.to_string();
-            }
-            if let Some(n) = d.get("name").and_then(|v| v.as_str()) {
-                return n.to_string();
-            }
-        }
-        if let Some(inner) = obj.get("option") {
-            return format!("Option<{}>", idl_type_label(inner));
-        }
-        if let Some(inner) = obj.get("vec") {
-            return format!("Vec<{}>", idl_type_label(inner));
-        }
-        if let Some(inner) = obj.get("array") {
-            return format!("[{}]", idl_type_label(inner));
-        }
-    }
-    ty.to_string()
-}
-
-fn print_solana_funcs_all(program: &serde_json::Value) {
-    let arr = match program.get("instructions").and_then(|v| v.as_array()) {
-        Some(a) => a,
-        None => {
-            println!("  {}", c_muted("No instructions"));
-            return;
-        }
-    };
-    println!();
-    let max_name = arr
-        .iter()
-        .filter_map(|ix| ix.get("name").and_then(|n| n.as_str()))
-        .map(|n| n.chars().count())
-        .max()
-        .unwrap_or(0);
-    for ix in arr {
-        let name = ix.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-        let args = ix.get("args").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
-        let accs = ix.get("accounts").and_then(|v| v.as_array());
-        let acc_count = accs.map(|a| a.len()).unwrap_or(0);
-        let signers = accs
-            .map(|a| {
-                a.iter()
-                    .filter(|x| x.get("signer").and_then(|s| s.as_bool()).unwrap_or(false))
-                    .count()
-            })
-            .unwrap_or(0);
-        let pdas = accs
-            .map(|a| a.iter().filter(|x| x.get("pda").is_some()).count())
-            .unwrap_or(0);
-        let writables = accs
-            .map(|a| {
-                a.iter()
-                    .filter(|x| x.get("writable").and_then(|s| s.as_bool()).unwrap_or(false))
-                    .count()
-            })
-            .unwrap_or(0);
-        let padded = fmt::pad_right(name, max_name);
-        println!(
-            "  {} {}  {}",
-            c_accent("[ix]"),
-            padded,
-            c_muted(&format!(
-                "args={args}  accs={acc_count}  signers={signers}  writables={writables}  pdas={pdas}"
-            ))
-        );
-    }
-    println!();
-}
-
-fn print_solana_ix_info(program: &serde_json::Value, ix_name: &str) {
-    let arr = program.get("instructions").and_then(|v| v.as_array());
-    let ix = arr.and_then(|a| {
-        a.iter()
-            .find(|x| x.get("name").and_then(|n| n.as_str()) == Some(ix_name))
-    });
-    let ix = match ix {
-        Some(v) => v,
-        None => {
-            eprintln!("  {}", c_danger(&format!("instruction '{ix_name}' not found")));
-            return;
-        }
-    };
-    println!();
-    println!("  {} {}", c_accent("instruction"), ix_name);
-    if let Some(disc) = ix.get("discriminator").and_then(|v| v.as_array()) {
-        let bytes: Vec<String> = disc.iter().filter_map(|b| b.as_u64()).map(|n| format!("{n:02x}")).collect();
-        println!("  {} {}", c_muted("discriminator"), bytes.join(" "));
-    }
-    let args = ix.get("args").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-    println!();
-    println!("  {} ({})", c_accent("args"), args.len());
-    if args.is_empty() {
-        println!("    {}", c_muted("(none)"));
-    } else {
-        let max = args
-            .iter()
-            .filter_map(|a| a.get("name").and_then(|n| n.as_str()).map(|s| s.chars().count()))
-            .max()
-            .unwrap_or(0);
-        for a in &args {
-            let name = a.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-            let ty = a.get("type").cloned().unwrap_or(serde_json::Value::Null);
-            println!(
-                "    {} {} {}",
-                c_accent("·"),
-                fmt::pad_right(name, max),
-                c_muted(&idl_type_label(&ty))
-            );
-        }
-    }
-    let accs = ix
-        .get("accounts")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-    println!();
-    println!("  {} ({})", c_accent("accounts"), accs.len());
-    if accs.is_empty() {
-        println!("    {}", c_muted("(none)"));
-    } else {
-        let max = accs
-            .iter()
-            .filter_map(|a| a.get("name").and_then(|n| n.as_str()).map(|s| s.chars().count()))
-            .max()
-            .unwrap_or(0);
-        for a in &accs {
-            let name = a.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-            let signer = a.get("signer").and_then(|s| s.as_bool()).unwrap_or(false);
-            let writable = a.get("writable").and_then(|s| s.as_bool()).unwrap_or(false);
-            let pda = a.get("pda").is_some();
-            let constant = a.get("address").and_then(|v| v.as_str());
-            let mut flags = Vec::new();
-            if signer { flags.push("signer"); }
-            if writable { flags.push("writable"); }
-            if pda { flags.push("pda"); }
-            let suffix = if let Some(addr) = constant {
-                format!("const {addr}")
-            } else {
-                flags.join(" ")
-            };
-            println!(
-                "    {} {} {}",
-                c_accent("·"),
-                fmt::pad_right(name, max),
-                c_muted(&suffix)
-            );
-        }
-    }
-    println!();
-}
-
-fn print_solana_vars(program: &serde_json::Value, verbose: bool) {
-    let arr = match program.get("account_types").and_then(|v| v.as_array()) {
-        Some(a) => a,
-        None => {
-            println!("  {}", c_muted("No account types"));
-            return;
-        }
-    };
-    println!();
-    if arr.is_empty() {
-        println!("  {}", c_muted("No account types declared in IDL"));
-        println!();
-        return;
-    }
-    for at in arr {
-        let name = at.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-        let disc = at
-            .get("discriminator")
-            .and_then(|v| v.as_array())
-            .map(|d| {
-                d.iter()
-                    .filter_map(|b| b.as_u64())
-                    .map(|n| format!("{n:02x}"))
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            })
-            .unwrap_or_default();
-        println!("  {} {} {}", c_accent("[T]"), name, c_muted(&disc));
-        if verbose {
-            let fields = at
-                .pointer("/layout/type/fields")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default();
-            if fields.is_empty() {
-                println!("    {}", c_muted("(opaque or zero-copy layout)"));
-            } else {
-                let max = fields
-                    .iter()
-                    .filter_map(|f| f.get("name").and_then(|n| n.as_str()).map(|s| s.chars().count()))
-                    .max()
-                    .unwrap_or(0);
-                for f in &fields {
-                    let fname = f.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                    let fty = f.get("type").cloned().unwrap_or(serde_json::Value::Null);
-                    println!(
-                        "    {} {} {}",
-                        c_accent("·"),
-                        fmt::pad_right(fname, max),
-                        c_muted(&idl_type_label(&fty))
-                    );
-                }
-            }
-        }
     }
     println!();
 }

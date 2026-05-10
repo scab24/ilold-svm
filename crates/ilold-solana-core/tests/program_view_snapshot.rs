@@ -15,7 +15,7 @@ fn snapshot_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("snapshots")
-        .join("t_r49_pre")
+        .join("funcs_who_pda_baseline")
 }
 
 fn regen_enabled() -> bool {

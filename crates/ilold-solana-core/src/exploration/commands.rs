@@ -7,6 +7,8 @@ use ilold_session_core::journal::types::{ReviewStatus, Severity};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::view::{AccountView, CouplingPair, IxView};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SolanaCommand {
     Call {
@@ -87,6 +89,16 @@ pub enum SolanaCommand {
     Timeline {
         pubkey: String,
     },
+    /// Detail of a single instruction — args (typed), accounts with badges,
+    /// PDAs with seeds, discriminator hex, admin-gated bool.
+    Info {
+        ix: String,
+    },
+    /// Pairs of instructions that share at least one writable account.
+    Coupling,
+    /// Account-type catalogue (`vars` in the REPL): name + discriminator +
+    /// fields. Slice of `ProgramView::accounts`.
+    Vars,
 }
 
 fn default_initial_lamports() -> u64 {
@@ -246,6 +258,17 @@ pub enum SolanaCommandResult {
         pubkey: String,
         label: Option<String>,
         entries: Vec<TimelineEntry>,
+    },
+    /// Detail for a single instruction, sliced from `ProgramView`.
+    IxInfo {
+        ix: IxView,
+        admin_gated: bool,
+    },
+    CouplingList {
+        pairs: Vec<CouplingPair>,
+    },
+    AccountTypes {
+        accounts: Vec<AccountView>,
     },
     Error {
         message: String,
