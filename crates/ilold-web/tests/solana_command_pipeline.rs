@@ -614,6 +614,12 @@ async fn program_view_endpoint_returns_typed_view() {
         .any(|a| a.get("name").and_then(|v| v.as_str()) == Some("reward_rate")
             && a.get("ty").and_then(|v| v.as_str()) == Some("u64")));
 
+    let init_ix_accounts = init
+        .get("accounts")
+        .and_then(|v| v.as_array())
+        .expect("ix accounts array");
+    assert!(!init_ix_accounts.is_empty());
+
     let accounts = view
         .get("accounts")
         .and_then(|v| v.as_array())
@@ -627,32 +633,6 @@ async fn program_view_endpoint_returns_typed_view() {
     assert!(view.get("state_coupling").is_some());
     assert!(view.get("admin_gated").is_some());
     assert!(view.get("system_accounts").is_some());
-
-    let legacy_res = client
-        .get(format!("http://127.0.0.1:{port}/api/program/staking"))
-        .send()
-        .await
-        .expect("GET legacy /api/program/staking");
-    assert!(legacy_res.status().is_success());
-    let legacy: serde_json::Value = legacy_res.json().await.expect("parse legacy body");
-
-    let legacy_ix_names: Vec<&str> = legacy
-        .get("instructions")
-        .and_then(|v| v.as_array())
-        .expect("legacy instructions")
-        .iter()
-        .filter_map(|i| i.get("name").and_then(|v| v.as_str()))
-        .collect();
-    assert_eq!(legacy_ix_names, ix_names);
-
-    let legacy_account_names: Vec<&str> = legacy
-        .get("account_types")
-        .and_then(|v| v.as_array())
-        .expect("legacy account_types")
-        .iter()
-        .filter_map(|a| a.get("name").and_then(|v| v.as_str()))
-        .collect();
-    assert_eq!(legacy_account_names, account_names);
 }
 
 #[tokio::test]

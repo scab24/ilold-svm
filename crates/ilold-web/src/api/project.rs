@@ -130,13 +130,6 @@ pub struct MapRelationship {
     pub kind: String,
 }
 
-pub async fn get_program_detail(
-    State(state): State<Arc<AppState>>,
-    Path(name): Path<String>,
-) -> Result<Json<ProgramDef>, (StatusCode, String)> {
-    find_solana_program(&state, &name).map(Json)
-}
-
 pub async fn get_program_view(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
