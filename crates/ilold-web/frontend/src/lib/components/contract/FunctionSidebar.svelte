@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { ContractDetail, ProgramDetail } from '$lib/api/rest';
+  import type { ContractDetail, ProgramView } from '$lib/api/rest';
   import { visibilityLabel } from '$lib/utils/visibility';
 
   // Sidebar that lists every entry point of the loaded artifact: Solidity
@@ -22,7 +22,7 @@
     onremove,
   }: {
     contract?: ContractDetail | null;
-    program?: ProgramDetail | null;
+    program?: ProgramView | null;
     canvasFuncs: Set<string>;
     mode: 'cfg' | 'sequences' | 'session';
     kind?: 'solidity' | 'solana';

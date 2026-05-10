@@ -96,36 +96,69 @@ export interface MapInstruction {
   has_pdas: boolean;
 }
 
-export interface ProgramDetail {
+export type AccountKind = 'program' | 'system' | 'sysvar' | 'pda' | 'other';
+
+export interface ArgView {
   name: string;
-  program_id: string;
-  instructions: InstructionDef[];
-  account_types: AccountTypeDef[];
+  ty: string;
 }
 
-export interface InstructionDef {
+export interface FieldView {
   name: string;
-  discriminator: number[];
-  args: { name: string; type: any }[];
-  accounts: AccountSpec[];
-  returns?: any;
+  ty: string;
 }
 
-export interface AccountSpec {
+export type SeedView =
+  | { kind: 'const'; value_hex: string; value_utf8?: string }
+  | { kind: 'arg'; name: string; ty: string }
+  | { kind: 'account'; path: string };
+
+export interface PdaView {
+  seeds: SeedView[];
+  program?: string;
+  bump_arg?: string;
+}
+
+export interface IxAccountView {
   path: string;
   name: string;
+  kind: AccountKind;
   writable: boolean;
   signer: boolean;
   optional: boolean;
   address?: string;
-  pda?: { seeds: any[]; program?: any; bump_arg?: string };
+  pda?: PdaView;
   relations: string[];
 }
 
-export interface AccountTypeDef {
+export interface IxView {
   name: string;
-  discriminator: number[];
-  layout: any;
+  discriminator_hex: string;
+  args: ArgView[];
+  accounts: IxAccountView[];
+  returns?: string;
+}
+
+export interface AccountView {
+  name: string;
+  discriminator_hex: string;
+  fields: FieldView[];
+}
+
+export interface CouplingPair {
+  a: string;
+  b: string;
+  shared_writable: string[];
+}
+
+export interface ProgramView {
+  name: string;
+  program_id: string;
+  instructions: IxView[];
+  accounts: AccountView[];
+  state_coupling?: CouplingPair[];
+  admin_gated?: string[];
+  system_accounts?: string[];
 }
 
 export interface MapContract {
@@ -172,8 +205,8 @@ export async function getContract(name: string): Promise<ContractDetail> {
   return res.json();
 }
 
-export async function getProgram(name: string): Promise<ProgramDetail> {
-  const res = await fetch(`${BASE}/api/program/${encodeURIComponent(name)}`);
+export async function getProgramView(name: string): Promise<ProgramView> {
+  const res = await fetch(`${BASE}/api/program/${encodeURIComponent(name)}/view`);
   if (!res.ok) throw new Error(`Program ${name} not found`);
   return res.json();
 }

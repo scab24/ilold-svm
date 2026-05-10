@@ -1,7 +1,7 @@
 <script lang="ts">
   import { page } from '$app/state';
   import { onMount, onDestroy, tick, untrack } from 'svelte';
-  import { getContract, getCallGraph, getCfg, getPaths, getSequences, getSequenceAnalysis, getFunctionSource, getProjectMap, getProgram, type ContractDetail, type CytoscapeGraph, type SequenceAnalysis, type MapContract, type MapProgram, type ProgramDetail } from '$lib/api/rest';
+  import { getContract, getCallGraph, getCfg, getPaths, getSequences, getSequenceAnalysis, getFunctionSource, getProjectMap, getProgramView, type ContractDetail, type CytoscapeGraph, type SequenceAnalysis, type MapContract, type MapProgram, type ProgramView, type IxView, type AccountView, type IxAccountView } from '$lib/api/rest';
   import { goto } from '$app/navigation';
   import { toggleTerminal } from '$lib/stores/terminal.svelte';
   import { openInIde } from '$lib/utils/ide-links';
@@ -16,7 +16,6 @@
   import { postCommand, postSolanaCommand } from '$lib/api/session';
   import Legend from '$lib/components/contract/Legend.svelte';
   import FunctionSidebar from '$lib/components/contract/FunctionSidebar.svelte';
-  import { composeProgramGraph } from '$lib/canvas/program';
   import TopBar from '$lib/components/contract/TopBar.svelte';
   import StatusBar from '$lib/components/contract/StatusBar.svelte';
   import ContextMenu from '$lib/components/contract/ContextMenu.svelte';
@@ -38,7 +37,7 @@
   import type { Node, Edge } from '@xyflow/svelte';
 
   let contract: ContractDetail | null = $state(null);
-  let solanaProgram: ProgramDetail | null = $state(null);
+  let solanaProgram: ProgramView | null = $state(null);
   let kind: 'solidity' | 'solana' = $state('solidity');
   let solanaCanvasIxs: Set<string> = $state(new Set());
   let solanaExpandedIxs: Set<string> = $state(new Set());
@@ -562,6 +561,23 @@
     if (node) selectedNode = node;
   });
 
+  function snakeToPascal(s: string): string {
+    return s
+      .split('_')
+      .filter((p) => p.length > 0)
+      .map((p) => p.charAt(0).toUpperCase() + p.slice(1))
+      .join('');
+  }
+
+  function findAccountType(program: ProgramView, accountName: string): AccountView | undefined {
+    const target = snakeToPascal(accountName);
+    return program.accounts.find((a) => a.name === target);
+  }
+
+  function isAdminGated(program: ProgramView, ixName: string): boolean {
+    return (program.admin_gated ?? []).includes(ixName);
+  }
+
   function handleSolanaIxAdd(ixName: string) {
     if (!solanaProgram) return;
     if (solanaCanvasIxs.has(ixName)) {
@@ -581,12 +597,14 @@
         label: ixName,
         programName: solanaProgram.name,
         programId: solanaProgram.program_id,
-        argsCount: (ix.args ?? []).length,
+        args: ix.args ?? [],
         accountsCount: (ix.accounts ?? []).length,
-        hasPdas: (ix.accounts ?? []).some((a: any) => a.pda != null),
-        signers: (ix.accounts ?? []).filter((a: any) => a.signer).map((a: any) => a.name),
+        hasPdas: (ix.accounts ?? []).some((a) => a.pda != null),
+        signers: (ix.accounts ?? []).filter((a) => a.signer).map((a) => a.name),
+        adminGated: isAdminGated(solanaProgram, ixName),
+        discriminator_hex: ix.discriminator_hex,
       },
-    } as any);
+    });
     solanaCanvasIxs = new Set([...solanaCanvasIxs, ixName]);
     if (flowApi) flowApi.fitView({ nodes: [{ id: `ix:${ixName}` }], padding: 0.5, duration: 400 });
   }
@@ -725,8 +743,9 @@
     const totalWidth = (accounts.length - 1) * 170;
     const newNodes: any[] = [];
     const newEdges: any[] = [];
-    accounts.forEach((acc: any, i: number) => {
+    accounts.forEach((acc: IxAccountView, i: number) => {
       const id = `ix:${ixName}:acc:${acc.name}`;
+      const matched = findAccountType(solanaProgram!, acc.name);
       newNodes.push({
         id,
         type: 'account',
@@ -736,12 +755,13 @@
           label: acc.name,
           programName: solanaProgram!.name,
           parentInstruction: ixName,
-          fields: acc.signer || acc.writable
-            ? [
-                ...(acc.signer ? [{ name: 'signer', type: 'true' }] : []),
-                ...(acc.writable ? [{ name: 'writable', type: 'true' }] : []),
-              ]
-            : [],
+          fields: matched?.fields ?? [],
+          discriminator_hex: matched?.discriminator_hex,
+          account_type: matched?.name,
+          signer: acc.signer,
+          writable: acc.writable,
+          pda: acc.pda != null,
+          kind: acc.kind,
         },
       });
       newEdges.push({
@@ -891,7 +911,7 @@
       kind = pm.kind === 'solana' ? 'solana' : 'solidity';
       if (kind === 'solana') {
         try {
-          const prog = await getProgram(contractName);
+          const prog = await getProgramView(contractName);
           if (!stillFresh()) return;
           solanaProgram = prog;
         } catch {
@@ -1669,7 +1689,7 @@
           run: () => handleSolanaRun(ix.name),
         });
       }
-      for (const a of prog.account_types ?? []) {
+      for (const a of prog.accounts ?? []) {
         cmds.push({
           id: `solana-acc:${a.name}`,
           label: a.name,

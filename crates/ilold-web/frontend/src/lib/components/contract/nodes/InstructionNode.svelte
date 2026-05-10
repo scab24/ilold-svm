@@ -4,22 +4,66 @@
 
   let { data }: { data: InstructionNodeData } = $props();
 
-  let hasSigners = $derived((data.signers?.length ?? 0) > 0);
+  const MAX_ARGS = 4;
+  let args = $derived(data.args ?? []);
+  let visibleArgs = $derived(args.slice(0, MAX_ARGS));
+  let extraArgs = $derived(Math.max(0, args.length - MAX_ARGS));
+  let signerCount = $derived(data.signers?.length ?? 0);
+  let discriminatorShort = $derived(
+    data.discriminator_hex && data.discriminator_hex.length > 10
+      ? `${data.discriminator_hex.slice(0, 10)}...`
+      : data.discriminator_hex ?? '',
+  );
+  let discriminatorTooltip = $derived(
+    data.discriminator_hex ? `discriminator: ${data.discriminator_hex}` : '',
+  );
+  let nodeTitle = $derived(
+    data.adminGated
+      ? `admin-gated (heuristic)${discriminatorTooltip ? ' · ' + discriminatorTooltip : ''}`
+      : discriminatorTooltip,
+  );
 </script>
 
 <div
-  class="instruction-node py-1.5 px-4 rounded-md bg-surface-alt border-[1.5px] border-accent text-text font-mono text-xs font-semibold min-w-[120px] text-center cursor-pointer"
+  class="instruction-node py-1.5 px-3 rounded-md bg-surface-alt border-[1.5px] border-accent text-text font-mono text-xs min-w-[140px] cursor-pointer"
   class:dimmed={data._dimmed}
   class:has-pdas={data.hasPdas}
+  class:admin-gated={data.adminGated}
+  title={nodeTitle}
 >
-  <span>{data.label}</span>
-  <div class="flex items-center justify-center gap-1 mt-0.5">
-    <span class="text-[8px] text-text-dim">{data.argsCount}a · {data.accountsCount}acc</span>
-    {#if data.hasPdas}
-      <span class="text-[8px] px-1 rounded bg-warning/15 text-warning">PDA</span>
+  <div class="head">
+    <span class="label">{data.label}</span>
+    {#if discriminatorShort}
+      <span class="disc">{discriminatorShort}</span>
     {/if}
-    {#if hasSigners}
-      <span class="text-[9px]" title={`Signers: ${data.signers.join(', ')}`}>&#x1F511;</span>
+  </div>
+
+  {#if visibleArgs.length > 0}
+    <ul class="arg-list mt-1">
+      {#each visibleArgs as arg (arg.name)}
+        <li class="arg-row">
+          <span class="arg-name">{arg.name}</span>
+          <span class="arg-type">{arg.ty}</span>
+        </li>
+      {/each}
+      {#if extraArgs > 0}
+        <li class="arg-more">+{extraArgs} more</li>
+      {/if}
+    </ul>
+  {/if}
+
+  <div class="badges mt-1">
+    <span class="badge meta">{data.accountsCount}acc</span>
+    {#if signerCount > 0}
+      <span class="badge signer" title={`Signers: ${data.signers.join(', ')}`}>
+        {signerCount} signer{signerCount > 1 ? 's' : ''}
+      </span>
+    {/if}
+    {#if data.hasPdas}
+      <span class="badge pda">pda</span>
+    {/if}
+    {#if data.adminGated}
+      <span class="badge admin">admin</span>
     {/if}
   </div>
 </div>
@@ -32,7 +76,88 @@
   .instruction-node.has-pdas {
     border-color: var(--color-warning);
   }
+  .instruction-node.admin-gated {
+    border-color: var(--color-danger);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-danger) 35%, transparent) inset;
+  }
   .instruction-node.dimmed {
     opacity: 0.55;
+  }
+  .head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 6px;
+  }
+  .label {
+    font-weight: 700;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .disc {
+    font-size: 8px;
+    color: var(--color-text-dim);
+    font-family: var(--font-mono, monospace);
+  }
+  .arg-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+  .arg-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 9px;
+    line-height: 1.3;
+  }
+  .arg-name {
+    color: var(--color-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .arg-type {
+    color: var(--color-text-dim);
+    font-style: italic;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .arg-more {
+    font-size: 8px;
+    color: var(--color-text-dim);
+    text-align: center;
+  }
+  .badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px;
+    justify-content: center;
+  }
+  .badge {
+    font-size: 8px;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: var(--color-border-subtle);
+    color: var(--color-text-muted);
+    text-transform: lowercase;
+    letter-spacing: 0.04em;
+  }
+  .badge.signer {
+    background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+    color: var(--color-accent-hover);
+  }
+  .badge.pda {
+    background: color-mix(in srgb, var(--color-warning) 22%, transparent);
+    color: var(--color-warning);
+  }
+  .badge.admin {
+    background: color-mix(in srgb, var(--color-danger) 22%, transparent);
+    color: var(--color-danger);
   }
 </style>

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { InstructionDef, ProgramDetail } from '$lib/api/rest';
+  import type { IxView, ProgramView } from '$lib/api/rest';
 
   let {
     program,
@@ -7,8 +7,8 @@
     users,
     onsubmit,
   }: {
-    program: ProgramDetail;
-    ix: InstructionDef;
+    program: ProgramView;
+    ix: IxView;
     users: { name: string; pubkey: string }[];
     onsubmit: (payload: {
       args: Record<string, any>;
@@ -38,34 +38,22 @@
     signerValues = sgn;
   });
 
-  const visibleAccounts = $derived((ix.accounts ?? []).filter((a: any) => !a.address));
-  const constantAccounts = $derived((ix.accounts ?? []).filter((a: any) => a.address));
+  const visibleAccounts = $derived((ix.accounts ?? []).filter((a) => !a.address));
+  const constantAccounts = $derived((ix.accounts ?? []).filter((a) => a.address));
 
   const NUMBER_INTS = new Set(['u8','u16','u32','u64','i8','i16','i32','i64','f32','f64']);
   const STRING_INTS = new Set(['u128','i128','u256','i256']);
 
-  function coerceArg(raw: string, ty: any): any {
-    if (typeof ty === 'string') {
-      if (ty === 'bool') return raw === 'true' || raw === '1';
-      if (NUMBER_INTS.has(ty)) {
-        const n = Number(raw);
-        return Number.isFinite(n) ? n : raw;
-      }
-      if (STRING_INTS.has(ty)) {
-        return raw;
-      }
+  function coerceArg(raw: string, ty: string): any {
+    if (ty === 'bool') return raw === 'true' || raw === '1';
+    if (NUMBER_INTS.has(ty)) {
+      const n = Number(raw);
+      return Number.isFinite(n) ? n : raw;
+    }
+    if (STRING_INTS.has(ty)) {
+      return raw;
     }
     return raw;
-  }
-
-  function describeType(ty: any): string {
-    if (typeof ty === 'string') return ty;
-    if (ty == null) return '?';
-    if (typeof ty === 'object' && 'defined' in ty) {
-      const d = (ty as any).defined;
-      return typeof d === 'string' ? d : (d?.name ?? JSON.stringify(d));
-    }
-    return JSON.stringify(ty);
   }
 
   async function handleSubmit(e: SubmitEvent) {
@@ -77,7 +65,7 @@
       for (const arg of ix.args ?? []) {
         const raw = argValues[arg.name] ?? '';
         if (raw === '') continue;
-        args[arg.name] = coerceArg(raw, arg.type);
+        args[arg.name] = coerceArg(raw, arg.ty);
       }
       const accounts: Record<string, string> = {};
       for (const [k, v] of Object.entries(accountValues)) {
@@ -112,7 +100,7 @@
         class="run-input"
         type="text"
         bind:value={argValues[arg.name]}
-        placeholder={describeType(arg.type)}
+        placeholder={arg.ty}
       />
     </label>
   {/each}

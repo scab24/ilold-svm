@@ -1,4 +1,5 @@
 import type { Node, Edge } from '@xyflow/svelte';
+import type { AccountKind, ArgView, FieldView } from '$lib/api/rest';
 
 // ── Node data types ─────────────────────────────────────────
 
@@ -57,10 +58,12 @@ export interface InstructionNodeData {
   label: string;
   programName: string;
   programId: string;
-  argsCount: number;
+  args: ArgView[];
   accountsCount: number;
   hasPdas: boolean;
   signers: string[];
+  adminGated: boolean;
+  discriminator_hex?: string;
   _dimmed?: boolean;
 }
 
@@ -69,7 +72,14 @@ export interface AccountNodeData {
   _type: 'account';
   label: string;
   programName: string;
-  fields?: { name: string; type: string }[];
+  fields: FieldView[];
+  discriminator_hex?: string;
+  account_type?: string;
+  signer?: boolean;
+  writable?: boolean;
+  pda?: boolean;
+  kind?: AccountKind;
+  parentInstruction?: string;
   _dimmed?: boolean;
 }
 

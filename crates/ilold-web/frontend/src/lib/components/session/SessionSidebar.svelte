@@ -8,7 +8,7 @@
   import { promptScenarioName } from '$lib/scenarios/name';
   import { dispatchScenarioAction } from '$lib/scenarios/dispatch';
   import { getNodes } from '$lib/stores/graph.svelte';
-  import type { ProgramDetail } from '$lib/api/rest';
+  import type { ProgramView } from '$lib/api/rest';
   import type { TraceNodeData } from '$lib/stores/graph.svelte';
 
   let {
@@ -45,7 +45,7 @@
     onpathselect?: (funcName: string, path: any) => void;
     onexpandcfg?: (funcName: string, nodeId?: string) => void;
     kind?: 'solidity' | 'solana';
-    program?: ProgramDetail | null;
+    program?: ProgramView | null;
     solanaUsers?: { name: string; pubkey: string; lamports: number }[];
     onsolanarun?: (instruction: string) => void;
     onnewuser?: (name: string, lamports: number) => Promise<void>;

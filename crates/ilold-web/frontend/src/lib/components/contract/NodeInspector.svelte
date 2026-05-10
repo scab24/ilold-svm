@@ -1,7 +1,7 @@
 <script lang="ts">
   import Collapsible from '$lib/Collapsible.svelte';
   import SolanaRunForm from './SolanaRunForm.svelte';
-  import type { ProgramDetail, InstructionDef } from '$lib/api/rest';
+  import type { ProgramView, IxView } from '$lib/api/rest';
 
   interface Props {
     selectedNode: any;
@@ -16,10 +16,10 @@
     onpathselect: (funcName: string, path: any) => void;
     onexpandcfg: (funcName: string, nodeId?: string) => void;
     onsolanarun?: (instructionName: string) => void;
-    program?: ProgramDetail | null;
+    program?: ProgramView | null;
     solanaUsers?: { name: string; pubkey: string }[];
     onsolanasubmit?: (
-      ix: InstructionDef,
+      ix: IxView,
       payload: { args: Record<string, any>; accounts: Record<string, string>; signers: string[] },
     ) => Promise<void>;
   }
@@ -42,7 +42,7 @@
     onsolanasubmit,
   }: Props = $props();
 
-  const inspectedIx = $derived.by<InstructionDef | null>(() => {
+  const inspectedIx = $derived.by<IxView | null>(() => {
     if (!program || !selectedNode || selectedNode._type !== 'instruction') return null;
     return program.instructions.find((i) => i.name === selectedNode.label) ?? null;
   });
@@ -353,13 +353,19 @@
 
       {:else if selectedNode._type === 'instruction'}
         <div class="d-row"><span class="d-label">Program</span><span>{selectedNode.programName}</span></div>
-        <div class="d-row"><span class="d-label">Args</span><span>{selectedNode.argsCount}</span></div>
+        <div class="d-row"><span class="d-label">Args</span><span>{(selectedNode.args ?? []).length}</span></div>
         <div class="d-row"><span class="d-label">Accounts</span><span>{selectedNode.accountsCount}</span></div>
+        {#if selectedNode.adminGated}
+          <div class="d-row"><span class="d-label">Admin</span><span class="text-danger">admin-gated (heuristic)</span></div>
+        {/if}
         {#if selectedNode.hasPdas}
           <div class="d-row"><span class="d-label">PDAs</span><span class="text-warning">declares PDAs</span></div>
         {/if}
         {#if selectedNode.signers && selectedNode.signers.length > 0}
           <div class="d-row"><span class="d-label">Signers</span><span>{selectedNode.signers.join(', ')}</span></div>
+        {/if}
+        {#if selectedNode.discriminator_hex}
+          <div class="d-row"><span class="d-label">Disc</span><span class="font-mono">{selectedNode.discriminator_hex}</span></div>
         {/if}
         {#if program && inspectedIx && onsolanasubmit}
           <SolanaRunForm
@@ -378,13 +384,28 @@
 
       {:else if selectedNode._type === 'account'}
         <div class="d-row"><span class="d-label">Program</span><span>{selectedNode.programName}</span></div>
+        {#if selectedNode.account_type}
+          <div class="d-row"><span class="d-label">Type</span><span class="font-mono">{selectedNode.account_type}</span></div>
+        {/if}
+        {#if selectedNode.discriminator_hex}
+          <div class="d-row"><span class="d-label">Disc</span><span class="font-mono">{selectedNode.discriminator_hex}</span></div>
+        {/if}
         {#if selectedNode.fields && selectedNode.fields.length > 0}
           <div class="d-section-label">Fields</div>
           {#each selectedNode.fields as f}
-            <div class="d-row"><span class="d-label">{f.name}</span><span class="font-mono">{f.type}</span></div>
+            <div class="d-row"><span class="d-label">{f.name}</span><span class="font-mono">{f.ty}</span></div>
           {/each}
         {:else}
           <div class="d-hint">Layout fields not declared in this IDL</div>
+        {/if}
+        {#if selectedNode.signer || selectedNode.writable || selectedNode.pda}
+          <div class="d-section-label">IX flags</div>
+          <div class="d-row">
+            <span class="d-label">Flags</span>
+            <span>
+              {selectedNode.signer ? 'signer ' : ''}{selectedNode.writable ? 'writable ' : ''}{selectedNode.pda ? 'pda' : ''}
+            </span>
+          </div>
         {/if}
 
       {:else if selectedNode._type === 'trace'}
