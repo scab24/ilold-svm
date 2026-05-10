@@ -9,6 +9,7 @@ mod colors;
 mod context;
 mod explore;
 mod fmt;
+mod help;
 mod interactive;
 
 #[derive(Parser)]

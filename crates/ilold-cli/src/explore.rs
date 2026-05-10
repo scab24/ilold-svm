@@ -1118,6 +1118,19 @@ fn handle_input(
     }
 }
 
+fn inline_help_target(cmd: &str, arg: &str) -> Option<String> {
+    if cmd == "?" || cmd == "help" || cmd == "h" {
+        return None;
+    }
+    if cmd.ends_with('?') && cmd.len() > 1 {
+        return Some(cmd[..cmd.len() - 1].to_string());
+    }
+    if arg.trim() == "?" {
+        return Some(cmd.to_string());
+    }
+    None
+}
+
 #[allow(clippy::too_many_arguments)]
 fn handle_solana_input(
     line: &str,
@@ -1132,6 +1145,18 @@ fn handle_solana_input(
     let parts: Vec<&str> = line.splitn(2, ' ').collect();
     let cmd = parts[0].to_lowercase();
     let arg = parts.get(1).map(|s| s.trim()).unwrap_or("");
+
+    if let Some(base) = inline_help_target(&cmd, arg) {
+        match crate::help::render_solana_help_block(&base) {
+            Some(text) => print!("{text}"),
+            None => println!(
+                "  {} no help registered for {}",
+                c_danger("✗"),
+                c_accent(&base)
+            ),
+        }
+        return InputResult::Continue;
+    }
 
     match cmd.as_str() {
         "?" | "help" | "h" => {
@@ -3821,8 +3846,9 @@ fn print_help_for(backend: BackendKind) {
             ]),
             ("Analysis", &[
                 ("st", "step <index>",      "Re-inspect a step: CU, logs, diffs"),
-                ("",   "who <account_type>", "List instructions referencing this account type (e.g. who Pool)"),
+                ("",   "who <query>",        "Resolve query: AccountType | Instruction | Field"),
                 ("tl", "timeline <pubkey>",  "Cross-step mutation history of an account, decoded"),
+                ("cp", "coupling",           "List ix pairs that share writable accounts"),
             ]),
             ("Findings", &[
                 ("fi", "finding <sev> <title>", "Record a security finding"),
@@ -3830,12 +3856,12 @@ fn print_help_for(backend: BackendKind) {
                 ("n",  "note <text>",       "Add annotation to active sequence"),
                 ("",   "status <ix> <s>",   "Set review status: open|reviewed|finding"),
                 ("ex", "export",            "Markdown report: sequence + findings + program info"),
-                ("sc", "scenario <sub>",    "new|list|switch|fork|delete <name> [step]"),
             ]),
             ("Workspace", &[
+                ("sc", "scenario <sub>",    "new|list|switch|fork|delete <name> [step]"),
                 ("",   "save <name>",       "Save active scenario JSON to disk"),
                 ("",   "load <name>",       "Load scenario JSON from disk"),
-                ("?",  "help",              "Print this help"),
+                ("?",  "help",              "Print this help (append ? to any cmd for full reference)"),
                 ("q",  "quit/exit",         "Exit"),
             ]),
         ],
