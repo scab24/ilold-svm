@@ -18,6 +18,14 @@ stake_as alice alice_stake 1000 >/dev/null
 stake_as alice alice_stake 500  >/dev/null
 stake_as bob   bob_stake   2000 >/dev/null
 
+# Trigger a real CallFailed via Anchor's init re-use guard. Pool was
+# already initialized at the top, so a second initialize_pool runs through
+# add_solana_step and gets rejected by the VM. failed_calls_per_ix must
+# tick — that is exactly the persistence path T-R52b restored.
+fail_resp=$(init_pool)
+fail_kind=$(echo "$fail_resp" | jq -r 'keys[0] // empty')
+expect_eq "re-initialize_pool rejected as CallFailed" "CallFailed" "$fail_kind"
+
 # Coverage via /api/cmd
 cov_response=$(post '{"contract":"staking","command":"Coverage"}')
 overlay_json=$(echo "$cov_response" | jq '.Coverage.overlay')
@@ -37,6 +45,9 @@ expect_eq "initialize_pool called once" "1" "$init_calls"
 
 cu_samples=$(echo "$overlay_json" | jq -r '.cu_stats_per_ix.stake.samples // 0')
 expect_eq "cu_stats.stake.samples == 3" "3" "$cu_samples"
+
+failed_init=$(echo "$overlay_json" | jq -r '.failed_per_ix.initialize_pool // 0')
+expect_eq "failed_per_ix.initialize_pool == 1" "1" "$failed_init"
 
 # Anchor `init` (used by initialize_pool / stake's user_stake init) CPIs to
 # system_program. The overlay must surface those edges.

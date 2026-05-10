@@ -19,6 +19,18 @@ pub enum CanvasPatch {
     Highlight { scenario: String, function: String },
     ScenarioEvent(ScenarioEvent),
     SolanaUsersChanged { scenario: String },
+    /// Incremental runtime overlay delta emitted right after a Call resolves
+    /// (StepAdded or CallFailed). The frontend store merges these against the
+    /// snapshot fetched from `/api/program/{name}/overlay` so badges stay in
+    /// sync without re-fetching the full overlay on every tick.
+    OverlayUpdate {
+        scenario: String,
+        ix_name: String,
+        calls_added: u32,
+        failed_added: u32,
+        cu: Option<u64>,
+        cpi_targets_added: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

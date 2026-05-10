@@ -1,6 +1,11 @@
 <script lang="ts">
   import { Handle, Position } from '@xyflow/svelte';
   import type { InstructionNodeData } from '$lib/stores/graph.svelte';
+  import {
+    getCallsPerIx,
+    getCuStatsPerIx,
+    getFailedPerIx,
+  } from '$lib/stores/runtimeOverlay.svelte';
 
   let { data }: { data: InstructionNodeData } = $props();
 
@@ -22,6 +27,17 @@
       ? `admin-gated (heuristic)${discriminatorTooltip ? ' · ' + discriminatorTooltip : ''}`
       : discriminatorTooltip,
   );
+
+  let callsCount = $derived(getCallsPerIx()[data.label] ?? 0);
+  let failedCount = $derived(getFailedPerIx()[data.label] ?? 0);
+  let cuStats = $derived(getCuStatsPerIx()[data.label]);
+  let cuLabel = $derived(cuStats ? formatCu(cuStats.avg) : '');
+
+  function formatCu(n: number): string {
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;
+    if (n >= 1_000) return `${(n / 1_000).toFixed(1).replace(/\.0$/, '')}k`;
+    return `${n}`;
+  }
 </script>
 
 <div
@@ -64,6 +80,21 @@
     {/if}
     {#if data.adminGated}
       <span class="badge admin">admin</span>
+    {/if}
+    {#if callsCount > 0}
+      <span class="badge runtime-calls" title={`called ${callsCount} time${callsCount > 1 ? 's' : ''}`}>
+        called {callsCount}x
+      </span>
+    {/if}
+    {#if cuLabel}
+      <span class="badge runtime-cu" title={cuStats ? `min ${cuStats.min} · avg ${cuStats.avg} · max ${cuStats.max} (${cuStats.samples} samples)` : ''}>
+        ~{cuLabel} CU
+      </span>
+    {/if}
+    {#if failedCount > 0}
+      <span class="badge runtime-failed" title={`rejected ${failedCount} time${failedCount > 1 ? 's' : ''}`}>
+        rejected {failedCount}x
+      </span>
     {/if}
   </div>
 </div>
@@ -158,6 +189,18 @@
   }
   .badge.admin {
     background: color-mix(in srgb, var(--color-danger) 22%, transparent);
+    color: var(--color-danger);
+  }
+  .badge.runtime-calls {
+    background: color-mix(in srgb, var(--color-success, #4ade80) 22%, transparent);
+    color: var(--color-success, #4ade80);
+  }
+  .badge.runtime-cu {
+    background: color-mix(in srgb, var(--color-info, #60a5fa) 18%, transparent);
+    color: var(--color-info, #60a5fa);
+  }
+  .badge.runtime-failed {
+    background: color-mix(in srgb, var(--color-danger) 28%, transparent);
     color: var(--color-danger);
   }
 </style>

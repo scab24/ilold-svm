@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 
@@ -12,6 +12,12 @@ pub struct ExplorationSession {
     pub journal: AuditJournal,
     #[serde(default)]
     pub forked_from: Option<ForkOrigin>,
+    /// Counts CallFailed outcomes per instruction. Lives off `steps` because
+    /// failed Calls deliberately do not push a step (Solidity-aligned model)
+    /// — without this counter the runtime overlay could never surface
+    /// "rejected Nx" badges.
+    #[serde(default)]
+    pub failed_calls_per_ix: BTreeMap<String, u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -88,6 +94,7 @@ impl ExplorationSession {
             steps: Vec::new(),
             journal: AuditJournal::new(project, contract, ""),
             forked_from: None,
+            failed_calls_per_ix: BTreeMap::new(),
         }
     }
 
@@ -97,6 +104,14 @@ impl ExplorationSession {
 
     pub fn clear(&mut self) {
         self.steps.clear();
+        self.failed_calls_per_ix.clear();
+    }
+
+    pub fn record_failed_call(&mut self, ix: &str) {
+        *self
+            .failed_calls_per_ix
+            .entry(ix.to_string())
+            .or_insert(0) += 1;
     }
 
     pub fn current_sequence(&self) -> Vec<&str> {

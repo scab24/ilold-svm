@@ -32,6 +32,7 @@ const knownTopics: ReadonlySet<string> = new Set([
   'session_remove_node',
   'session_clear',
   'session_highlight',
+  'session_overlay_update',
   'scenario_created',
   'scenario_switched',
   'scenario_deleted',

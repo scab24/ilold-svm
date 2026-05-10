@@ -20,7 +20,7 @@ use ilold_core::narrative::types::{FunctionNarrative, SequenceNarrative};
 use ilold_core::slicing::{build_slice_result, SliceDirection, SliceResult};
 use ilold_session_core::exploration::scenario::ScenarioAction as SharedScenarioAction;
 use ilold_solana_core::exploration::{
-    canvas_patch_from_solana, execute_airdrop, execute_back, execute_call, execute_clear,
+    canvas_patches_from_solana, execute_airdrop, execute_back, execute_call, execute_clear,
     execute_coupling, execute_coverage, execute_export, execute_findings_list, execute_info,
     execute_step, execute_timeline, execute_vars, execute_who, execute_finding,
     execute_funcs, execute_inspect, execute_note, execute_pda, execute_session,
@@ -182,6 +182,9 @@ fn fork_scenario(
     }
     let from = store.active().to_string();
     let mut cloned = store.active_session().clone();
+    // Failed Calls are scenario-local observations; the fresh fork has not
+    // rejected anything yet so the runtime overlay starts clean.
+    cloned.failed_calls_per_ix.clear();
 
     // Resolve effective step count. None (legacy) → keep all steps.
     // Some(N) → truncate to first N; error if N > current length.
@@ -370,7 +373,7 @@ async fn handle_solana_command(
             &timestamp,
             &program.name,
         );
-        if let Some(patch) = canvas_patch_from_solana(&result, &active_before) {
+        for patch in canvas_patches_from_solana(&result, &active_before, &[]) {
             state.session_tx.send(patch).ok();
         }
         return Ok(Json(serde_json::to_value(result).unwrap_or(Value::Null)));
@@ -552,7 +555,7 @@ async fn handle_solana_command(
             Err(message) => SolanaCommandResult::Error { message },
         };
         let active_after = scenarios.active().to_string();
-        if let Some(patch) = canvas_patch_from_solana(&result, &active_after) {
+        for patch in canvas_patches_from_solana(&result, &active_after, &[]) {
             state.session_tx.send(patch).ok();
         }
         return Ok(Json(serde_json::to_value(result).unwrap_or(Value::Null)));
@@ -685,7 +688,30 @@ async fn handle_solana_command(
         stack.push(snap);
     }
 
-    if let Some(patch) = canvas_patch_from_solana(&result, &active_scenario) {
+    let cpi_targets = match &result {
+        SolanaCommandResult::StepAdded { .. } => scenarios
+            .active_session()
+            .steps
+            .last()
+            .and_then(|s| s.runtime_trace.as_ref())
+            .and_then(|v| {
+                v.get("inner_instructions")
+                    .and_then(|ii| ii.as_array())
+                    .map(|arr| {
+                        let mut seen = std::collections::BTreeSet::new();
+                        for entry in arr {
+                            if let Some(p) = entry.get("program").and_then(|p| p.as_str()) {
+                                seen.insert(p.to_string());
+                            }
+                        }
+                        seen.into_iter().collect::<Vec<String>>()
+                    })
+            })
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+
+    for patch in canvas_patches_from_solana(&result, &active_scenario, &cpi_targets) {
         state.session_tx.send(patch).ok();
     }
     Ok(Json(serde_json::to_value(result).unwrap_or(Value::Null)))
@@ -769,6 +795,9 @@ fn solana_scenario_action(
             }
             let from = active_before.to_string();
             let mut cloned = scenarios.active_session().clone();
+            // Failed Calls are scenario-local observations: a fork hasn't
+            // rejected anything yet, so the runtime overlay starts clean.
+            cloned.failed_calls_per_ix.clear();
             let len = cloned.steps.len();
             let effective = match at_step {
                 None => len,

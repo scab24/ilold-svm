@@ -369,10 +369,11 @@ pub struct TimelineEntry {
     pub after_decoded: Option<Value>,
 }
 
-pub fn canvas_patch_from_solana(
+pub fn canvas_patches_from_solana(
     result: &SolanaCommandResult,
     active_scenario: &str,
-) -> Option<CanvasPatch> {
+    cpi_targets: &[String],
+) -> Vec<CanvasPatch> {
     use ilold_session_core::exploration::canvas::RuntimeMeta;
     match result {
         SolanaCommandResult::StepAdded {
@@ -382,58 +383,83 @@ pub fn canvas_patch_from_solana(
             account_diffs_count,
             compute_units,
             error,
-        } => Some(CanvasPatch::AddNode {
+        } => vec![
+            // AddNode first, OverlayUpdate after — clients that paint badges
+            // off the canvas node need the node to exist before the delta
+            // arrives.
+            CanvasPatch::AddNode {
+                scenario: active_scenario.to_string(),
+                function: instruction.clone(),
+                access: AccessLevel::Public,
+                step_index: *step_index,
+                runtime: Some(RuntimeMeta {
+                    compute_units: *compute_units,
+                    diffs_count: *account_diffs_count,
+                    logs_excerpt: logs_excerpt.clone(),
+                    error: error.clone(),
+                    trace: None,
+                }),
+            },
+            CanvasPatch::OverlayUpdate {
+                scenario: active_scenario.to_string(),
+                ix_name: instruction.clone(),
+                calls_added: 1,
+                failed_added: 0,
+                cu: Some(*compute_units),
+                cpi_targets_added: cpi_targets.to_vec(),
+            },
+        ],
+        SolanaCommandResult::CallFailed {
+            instruction,
+            compute_units,
+            ..
+        } => vec![CanvasPatch::OverlayUpdate {
             scenario: active_scenario.to_string(),
-            function: instruction.clone(),
-            access: AccessLevel::Public,
-            step_index: *step_index,
-            runtime: Some(RuntimeMeta {
-                compute_units: *compute_units,
-                diffs_count: *account_diffs_count,
-                logs_excerpt: logs_excerpt.clone(),
-                error: error.clone(),
-                trace: None,
-            }),
-        }),
-        SolanaCommandResult::StepRemoved { .. } => Some(CanvasPatch::RemoveLastNode {
+            ix_name: instruction.clone(),
+            calls_added: 0,
+            failed_added: 1,
+            cu: Some(*compute_units),
+            cpi_targets_added: Vec::new(),
+        }],
+        SolanaCommandResult::StepRemoved { .. } => vec![CanvasPatch::RemoveLastNode {
             scenario: active_scenario.to_string(),
-        }),
-        SolanaCommandResult::Cleared => Some(CanvasPatch::ClearAll {
+        }],
+        SolanaCommandResult::Cleared => vec![CanvasPatch::ClearAll {
             scenario: active_scenario.to_string(),
-        }),
-        SolanaCommandResult::ScenarioCreated { name } => Some(CanvasPatch::ScenarioEvent(
+        }],
+        SolanaCommandResult::ScenarioCreated { name } => vec![CanvasPatch::ScenarioEvent(
             ScenarioEvent::Created { name: name.clone() },
-        )),
+        )],
         SolanaCommandResult::ScenarioSwitched { from, to } => {
             if from == to {
-                None
+                Vec::new()
             } else {
-                Some(CanvasPatch::ScenarioEvent(ScenarioEvent::Switched {
+                vec![CanvasPatch::ScenarioEvent(ScenarioEvent::Switched {
                     from: from.clone(),
                     to: to.clone(),
-                }))
+                })]
             }
         }
-        SolanaCommandResult::ScenarioDeleted { name } => Some(CanvasPatch::ScenarioEvent(
+        SolanaCommandResult::ScenarioDeleted { name } => vec![CanvasPatch::ScenarioEvent(
             ScenarioEvent::Deleted { name: name.clone() },
-        )),
-        SolanaCommandResult::ScenarioForked { from, to, at_step } => Some(
-            CanvasPatch::ScenarioEvent(ScenarioEvent::Forked {
+        )],
+        SolanaCommandResult::ScenarioForked { from, to, at_step } => {
+            vec![CanvasPatch::ScenarioEvent(ScenarioEvent::Forked {
                 from: from.clone(),
                 to: to.clone(),
                 at_step: *at_step,
-            }),
-        ),
-        SolanaCommandResult::SessionLoaded { .. } => Some(CanvasPatch::ScenarioEvent(
+            })]
+        }
+        SolanaCommandResult::SessionLoaded { .. } => vec![CanvasPatch::ScenarioEvent(
             ScenarioEvent::Reloaded {
                 active: active_scenario.to_string(),
             },
-        )),
+        )],
         SolanaCommandResult::UserCreated { .. } | SolanaCommandResult::Airdropped { .. } => {
-            Some(CanvasPatch::SolanaUsersChanged {
+            vec![CanvasPatch::SolanaUsersChanged {
                 scenario: active_scenario.to_string(),
-            })
+            }]
         }
-        _ => None,
+        _ => Vec::new(),
     }
 }

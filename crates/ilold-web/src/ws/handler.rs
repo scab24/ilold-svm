@@ -55,6 +55,16 @@ enum ServerMessage {
     ScenarioStoreReloaded { active: String },
     #[serde(rename = "solana_users_changed")]
     SolanaUsersChanged { scenario: String },
+    #[serde(rename = "session_overlay_update")]
+    SessionOverlayUpdate {
+        scenario: String,
+        ix_name: String,
+        calls_added: u32,
+        failed_added: u32,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cu: Option<u64>,
+        cpi_targets_added: Vec<String>,
+    },
 }
 
 pub async fn ws_handler(
@@ -88,6 +98,21 @@ fn server_message_from_patch(patch: CanvasPatch) -> ServerMessage {
         CanvasPatch::SolanaUsersChanged { scenario } => {
             ServerMessage::SolanaUsersChanged { scenario }
         }
+        CanvasPatch::OverlayUpdate {
+            scenario,
+            ix_name,
+            calls_added,
+            failed_added,
+            cu,
+            cpi_targets_added,
+        } => ServerMessage::SessionOverlayUpdate {
+            scenario,
+            ix_name,
+            calls_added,
+            failed_added,
+            cu,
+            cpi_targets_added,
+        },
     }
 }
 

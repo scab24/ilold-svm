@@ -10,7 +10,8 @@
 		"prepare": "svelte-kit sync || echo ''",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
-		"check:program-view": "node scripts/check-program-view.mjs"
+		"check:program-view": "node scripts/check-program-view.mjs && node scripts/check-runtime-overlay.mjs",
+		"check:overlay": "node scripts/check-runtime-overlay.mjs"
 	},
 	"devDependencies": {
 		"@sveltejs/adapter-auto": "^7.0.0",

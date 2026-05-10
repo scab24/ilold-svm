@@ -161,6 +161,29 @@ export interface ProgramView {
   system_accounts?: string[];
 }
 
+export interface CuStats {
+  min: number;
+  max: number;
+  avg: number;
+  samples: number;
+}
+
+export interface CpiEdge {
+  from_ix: string;
+  to_program: string;
+  depth: number;
+  samples: number;
+}
+
+export interface RuntimeOverlay {
+  program: string;
+  scenario: string;
+  calls_per_ix: Record<string, number>;
+  failed_per_ix: Record<string, number>;
+  cu_stats_per_ix: Record<string, CuStats>;
+  cpi_edges: CpiEdge[];
+}
+
 export interface MapContract {
   name: string;
   kind: string;
@@ -208,6 +231,18 @@ export async function getContract(name: string): Promise<ContractDetail> {
 export async function getProgramView(name: string): Promise<ProgramView> {
   const res = await fetch(`${BASE}/api/program/${encodeURIComponent(name)}/view`);
   if (!res.ok) throw new Error(`Program ${name} not found`);
+  return res.json();
+}
+
+export async function getProgramOverlay(
+  name: string,
+  scenario?: string,
+): Promise<RuntimeOverlay> {
+  const qs = scenario ? `?scenario=${encodeURIComponent(scenario)}` : '';
+  const res = await fetch(
+    `${BASE}/api/program/${encodeURIComponent(name)}/overlay${qs}`,
+  );
+  if (!res.ok) throw new Error(`Overlay for ${name} not found`);
   return res.json();
 }
 

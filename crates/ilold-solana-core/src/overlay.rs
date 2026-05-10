@@ -47,21 +47,12 @@ impl RuntimeOverlay {
         let mut cpi_counts: BTreeMap<(String, String, u32), u32> = BTreeMap::new();
 
         for step in &session.steps {
+            *overlay.calls_per_ix.entry(step.function.clone()).or_insert(0) += 1;
+
             let trace: Option<RuntimeTrace> = step
                 .runtime_trace
                 .as_ref()
                 .and_then(|v| serde_json::from_value(v.clone()).ok());
-
-            let failed = trace
-                .as_ref()
-                .map(|t| t.error.is_some())
-                .unwrap_or(false);
-
-            if failed {
-                *overlay.failed_per_ix.entry(step.function.clone()).or_insert(0) += 1;
-            } else {
-                *overlay.calls_per_ix.entry(step.function.clone()).or_insert(0) += 1;
-            }
 
             if let Some(t) = trace.as_ref() {
                 cu_samples
@@ -78,6 +69,10 @@ impl RuntimeOverlay {
                     *cpi_counts.entry(key).or_insert(0) += 1;
                 }
             }
+        }
+
+        for (ix, count) in &session.failed_calls_per_ix {
+            overlay.failed_per_ix.insert(ix.clone(), *count);
         }
 
         for (ix, samples) in cu_samples {
@@ -149,17 +144,6 @@ mod tests {
         }
     }
 
-    fn err_trace(cu: u64, msg: &str) -> RuntimeTrace {
-        RuntimeTrace {
-            logs: vec![],
-            compute_units: cu,
-            inner_instructions: vec![],
-            account_diffs: vec![],
-            return_data: None,
-            error: Some(msg.to_string()),
-        }
-    }
-
     #[test]
     fn from_session_empty_returns_empty() {
         let session = empty_session();
@@ -191,20 +175,19 @@ mod tests {
     }
 
     #[test]
-    fn from_session_separates_failed() {
+    fn from_session_reads_failed_calls_counter() {
         let mut session = empty_session();
         session.steps.push(step_with_trace("stake", ok_trace(11_000)));
-        session
-            .steps
-            .push(step_with_trace("stake", err_trace(0, "AnchorError")));
-        session
-            .steps
-            .push(step_with_trace("unstake", err_trace(0, "panicked")));
+        // Failed Calls never push a step (they go through record_failed_call
+        // in execute_call::CallFailed). Mirror that real flow here.
+        session.record_failed_call("stake");
+        session.record_failed_call("unstake");
 
         let overlay = RuntimeOverlay::from_session(&session);
         assert_eq!(overlay.calls_per_ix.get("stake").copied(), Some(1));
         assert_eq!(overlay.failed_per_ix.get("stake").copied(), Some(1));
         assert_eq!(overlay.failed_per_ix.get("unstake").copied(), Some(1));
+        assert_eq!(overlay.calls_per_ix.get("unstake"), None);
     }
 
     #[test]

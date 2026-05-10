@@ -354,15 +354,18 @@ pub fn execute_call(
             compute_units,
             error: None,
         },
-        None => SolanaCommandResult::CallFailed {
-            instruction: ix.name.clone(),
-            logs_excerpt,
-            compute_units,
-            error: trace
-                .error
-                .clone()
-                .unwrap_or_else(|| "unknown VM error".to_string()),
-        },
+        None => {
+            session.record_failed_call(&ix.name);
+            SolanaCommandResult::CallFailed {
+                instruction: ix.name.clone(),
+                logs_excerpt,
+                compute_units,
+                error: trace
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| "unknown VM error".to_string()),
+            }
+        }
     }
 }
 

@@ -146,6 +146,7 @@ export type ServerMessage =
   | ScenarioForked
   | ScenarioStoreReloaded
   | SolanaUsersChanged
+  | SessionOverlayUpdate
   | SearchResult
   | SearchComplete
   | SearchError;
@@ -153,6 +154,19 @@ export type ServerMessage =
 export interface SolanaUsersChanged {
   type: 'solana_users_changed';
   scenario: string;
+}
+
+/** Incremental runtime-overlay delta. Backend emits this right after
+ *  each StepAdded / CallFailed so the badges (called Nx, ~CU avg,
+ *  rejected Nx) stay live without re-fetching /overlay. */
+export interface SessionOverlayUpdate {
+  type: 'session_overlay_update';
+  scenario: string;
+  ix_name: string;
+  calls_added: number;
+  failed_added: number;
+  cu?: number;
+  cpi_targets_added: string[];
 }
 
 // ── Connection events (synthetic, frontend-only) ────────────────────────────
@@ -174,6 +188,7 @@ export interface TopicMap {
   session_remove_node: SessionRemoveNode;
   session_clear: SessionClear;
   session_highlight: SessionHighlight;
+  session_overlay_update: SessionOverlayUpdate;
   scenario_created: ScenarioCreated;
   scenario_switched: ScenarioSwitched;
   scenario_deleted: ScenarioDeleted;

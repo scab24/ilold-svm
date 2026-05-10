@@ -2,6 +2,11 @@
   import { page } from '$app/state';
   import { onMount, onDestroy, tick, untrack } from 'svelte';
   import { getContract, getCallGraph, getCfg, getPaths, getSequences, getSequenceAnalysis, getFunctionSource, getProjectMap, getProgramView, type ContractDetail, type CytoscapeGraph, type SequenceAnalysis, type MapContract, type MapProgram, type ProgramView, type IxView, type AccountView, type IxAccountView } from '$lib/api/rest';
+  import {
+    applyOverlayUpdate as applyRuntimeOverlayUpdate,
+    clearOverlay as clearRuntimeOverlay,
+    loadInitialOverlay as loadRuntimeOverlay,
+  } from '$lib/stores/runtimeOverlay.svelte';
   import { goto } from '$app/navigation';
   import { toggleTerminal } from '$lib/stores/terminal.svelte';
   import { openInIde } from '$lib/utils/ide-links';
@@ -845,7 +850,15 @@
       });
       solanaRuntimeByStep = next;
     });
-    return () => { unsub(); unsubAdd(); };
+    const unsubOverlay = subscribeWs('session_overlay_update', (msg) => {
+      applyRuntimeOverlayUpdate(msg);
+    });
+    const unsubScenarioSwitch = subscribeWs('scenario_switched', (msg) => {
+      if (solanaProgram) {
+        loadRuntimeOverlay(solanaProgram.name, msg.to);
+      }
+    });
+    return () => { unsub(); unsubAdd(); unsubOverlay(); unsubScenarioSwitch(); };
   });
 
   async function refreshSolanaUsers() {
@@ -915,7 +928,10 @@
   // data. mountToken is captured before the first await; if the user
   // navigates we bump cancel via onDestroy and the guard short-circuits.
   let mountCancelled = $state(false);
-  onDestroy(() => { mountCancelled = true; });
+  onDestroy(() => {
+    mountCancelled = true;
+    clearRuntimeOverlay();
+  });
 
   onMount(async () => {
     const contractName = page.params.name;
@@ -931,6 +947,7 @@
     seqExpanded = new Map();
     selectedNode = null;
     selectedPath = null;
+    clearRuntimeOverlay();
     setSearchContext(contractName);
     try {
       const pm = await getProjectMap();
@@ -947,6 +964,8 @@
         }
         projectMap = [];
         await refreshSolanaUsers();
+        const scenario = getActiveScenario();
+        await loadRuntimeOverlay(contractName, scenario);
         return;
       }
       projectMap = pm.contracts ?? [];

@@ -81,6 +81,7 @@ async def main():
     expected_topics = {
         "solana_users_changed": 4,    # 4 UsersNew
         "session_add_node": 2,         # 2 Calls
+        "session_overlay_update": 2,   # one per Call (StepAdded path)
         "scenario_forked": 1,
         "scenario_switched": 2,        # main→branch, branch→main
         "session_remove_node": 1,      # Back
