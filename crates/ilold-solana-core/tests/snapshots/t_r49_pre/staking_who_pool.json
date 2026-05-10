@@ -1,0 +1,37 @@
+{
+  "WhoList": {
+    "account_type": "Pool",
+    "instructions": [
+      {
+        "instruction": "add_rewards",
+        "account_field": "pool",
+        "writable": true,
+        "signer": false
+      },
+      {
+        "instruction": "claim_rewards",
+        "account_field": "pool",
+        "writable": true,
+        "signer": false
+      },
+      {
+        "instruction": "initialize_pool",
+        "account_field": "pool",
+        "writable": true,
+        "signer": true
+      },
+      {
+        "instruction": "stake",
+        "account_field": "pool",
+        "writable": true,
+        "signer": false
+      },
+      {
+        "instruction": "unstake",
+        "account_field": "pool",
+        "writable": true,
+        "signer": false
+      }
+    ]
+  }
+}

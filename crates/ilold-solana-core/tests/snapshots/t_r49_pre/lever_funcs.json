@@ -1,0 +1,23 @@
+{
+  "InstructionList": {
+    "items": [
+      {
+        "name": "initialize",
+        "args_count": 0,
+        "accounts_count": 3,
+        "has_pdas": false,
+        "signers": [
+          "power",
+          "user"
+        ]
+      },
+      {
+        "name": "switch_power",
+        "args_count": 1,
+        "accounts_count": 1,
+        "has_pdas": false,
+        "signers": []
+      }
+    ]
+  }
+}

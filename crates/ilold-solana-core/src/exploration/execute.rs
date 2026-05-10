@@ -10,7 +10,8 @@ use solana_signer::Signer;
 
 use crate::decode::borsh::decode_defined_fields;
 use crate::execute::VmHost;
-use crate::model::{AccountTypeDef, ProgramDef, SeedSpec};
+use crate::model::{AccountTypeDef, ProgramDef};
+use crate::view::SeedView;
 
 use super::add_step::add_solana_step;
 use super::commands::{
@@ -21,7 +22,8 @@ use super::commands::{
 const DEFAULT_USER_LAMPORTS: u64 = 10_000_000_000;
 
 pub fn execute_funcs(program: &ProgramDef) -> SolanaCommandResult {
-    let items = program
+    let view = program.compute_view();
+    let items = view
         .instructions
         .iter()
         .map(|ix| InstructionEntry {
@@ -125,7 +127,8 @@ pub fn execute_session(
 }
 
 pub fn execute_pda(program: &ProgramDef, instruction: &str) -> SolanaCommandResult {
-    let ix = match program.instructions.iter().find(|i| i.name == instruction) {
+    let view = program.compute_view();
+    let ix = match view.instructions.iter().find(|i| i.name == instruction) {
         Some(i) => i,
         None => {
             return SolanaCommandResult::Error {
@@ -134,22 +137,16 @@ pub fn execute_pda(program: &ProgramDef, instruction: &str) -> SolanaCommandResu
         }
     };
 
+    let self_program_id = view.program_id.clone();
     let pdas: Vec<PdaEntry> = ix
         .accounts
         .iter()
-        .filter_map(|spec| {
-            let pda_spec = spec.pda.as_ref()?;
-            let seeds = pda_spec.seeds.iter().map(describe_seed).collect();
-            let prog = match &pda_spec.program {
-                None => program.program_id.to_string(),
-                Some(SeedSpec::Const { value }) => Address::try_from(value.as_slice())
-                    .map(|a| a.to_string())
-                    .unwrap_or_else(|_| format!("const:{:02x?}", value)),
-                Some(SeedSpec::Account { path }) => format!("account:{path}"),
-                Some(SeedSpec::Arg { path, .. }) => format!("arg:{path}"),
-            };
+        .filter_map(|acc| {
+            let pda = acc.pda.as_ref()?;
+            let seeds = pda.seeds.iter().map(describe_seed_view).collect();
+            let prog = pda.program.clone().unwrap_or_else(|| self_program_id.clone());
             Some(PdaEntry {
-                account_name: spec.name.clone(),
+                account_name: acc.name.clone(),
                 seeds,
                 program: prog,
             })
@@ -497,15 +494,32 @@ pub fn execute_status(
     SolanaCommandResult::StatusUpdated
 }
 
-fn describe_seed(seed: &SeedSpec) -> String {
+fn describe_seed_view(seed: &SeedView) -> String {
     match seed {
-        SeedSpec::Const { value } => match std::str::from_utf8(value) {
-            Ok(s) if s.chars().all(|c| c.is_ascii_graphic() || c == ' ') => format!("const:'{s}'"),
-            _ => format!("const:{:02x?}", value),
+        SeedView::Const { value_hex, value_utf8 } => match value_utf8 {
+            Some(s) => format!("const:'{s}'"),
+            None => {
+                let bytes = hex_to_bytes(value_hex);
+                format!("const:{:02x?}", bytes)
+            }
         },
-        SeedSpec::Account { path } => format!("account:{path}"),
-        SeedSpec::Arg { path, .. } => format!("arg:{path}"),
+        SeedView::Account { path } => format!("account:{path}"),
+        SeedView::Arg { name, .. } => format!("arg:{name}"),
     }
+}
+
+fn hex_to_bytes(value_hex: &str) -> Vec<u8> {
+    let stripped = value_hex.strip_prefix("0x").unwrap_or(value_hex);
+    let mut out = Vec::with_capacity(stripped.len() / 2);
+    let bytes = stripped.as_bytes();
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        let hi = (bytes[i] as char).to_digit(16).unwrap_or(0) as u8;
+        let lo = (bytes[i + 1] as char).to_digit(16).unwrap_or(0) as u8;
+        out.push((hi << 4) | lo);
+        i += 2;
+    }
+    out
 }
 
 fn decode_account_bytes(
@@ -667,27 +681,12 @@ pub fn execute_who(
     program: &ProgramDef,
     account_type: &str,
 ) -> SolanaCommandResult {
-    // Heuristic: an account field name maps to its type by snake_case → PascalCase
-    // (e.g. `pool` → `Pool`, `user_stake` → `UserStake`). Anchor IDL doesn't
-    // carry the explicit type-of-account in the instruction shape, so we
-    // approximate by name match. False positives possible if naming diverges.
-    fn snake_to_pascal(s: &str) -> String {
-        s.split('_')
-            .filter(|p| !p.is_empty())
-            .map(|p| {
-                let mut c = p.chars();
-                match c.next() {
-                    None => String::new(),
-                    Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
-                }
-            })
-            .collect()
-    }
+    let view = program.compute_view();
     let target = account_type.to_string();
     let mut hits: Vec<WhoEntry> = Vec::new();
-    for ix in &program.instructions {
+    for ix in &view.instructions {
         for acc in &ix.accounts {
-            if snake_to_pascal(&acc.name) == target || acc.name == target {
+            if crate::view::snake_to_pascal(&acc.name) == target || acc.name == target {
                 hits.push(WhoEntry {
                     instruction: ix.name.clone(),
                     account_field: acc.name.clone(),

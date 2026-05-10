@@ -1,0 +1,210 @@
+{
+  "name": "staking",
+  "program_id": "AQjgX8bsAU8CvvEoP9q36vAbT83dRxdjK4zGEhhn6SFc",
+  "instructions": [
+    {
+      "name": "add_rewards",
+      "discriminator_hex": "",
+      "args": [
+        {
+          "name": "amount",
+          "ty": ""
+        }
+      ],
+      "accounts": [
+        {
+          "path": "pool",
+          "name": "pool",
+          "kind": "program",
+          "writable": true,
+          "signer": false,
+          "optional": false,
+          "relations": []
+        },
+        {
+          "path": "admin",
+          "name": "admin",
+          "kind": "other",
+          "writable": false,
+          "signer": true,
+          "optional": false,
+          "relations": []
+        }
+      ]
+    },
+    {
+      "name": "claim_rewards",
+      "discriminator_hex": "",
+      "args": [],
+      "accounts": [
+        {
+          "path": "pool",
+          "name": "pool",
+          "kind": "program",
+          "writable": true,
+          "signer": false,
+          "optional": false,
+          "relations": []
+        },
+        {
+          "path": "user_stake",
+          "name": "user_stake",
+          "kind": "program",
+          "writable": true,
+          "signer": false,
+          "optional": false,
+          "relations": []
+        },
+        {
+          "path": "user",
+          "name": "user",
+          "kind": "other",
+          "writable": false,
+          "signer": true,
+          "optional": false,
+          "relations": []
+        }
+      ]
+    },
+    {
+      "name": "initialize_pool",
+      "discriminator_hex": "",
+      "args": [
+        {
+          "name": "reward_rate",
+          "ty": ""
+        }
+      ],
+      "accounts": [
+        {
+          "path": "pool",
+          "name": "pool",
+          "kind": "program",
+          "writable": true,
+          "signer": true,
+          "optional": false,
+          "relations": []
+        },
+        {
+          "path": "admin",
+          "name": "admin",
+          "kind": "other",
+          "writable": true,
+          "signer": true,
+          "optional": false,
+          "relations": []
+        },
+        {
+          "path": "system_program",
+          "name": "system_program",
+          "kind": "system",
+          "writable": false,
+          "signer": false,
+          "optional": false,
+          "address": "11111111111111111111111111111111",
+          "relations": []
+        }
+      ]
+    },
+    {
+      "name": "stake",
+      "discriminator_hex": "",
+      "args": [
+        {
+          "name": "amount",
+          "ty": ""
+        }
+      ],
+      "accounts": [
+        {
+          "path": "pool",
+          "name": "pool",
+          "kind": "program",
+          "writable": true,
+          "signer": false,
+          "optional": false,
+          "relations": []
+        },
+        {
+          "path": "user_stake",
+          "name": "user_stake",
+          "kind": "program",
+          "writable": true,
+          "signer": true,
+          "optional": false,
+          "relations": []
+        },
+        {
+          "path": "user",
+          "name": "user",
+          "kind": "other",
+          "writable": true,
+          "signer": true,
+          "optional": false,
+          "relations": []
+        },
+        {
+          "path": "system_program",
+          "name": "system_program",
+          "kind": "system",
+          "writable": false,
+          "signer": false,
+          "optional": false,
+          "address": "11111111111111111111111111111111",
+          "relations": []
+        }
+      ]
+    },
+    {
+      "name": "unstake",
+      "discriminator_hex": "",
+      "args": [
+        {
+          "name": "amount",
+          "ty": ""
+        }
+      ],
+      "accounts": [
+        {
+          "path": "pool",
+          "name": "pool",
+          "kind": "program",
+          "writable": true,
+          "signer": false,
+          "optional": false,
+          "relations": []
+        },
+        {
+          "path": "user_stake",
+          "name": "user_stake",
+          "kind": "program",
+          "writable": true,
+          "signer": false,
+          "optional": false,
+          "relations": []
+        },
+        {
+          "path": "user",
+          "name": "user",
+          "kind": "other",
+          "writable": false,
+          "signer": true,
+          "optional": false,
+          "relations": []
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "Pool",
+      "discriminator_hex": "",
+      "fields": []
+    },
+    {
+      "name": "UserStake",
+      "discriminator_hex": "",
+      "fields": []
+    }
+  ]
+}

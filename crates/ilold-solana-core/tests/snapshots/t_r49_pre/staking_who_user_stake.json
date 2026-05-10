@@ -1,0 +1,25 @@
+{
+  "WhoList": {
+    "account_type": "UserStake",
+    "instructions": [
+      {
+        "instruction": "claim_rewards",
+        "account_field": "user_stake",
+        "writable": true,
+        "signer": false
+      },
+      {
+        "instruction": "stake",
+        "account_field": "user_stake",
+        "writable": true,
+        "signer": true
+      },
+      {
+        "instruction": "unstake",
+        "account_field": "user_stake",
+        "writable": true,
+        "signer": false
+      }
+    ]
+  }
+}
