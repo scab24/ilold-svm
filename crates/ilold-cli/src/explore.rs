@@ -1165,9 +1165,6 @@ fn handle_solana_input(
             let body = serde_json::json!({"Info": {"ix": arg}});
             dispatch_solana(handle, client, base_url, contract, body, steps)
         }
-        // `vars-all` historically toggled per-field detail. With the typed
-        // backend the verbose form is the only sensible one (fields ship in
-        // the wire format), so both aliases fall through to the same dispatch.
         "vars" | "v" | "vars-all" | "va" => dispatch_solana(
             handle,
             client,

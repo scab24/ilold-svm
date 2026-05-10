@@ -17,7 +17,6 @@ pub struct ProgramView {
     pub accounts: Vec<AccountView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state_coupling: Option<Vec<CouplingPair>>,
-    /// Sorted (deterministic) for snapshot stability; spec lists this as a set.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -255,8 +254,6 @@ fn seed_to_view(seed: &SeedSpec, ix_args: &[IdlField]) -> SeedView {
             }
         }
         SeedSpec::Arg { path, ty } => {
-            // Prefer the type the IDL parser already attached to the seed; if
-            // missing for some reason, fall back to the matching ix arg.
             let resolved = ix_args
                 .iter()
                 .find(|f| f.name == *path)
@@ -283,8 +280,6 @@ fn seed_program_to_string(seed: &SeedSpec) -> String {
 }
 
 fn build_account_view(account: &AccountTypeDef) -> AccountView {
-    // Empty when the IDL did not ship a real layout (placeholder_typedef path
-    // in model::program). The frontend renders both cases the same.
     let fields = match &account.layout.ty {
         IdlTypeDefTy::Struct { fields: Some(IdlDefinedFields::Named(named)) } => named
             .iter()
@@ -371,8 +366,6 @@ fn format_discriminator(d: &[u8; 8]) -> String {
     s
 }
 
-/// Stringify an `IdlType` into a short, deterministic, frontend-friendly label.
-/// Spec table lives in `docs/sdd/04-program-view-canonical/design.md`.
 fn format_idl_type(ty: &IdlType) -> String {
     match ty {
         IdlType::Bool => "bool".into(),
@@ -411,8 +404,6 @@ fn format_idl_type(ty: &IdlType) -> String {
             }
         }
         IdlType::Generic(name) => name.clone(),
-        // The enum is `#[non_exhaustive]`; future variants render as Debug so
-        // we never crash but wire-format drift becomes obvious in snapshots.
         other => format!("{other:?}"),
     }
 }
@@ -448,8 +439,6 @@ fn compute_coupling(ixs: &[IxView]) -> Vec<CouplingPair> {
                 continue;
             }
             shared.sort();
-            // Sort the pair members so (a, b) is canonical regardless of
-            // instruction declaration order in the IDL.
             let (a, b) = if ixs[i].name <= ixs[j].name {
                 (ixs[i].name.clone(), ixs[j].name.clone())
             } else {
@@ -507,8 +496,6 @@ fn collect_system_accounts(ixs: &[IxView]) -> HashSet<String> {
     set.into_iter().collect()
 }
 
-/// Render a `SeedView` as the compact CLI string used by `pda` and `info`.
-/// Lives next to the wire format because it is a formatter over the wire type.
 pub fn describe_seed_view(seed: &SeedView) -> String {
     match seed {
         SeedView::Const { value_hex, value_utf8 } => match value_utf8 {
@@ -598,8 +585,6 @@ mod tests {
         let initialize = view.instructions.iter().find(|i| i.name == "initialize").unwrap();
         let system = initialize.accounts.iter().find(|a| a.name == "system_program").unwrap();
         assert_eq!(system.kind, AccountKind::System);
-        // lever's "power" maps to account-type "PowerStatus" — snake_to_pascal
-        // gives "Power" which does not match, so it falls through to Other.
         let power = initialize.accounts.iter().find(|a| a.name == "power").unwrap();
         assert_eq!(power.kind, AccountKind::Other);
 
@@ -607,7 +592,6 @@ mod tests {
         let init_base = relations.instructions.iter().find(|i| i.name == "init_base").unwrap();
         let pda_acc = init_base.accounts.iter().find(|a| a.name == "account").unwrap();
         assert_eq!(pda_acc.kind, AccountKind::Pda);
-        // relations also has my_account → MyAccount (snake→pascal match).
         let test_relation = relations.instructions.iter().find(|i| i.name == "test_relation").unwrap();
         let typed_acc = test_relation.accounts.iter().find(|a| a.name == "my_account").unwrap();
         assert_eq!(typed_acc.kind, AccountKind::Program);
@@ -626,7 +610,6 @@ mod tests {
             other => panic!("expected Const, got {other:?}"),
         }
 
-        // Tab + LF — both ASCII but neither is_ascii_graphic and neither is space.
         let non_graphic = SeedSpec::Const {
             value: vec![0x09, 0x0a],
         };
@@ -692,8 +675,6 @@ mod tests {
     #[test]
     fn compute_view_state_coupling_empty_when_no_writable_overlap() {
         let view = lever_program().compute_view();
-        // lever has 2 instructions: initialize and switch_power.
-        // Both write `power`, so they MUST be coupled.
         let coupling = view.state_coupling.expect("state_coupling computed");
         assert_eq!(coupling.len(), 1);
         assert_eq!(coupling[0].a, "initialize");
@@ -703,7 +684,6 @@ mod tests {
 
     #[test]
     fn compute_view_admin_gated_requires_both_signer_and_field() {
-        // lever has no admin field on PowerStatus — admin_gated must be empty.
         let view = lever_program().compute_view();
         let gated = view.admin_gated.expect("admin_gated computed");
         assert!(gated.is_empty(), "lever should not gate any ix");
@@ -741,8 +721,6 @@ mod tests {
     fn compute_view_admin_gated_marks_initialize_pool_on_staking() {
         let view = staking_program().compute_view();
         let gated = view.admin_gated.expect("admin_gated computed");
-        // Pool has admin: Pubkey AND both initialize_pool and add_rewards
-        // require an `admin` signer. Both must appear; stake/unstake must NOT.
         assert!(gated.contains("initialize_pool"));
         assert!(gated.contains("add_rewards"));
         assert!(!gated.contains("stake"));
