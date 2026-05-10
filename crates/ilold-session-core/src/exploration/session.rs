@@ -114,6 +114,14 @@ impl ExplorationSession {
             .or_insert(0) += 1;
     }
 
+    /// Reset scenario-local observations that must not survive a fork.
+    /// Currently only `failed_calls_per_ix`, but kept as a single helper so
+    /// future scenario-local counters land in one place instead of fanning
+    /// out across every fork site.
+    pub fn reset_scenario_local_observations(&mut self) {
+        self.failed_calls_per_ix.clear();
+    }
+
     pub fn current_sequence(&self) -> Vec<&str> {
         self.steps.iter().map(|s| s.function.as_str()).collect()
     }
@@ -179,6 +187,27 @@ mod tests {
     fn remove_last_step_empty() {
         let mut s = ExplorationSession::new("Staking", "myproject");
         assert!(!s.remove_last_step());
+    }
+
+    #[test]
+    fn reset_scenario_local_observations_clears_failed_calls() {
+        let mut s = ExplorationSession::new("Staking", "myproject");
+        s.record_failed_call("stake");
+        s.record_failed_call("stake");
+        s.record_failed_call("unstake");
+        s.steps.push(ExplorationStep {
+            function: "deposit".into(),
+            mutations: vec![],
+            flow_tree: None,
+            trace_config: TraceConfig::default(),
+            runtime_trace: None,
+            call_payload: None,
+        });
+        assert_eq!(s.failed_calls_per_ix.get("stake").copied(), Some(2));
+        s.reset_scenario_local_observations();
+        assert!(s.failed_calls_per_ix.is_empty());
+        // Steps stay; the reset is scoped to scenario-local observations.
+        assert_eq!(s.steps.len(), 1);
     }
 
     #[test]

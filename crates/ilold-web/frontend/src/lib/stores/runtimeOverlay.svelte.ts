@@ -7,6 +7,9 @@ let callsPerIx = $state<Record<string, number>>({});
 let failedPerIx = $state<Record<string, number>>({});
 let cuStatsPerIx = $state<Record<string, CuStats>>({});
 let cpiEdges = $state<CpiEdge[]>([]);
+// Tracks whether the initial REST snapshot has landed; protects against WS
+// patches arriving before scenario context is known and corrupting state.
+let initialized = $state<boolean>(false);
 
 export function getCallsPerIx(): Record<string, number> {
   return callsPerIx;
@@ -39,6 +42,7 @@ export function clearOverlay(): void {
   failedPerIx = {};
   cuStatsPerIx = {};
   cpiEdges = [];
+  initialized = false;
 }
 
 function applySnapshot(overlay: RuntimeOverlay): void {
@@ -48,6 +52,7 @@ function applySnapshot(overlay: RuntimeOverlay): void {
   failedPerIx = { ...overlay.failed_per_ix };
   cuStatsPerIx = { ...overlay.cu_stats_per_ix };
   cpiEdges = overlay.cpi_edges.map((e) => ({ ...e }));
+  initialized = true;
 }
 
 export async function loadInitialOverlay(name: string, scenarioName?: string): Promise<void> {
@@ -59,6 +64,7 @@ export async function loadInitialOverlay(name: string, scenarioName?: string): P
     clearOverlay();
     program = name;
     if (scenarioName) scenario = scenarioName;
+    initialized = true;
   }
 }
 
@@ -77,6 +83,10 @@ function recomputeStats(prev: CuStats | undefined, sample: number): CuStats {
 }
 
 export function applyOverlayUpdate(patch: SessionOverlayUpdate): void {
+  // Drop patches that arrive before the initial REST snapshot. Without this
+  // guard, a WS event landing during page load would seed the store under
+  // scenario === '' and the next snapshot would silently overwrite it.
+  if (!initialized) return;
   if (scenario && patch.scenario !== scenario) return;
 
   const ix = patch.ix_name;

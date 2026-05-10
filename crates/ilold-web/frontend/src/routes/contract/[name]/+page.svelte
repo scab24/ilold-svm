@@ -6,7 +6,12 @@
     applyOverlayUpdate as applyRuntimeOverlayUpdate,
     clearOverlay as clearRuntimeOverlay,
     loadInitialOverlay as loadRuntimeOverlay,
+    getCpiEdges,
   } from '$lib/stores/runtimeOverlay.svelte';
+  import {
+    loadUserLabels,
+    clearUserLabels,
+  } from '$lib/stores/userLabels.svelte';
   import { goto } from '$app/navigation';
   import { toggleTerminal } from '$lib/stores/terminal.svelte';
   import { openInIde } from '$lib/utils/ide-links';
@@ -612,6 +617,9 @@
       },
     });
     solanaCanvasIxs = new Set([...solanaCanvasIxs, ixName]);
+    // Paint CPI edges that the overlay already knows about for this ix —
+    // happens when the auditor added an ix node after Calls had already run.
+    paintCpiEdges();
     if (flowApi) flowApi.fitView({ nodes: [{ id: `ix:${ixName}` }], padding: 0.5, duration: 400 });
   }
 
@@ -625,7 +633,28 @@
       if (data?._type === 'account' && data.parentInstruction === ixName) ids.add(n.id);
     }
     removeNodesById(ids);
+    // Drop CPI edges that started at this ix; placeholder externals that lose
+    // their last incoming cpi edge are pruned by orphanCleanup below.
+    const edgePrefix = `cpi:${ixName}->`;
+    const filtered = getEdges().filter((e) => !e.id.startsWith(edgePrefix));
+    if (filtered.length !== getEdges().length) setEdges(filtered);
+    pruneOrphanExternals();
     solanaExpandedIxs = new Set([...solanaExpandedIxs].filter((n) => n !== ixName));
+  }
+
+  /** Remove external-program placeholder nodes that have no incoming cpi edge
+   *  left. Keeps the canvas clean after an ix is removed or after the overlay
+   *  drops samples for a target. */
+  function pruneOrphanExternals() {
+    const usedTargets = new Set<string>();
+    for (const e of getEdges()) {
+      if (e.id.startsWith('cpi:')) usedTargets.add(e.target);
+    }
+    const orphans = new Set<string>();
+    for (const n of getNodes()) {
+      if (n.id.startsWith('external:') && !usedTargets.has(n.id)) orphans.add(n.id);
+    }
+    if (orphans.size > 0) removeNodesById(orphans);
   }
 
   function paintSolanaScenarioTree(
@@ -780,6 +809,99 @@
     if (newEdges.length > 0) addEdges(newEdges);
   }
 
+  /** Friendly labels for well-known Solana programs. Anything not in this map
+   *  falls back to a base58-truncated id rendered by ExternalProgramNode. */
+  const KNOWN_PROGRAMS: Record<string, string> = {
+    '11111111111111111111111111111111': 'system_program',
+    'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA': 'token_program',
+    'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb': 'token_program_2022',
+    'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL': 'associated_token_program',
+    'SysvarRent111111111111111111111111111111111': 'sysvar:rent',
+    'SysvarC1ock11111111111111111111111111111111': 'sysvar:clock',
+  };
+
+  function externalNodeId(programId: string): string {
+    return `external:${programId}`;
+  }
+  function cpiEdgeId(fromIx: string, programId: string): string {
+    return `cpi:${fromIx}->${programId}`;
+  }
+
+  /** Paint dashed `cpi` edges from on-canvas instruction nodes to placeholder
+   *  external-program nodes. Reads from the runtime overlay store, so the
+   *  same handler covers both the initial REST snapshot and incremental WS
+   *  updates. Edges persist until the user clears the canvas or switches
+   *  scenario; cleanup happens in clearGraph / scenario_switched. */
+  function paintCpiEdges() {
+    if (!solanaProgram) return;
+    const edges = getCpiEdges();
+    if (edges.length === 0) return;
+
+    const existing = new Set(getEdges().map((e) => e.id));
+    const liveNodes = new Set(getNodes().map((n) => n.id));
+    const usedExternals = new Set<string>();
+    const newNodes: any[] = [];
+    const newEdges: any[] = [];
+
+    for (const e of edges) {
+      const fromId = `ix:${e.from_ix}`;
+      if (!liveNodes.has(fromId)) continue;
+
+      const extId = externalNodeId(e.to_program);
+      const label = KNOWN_PROGRAMS[e.to_program] ?? e.to_program;
+
+      if (!liveNodes.has(extId) && !usedExternals.has(extId)) {
+        const parent = findNode(fromId);
+        const baseX = (parent?.position?.x ?? 0) + 220;
+        const baseY = (parent?.position?.y ?? 200) + 80;
+        newNodes.push({
+          id: extId,
+          type: 'function',
+          position: { x: baseX, y: baseY },
+          data: {
+            _type: 'function',
+            label,
+            is_external: true,
+          },
+        });
+        usedExternals.add(extId);
+      }
+
+      const edgeId = cpiEdgeId(e.from_ix, e.to_program);
+      if (existing.has(edgeId)) continue;
+      newEdges.push({
+        id: edgeId,
+        source: fromId,
+        sourceHandle: 'r',
+        target: extId,
+        targetHandle: 'l',
+        label: `cpi (${e.samples}x)`,
+        style: 'stroke-dasharray: 5 3; stroke: var(--color-warning);',
+        markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12, color: 'var(--color-warning)' },
+        labelBgStyle: { fill: 'var(--color-surface)', fillOpacity: 0.85 },
+        labelBgPadding: [3, 5] as [number, number],
+        labelStyle: 'font-size: 9px; fill: var(--color-warning);',
+        data: { _type: 'cpi-edge' },
+      });
+    }
+
+    if (newNodes.length > 0) addNodes(newNodes);
+    if (newEdges.length > 0) addEdges(newEdges);
+  }
+
+  /** Drop existing CPI placeholder nodes and edges. Used when switching
+   *  scenarios or reloading the overlay snapshot — the new overlay state
+   *  determines what gets repainted via paintCpiEdges. */
+  function clearCpiEdges() {
+    const ids = new Set<string>();
+    for (const n of getNodes()) {
+      if (n.id.startsWith('external:')) ids.add(n.id);
+    }
+    if (ids.size > 0) removeNodesById(ids);
+    const remainingEdges = getEdges().filter((e) => !e.id.startsWith('cpi:'));
+    if (remainingEdges.length !== getEdges().length) setEdges(remainingEdges);
+  }
+
   function clearIxAccounts(ixName: string) {
     const ids = new Set<string>();
     for (const n of getNodes()) {
@@ -852,10 +974,14 @@
     });
     const unsubOverlay = subscribeWs('session_overlay_update', (msg) => {
       applyRuntimeOverlayUpdate(msg);
+      paintCpiEdges();
     });
-    const unsubScenarioSwitch = subscribeWs('scenario_switched', (msg) => {
+    const unsubScenarioSwitch = subscribeWs('scenario_switched', async (msg) => {
       if (solanaProgram) {
-        loadRuntimeOverlay(solanaProgram.name, msg.to);
+        clearCpiEdges();
+        await loadRuntimeOverlay(solanaProgram.name, msg.to);
+        await loadUserLabels(msg.to);
+        paintCpiEdges();
       }
     });
     return () => { unsub(); unsubAdd(); unsubOverlay(); unsubScenarioSwitch(); };
@@ -931,6 +1057,7 @@
   onDestroy(() => {
     mountCancelled = true;
     clearRuntimeOverlay();
+    clearUserLabels();
   });
 
   onMount(async () => {
@@ -948,6 +1075,7 @@
     selectedNode = null;
     selectedPath = null;
     clearRuntimeOverlay();
+    clearUserLabels();
     setSearchContext(contractName);
     try {
       const pm = await getProjectMap();
@@ -966,6 +1094,8 @@
         await refreshSolanaUsers();
         const scenario = getActiveScenario();
         await loadRuntimeOverlay(contractName, scenario);
+        if (scenario) await loadUserLabels(scenario);
+        paintCpiEdges();
         return;
       }
       projectMap = pm.contracts ?? [];

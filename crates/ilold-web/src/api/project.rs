@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
@@ -7,6 +8,7 @@ use ilold_solana_core::model::ProgramDef;
 use ilold_solana_core::overlay::RuntimeOverlay;
 use ilold_solana_core::view::ProgramView;
 use serde::{Deserialize, Serialize};
+use solana_keypair::Signer;
 
 use crate::state::{require_solidity_msg, AppState, Backend};
 
@@ -137,6 +139,29 @@ pub async fn get_program_view(
 ) -> Result<Json<ProgramView>, (StatusCode, String)> {
     let program = find_solana_program(&state, &name)?;
     Ok(Json(program.compute_view()))
+}
+
+/// Resolve the per-scenario `pubkey -> user name` map. Lets the canvas show
+/// "alice" instead of "Bxk7…" when a runtime field matches a known user.
+/// Lives in its own endpoint (not on `RuntimeOverlay`) because users mutate
+/// independently of the overlay; see design.md §"authority_resolutions".
+pub async fn get_user_labels(
+    State(state): State<Arc<AppState>>,
+    Path(scenario): Path<String>,
+) -> Result<Json<HashMap<String, String>>, (StatusCode, String)> {
+    let solana = state
+        .solana()
+        .ok_or((StatusCode::BAD_REQUEST, "endpoint is Solana-only".into()))?;
+    let users_lock = solana.users.read().unwrap();
+    let scn_users = users_lock.get(&scenario).ok_or((
+        StatusCode::NOT_FOUND,
+        format!("scenario '{scenario}' has no user registry"),
+    ))?;
+    let map: HashMap<String, String> = scn_users
+        .iter()
+        .map(|(name, kp)| (kp.pubkey().to_string(), name.clone()))
+        .collect();
+    Ok(Json(map))
 }
 
 #[derive(Deserialize, Default)]

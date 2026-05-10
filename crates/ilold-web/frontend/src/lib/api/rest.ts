@@ -246,6 +246,18 @@ export async function getProgramOverlay(
   return res.json();
 }
 
+/** Per-scenario pubkey -> user-name map (e.g. "Bxk7..." -> "alice"). Used by
+ *  the canvas to render authority labels instead of raw base58 pubkeys. */
+export async function getUserLabels(
+  scenario: string,
+): Promise<Record<string, string>> {
+  const res = await fetch(
+    `${BASE}/api/users/${encodeURIComponent(scenario)}/labels`,
+  );
+  if (!res.ok) throw new Error(`User labels for ${scenario} not found`);
+  return res.json();
+}
+
 export async function getCallGraph(contractName: string): Promise<CytoscapeGraph> {
   const res = await fetch(`${BASE}/api/contract/${contractName}/callgraph`);
   return res.json();

@@ -184,7 +184,7 @@ fn fork_scenario(
     let mut cloned = store.active_session().clone();
     // Failed Calls are scenario-local observations; the fresh fork has not
     // rejected anything yet so the runtime overlay starts clean.
-    cloned.failed_calls_per_ix.clear();
+    cloned.reset_scenario_local_observations();
 
     // Resolve effective step count. None (legacy) → keep all steps.
     // Some(N) → truncate to first N; error if N > current length.
@@ -694,19 +694,8 @@ async fn handle_solana_command(
             .steps
             .last()
             .and_then(|s| s.runtime_trace.as_ref())
-            .and_then(|v| {
-                v.get("inner_instructions")
-                    .and_then(|ii| ii.as_array())
-                    .map(|arr| {
-                        let mut seen = std::collections::BTreeSet::new();
-                        for entry in arr {
-                            if let Some(p) = entry.get("program").and_then(|p| p.as_str()) {
-                                seen.insert(p.to_string());
-                            }
-                        }
-                        seen.into_iter().collect::<Vec<String>>()
-                    })
-            })
+            .and_then(|v| serde_json::from_value::<ilold_session_core::runtime_trace::RuntimeTrace>(v.clone()).ok())
+            .map(|t| ilold_solana_core::overlay::extract_cpi_programs(&t))
             .unwrap_or_default(),
         _ => Vec::new(),
     };
@@ -797,7 +786,7 @@ fn solana_scenario_action(
             let mut cloned = scenarios.active_session().clone();
             // Failed Calls are scenario-local observations: a fork hasn't
             // rejected anything yet, so the runtime overlay starts clean.
-            cloned.failed_calls_per_ix.clear();
+            cloned.reset_scenario_local_observations();
             let len = cloned.steps.len();
             let effective = match at_step {
                 None => len,

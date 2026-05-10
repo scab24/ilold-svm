@@ -706,3 +706,45 @@ async fn program_overlay_endpoint_returns_404_for_missing_program() {
         .expect("GET /overlay ghost");
     assert_eq!(res.status().as_u16(), 404);
 }
+
+#[tokio::test]
+async fn user_labels_endpoint_returns_pubkey_to_name_map() {
+    let (client, port) = start_staking().await;
+    let _ = cmd(
+        &client,
+        port,
+        "staking",
+        serde_json::json!({"UsersNew": {"name": "alice", "lamports": 1_000_000_000u64}}),
+    )
+    .await;
+    let listed = cmd(&client, port, "staking", serde_json::json!("Users")).await;
+    let alice_pk = listed
+        .get("UserList")
+        .and_then(|v| v.get("users"))
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|u| u.get("pubkey"))
+        .and_then(|v| v.as_str())
+        .expect("alice pubkey")
+        .to_string();
+
+    let res = client
+        .get(format!("http://127.0.0.1:{port}/api/users/main/labels"))
+        .send()
+        .await
+        .expect("GET /labels");
+    assert!(res.status().is_success(), "got {}", res.status());
+    let map: serde_json::Value = res.json().await.expect("json");
+    assert_eq!(map.get(&alice_pk).and_then(|v| v.as_str()), Some("alice"));
+}
+
+#[tokio::test]
+async fn user_labels_endpoint_returns_404_for_missing_scenario() {
+    let (client, port) = start_staking().await;
+    let res = client
+        .get(format!("http://127.0.0.1:{port}/api/users/ghost/labels"))
+        .send()
+        .await
+        .expect("GET /labels ghost");
+    assert_eq!(res.status().as_u16(), 404);
+}

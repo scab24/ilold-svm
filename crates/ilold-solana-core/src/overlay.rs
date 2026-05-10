@@ -4,6 +4,22 @@ use ilold_session_core::exploration::session::ExplorationSession;
 use ilold_session_core::runtime_trace::RuntimeTrace;
 use serde::{Deserialize, Serialize};
 
+/// Extract the deduplicated, insertion-ordered list of CPI program IDs
+/// invoked by a RuntimeTrace. Lifted out so both the overlay aggregator
+/// and the WS broadcast site share one decoder for `inner_instructions`.
+/// Order mirrors `inner_instructions` (first hit wins) so the resulting
+/// list reflects the CPI call sequence the program actually emitted.
+pub fn extract_cpi_programs(trace: &RuntimeTrace) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for ii in &trace.inner_instructions {
+        if seen.insert(ii.program.clone()) {
+            out.push(ii.program.clone());
+        }
+    }
+    out
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct RuntimeOverlay {
     pub program: String,
@@ -188,6 +204,31 @@ mod tests {
         assert_eq!(overlay.failed_per_ix.get("stake").copied(), Some(1));
         assert_eq!(overlay.failed_per_ix.get("unstake").copied(), Some(1));
         assert_eq!(overlay.calls_per_ix.get("unstake"), None);
+    }
+
+    #[test]
+    fn extract_cpi_programs_dedups_in_insertion_order() {
+        let trace = RuntimeTrace {
+            logs: vec![],
+            compute_units: 0,
+            inner_instructions: vec![
+                InnerInstruction { program: "B".into(), instruction: "x".into(), depth: 1 },
+                InnerInstruction { program: "A".into(), instruction: "x".into(), depth: 1 },
+                InnerInstruction { program: "B".into(), instruction: "y".into(), depth: 2 },
+                InnerInstruction { program: "A".into(), instruction: "z".into(), depth: 1 },
+            ],
+            account_diffs: vec![],
+            return_data: None,
+            error: None,
+        };
+        let programs = extract_cpi_programs(&trace);
+        assert_eq!(programs, vec!["B".to_string(), "A".to_string()]);
+    }
+
+    #[test]
+    fn extract_cpi_programs_empty_trace_is_empty() {
+        let trace = ok_trace(1_000);
+        assert!(extract_cpi_programs(&trace).is_empty());
     }
 
     #[test]
