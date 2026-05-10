@@ -7,6 +7,7 @@ use ilold_session_core::journal::types::{ReviewStatus, Severity};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::overlay::RuntimeOverlay;
 use crate::view::{AccountView, ArgView, CouplingPair, FieldView, IxView};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -99,6 +100,10 @@ pub enum SolanaCommand {
     /// Account-type catalogue (`vars` in the REPL): name + discriminator +
     /// fields. Slice of `ProgramView::accounts`.
     Vars,
+    /// Aggregated runtime metrics (calls, failures, CU, CPI edges) over the
+    /// active scenario. Backend-only computation; clients consume the typed
+    /// `RuntimeOverlay` payload.
+    Coverage,
 }
 
 fn default_initial_lamports() -> u64 {
@@ -283,6 +288,9 @@ pub enum SolanaCommandResult {
     },
     AccountTypes {
         accounts: Vec<AccountView>,
+    },
+    Coverage {
+        overlay: RuntimeOverlay,
     },
     Error {
         message: String,

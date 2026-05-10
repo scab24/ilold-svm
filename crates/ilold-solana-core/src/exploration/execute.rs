@@ -74,6 +74,19 @@ pub fn execute_vars(program: &ProgramDef) -> SolanaCommandResult {
     }
 }
 
+pub fn execute_coverage(
+    program: &ProgramDef,
+    session: &ExplorationSession,
+    scenario: &str,
+) -> SolanaCommandResult {
+    let mut overlay = crate::overlay::RuntimeOverlay::from_session(session);
+    if overlay.program.is_empty() {
+        overlay.program = program.name.clone();
+    }
+    overlay.scenario = scenario.to_string();
+    SolanaCommandResult::Coverage { overlay }
+}
+
 pub fn execute_users(users: &HashMap<String, Keypair>, vm: &VmHost) -> SolanaCommandResult {
     let mut entries: Vec<UserEntry> = users
         .iter()

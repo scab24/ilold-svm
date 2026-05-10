@@ -5,7 +5,10 @@ use ilold_session_core::exploration::session::{
     ExplorationSession, ExplorationStep, MutationScope, StateMutation, TraceConfig,
 };
 use ilold_session_core::journal::types::JournalEntry;
-use ilold_session_core::runtime_trace::{AccountDiff, RuntimeTrace};
+use ilold_session_core::runtime_trace::{
+    AccountDiff, InnerInstruction as TraceInnerInstruction, RuntimeTrace,
+};
+use litesvm::types::TransactionMetadata;
 use serde_json::Value;
 use solana_account::{Account, ReadableAccount};
 use solana_address::Address;
@@ -55,6 +58,7 @@ pub fn add_solana_step(
 
     let blockhash = vm.svm().latest_blockhash();
     let tx = build_transaction(instruction.clone(), vm.payer(), extra_signers, blockhash)?;
+    let account_keys: Vec<Address> = tx.message.static_account_keys().to_vec();
     let result = vm.svm_mut().send_transaction(tx);
     // LiteSVM does NOT rotate the blockhash automatically. Two Calls in the same
     // session would collide (BlockhashNotFound) and the second silently fails
@@ -71,6 +75,7 @@ pub fn add_solana_step(
 
             let diffs = compute_diffs(&pre_state, &post_state, ix);
             let mutations = diffs_to_mutations(&diffs, step_index);
+            let inner = project_inner_instructions(&meta, &account_keys);
             let return_data = if meta.return_data.data.is_empty() {
                 None
             } else {
@@ -80,7 +85,7 @@ pub fn add_solana_step(
                 RuntimeTrace {
                     logs: meta.logs,
                     compute_units: meta.compute_units_consumed,
-                    inner_instructions: vec![],
+                    inner_instructions: inner,
                     account_diffs: diffs,
                     return_data,
                     error: None,
@@ -88,17 +93,20 @@ pub fn add_solana_step(
                 mutations,
             )
         }
-        Err(failed) => (
-            RuntimeTrace {
-                logs: failed.meta.logs,
-                compute_units: failed.meta.compute_units_consumed,
-                inner_instructions: vec![],
-                account_diffs: vec![],
-                return_data: None,
-                error: Some(format!("{:?}", failed.err)),
-            },
-            vec![],
-        ),
+        Err(failed) => {
+            let inner = project_inner_instructions(&failed.meta, &account_keys);
+            (
+                RuntimeTrace {
+                    logs: failed.meta.logs,
+                    compute_units: failed.meta.compute_units_consumed,
+                    inner_instructions: inner,
+                    account_diffs: vec![],
+                    return_data: None,
+                    error: Some(format!("{:?}", failed.err)),
+                },
+                vec![],
+            )
+        }
     };
 
     // Failed Calls never reach the timeline: the auditor wanted to try the
@@ -133,6 +141,41 @@ pub fn add_solana_step(
     })
 }
 
+
+// Maps the LiteSVM `inner_instructions` (Vec<Vec<InnerInstruction>>, one outer
+// entry per top-level ix) into the trace shape consumed by the overlay. The
+// `program_id_index` is into `tx.message.static_account_keys`, captured before
+// `send_transaction` consumed the tx.
+fn project_inner_instructions(
+    meta: &TransactionMetadata,
+    account_keys: &[Address],
+) -> Vec<TraceInnerInstruction> {
+    let mut out = Vec::new();
+    for level in &meta.inner_instructions {
+        for ii in level {
+            let program = account_keys
+                .get(ii.instruction.program_id_index as usize)
+                .map(|k| k.to_string())
+                .unwrap_or_else(|| format!("idx:{}", ii.instruction.program_id_index));
+            // Anchor instruction discriminators are the first 8 bytes; the
+            // first byte (or its bs58 head) is enough as a stable, legible
+            // disambiguator for the overlay aggregation key. Empty payload
+            // gets a placeholder so cpi_edges still aggregates by program.
+            let instruction = if ii.instruction.data.is_empty() {
+                "ix".to_string()
+            } else {
+                let take = ii.instruction.data.len().min(8);
+                bs58::encode(&ii.instruction.data[..take]).into_string()
+            };
+            out.push(TraceInnerInstruction {
+                program,
+                instruction,
+                depth: ii.stack_height as u32,
+            });
+        }
+    }
+    out
+}
 
 fn compute_diffs(
     pre: &[(Address, Option<Account>)],

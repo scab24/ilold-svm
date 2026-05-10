@@ -1207,6 +1207,14 @@ fn handle_solana_input(
             serde_json::json!("Coupling"),
             steps,
         ),
+        "coverage" | "cov" => dispatch_solana(
+            handle,
+            client,
+            base_url,
+            contract,
+            serde_json::json!("Coverage"),
+            steps,
+        ),
         "state" => dispatch_solana(
             handle,
             client,
@@ -2462,6 +2470,9 @@ fn print_solana_result(result: &SolanaCommandResult) {
         SolanaCommandResult::AccountTypes { accounts } => {
             print_account_types(accounts);
         }
+        SolanaCommandResult::Coverage { overlay } => {
+            print_coverage_overlay(overlay);
+        }
         SolanaCommandResult::Error { message } => {
             eprintln!("  {} {}", c_danger("✗"), message);
         }
@@ -2625,6 +2636,96 @@ fn print_account_types(accounts: &[ilold_solana_core::view::AccountView]) {
             );
         }
     }
+}
+
+fn print_coverage_overlay(overlay: &ilold_solana_core::overlay::RuntimeOverlay) {
+    println!();
+    println!(
+        "  {} {} {}",
+        c_accent("Coverage for program"),
+        overlay.program,
+        c_muted(&format!("(scenario {})", overlay.scenario)),
+    );
+    println!();
+
+    let mut ix_keys: std::collections::BTreeSet<&String> =
+        std::collections::BTreeSet::new();
+    ix_keys.extend(overlay.calls_per_ix.keys());
+    ix_keys.extend(overlay.failed_per_ix.keys());
+    ix_keys.extend(overlay.cu_stats_per_ix.keys());
+
+    if ix_keys.is_empty() {
+        println!("  {}", c_muted("no calls recorded yet"));
+        return;
+    }
+
+    let cpi_count_per_ix = |ix: &str| -> u32 {
+        overlay
+            .cpi_edges
+            .iter()
+            .filter(|e| e.from_ix == ix)
+            .map(|e| e.samples)
+            .sum()
+    };
+
+    let max_ix = ix_keys
+        .iter()
+        .map(|k| k.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max(11);
+    println!(
+        "  {} {} {} {} {} {}",
+        fmt::pad_right("Instruction", max_ix),
+        c_muted("Calls"),
+        c_muted("Failed"),
+        c_muted("CU avg"),
+        c_muted("CU max"),
+        c_muted("CPIs"),
+    );
+    let mut total_calls: u32 = 0;
+    let mut total_failed: u32 = 0;
+    for ix in &ix_keys {
+        let calls = overlay.calls_per_ix.get(*ix).copied().unwrap_or(0);
+        let failed = overlay.failed_per_ix.get(*ix).copied().unwrap_or(0);
+        total_calls += calls;
+        total_failed += failed;
+        let (cu_avg, cu_max) = match overlay.cu_stats_per_ix.get(*ix) {
+            Some(s) => (s.avg.to_string(), s.max.to_string()),
+            None => ("—".to_string(), "—".to_string()),
+        };
+        let cpi = cpi_count_per_ix(ix);
+        println!(
+            "  {} {} {} {} {} {}",
+            fmt::pad_right(ix, max_ix),
+            fmt::pad_right(&calls.to_string(), 5),
+            fmt::pad_right(&failed.to_string(), 6),
+            fmt::pad_right(&cu_avg, 6),
+            fmt::pad_right(&cu_max, 6),
+            cpi,
+        );
+    }
+    if !overlay.cpi_edges.is_empty() {
+        println!();
+        println!("  {}", c_accent("CPIs detected:"));
+        for edge in &overlay.cpi_edges {
+            println!(
+                "    {} {} {} {} {}",
+                c_accent("·"),
+                edge.from_ix,
+                c_muted("→"),
+                edge.to_program,
+                c_muted(&format!("(depth {}, {}×)", edge.depth, edge.samples)),
+            );
+        }
+    }
+    println!();
+    println!(
+        "  {} {} calls, {} failed",
+        c_muted("Total:"),
+        total_calls,
+        total_failed,
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3802,6 +3903,7 @@ fn print_help_for(backend: BackendKind) {
                 ("",   "who <query>",        "Resolve query: AccountType | Instruction | Field"),
                 ("tl", "timeline <pubkey>",  "Cross-step mutation history of an account, decoded"),
                 ("cp", "coupling",           "List ix pairs that share writable accounts"),
+                ("cov","coverage",           "Aggregated runtime metrics for the active scenario"),
             ]),
             ("Findings", &[
                 ("fi", "finding <sev> <title>", "Record a security finding"),

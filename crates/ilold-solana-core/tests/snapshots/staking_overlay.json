@@ -1,0 +1,8 @@
+{
+  "program": "staking",
+  "scenario": "main",
+  "calls_per_ix": {},
+  "failed_per_ix": {},
+  "cu_stats_per_ix": {},
+  "cpi_edges": []
+}

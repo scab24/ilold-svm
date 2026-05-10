@@ -253,6 +253,16 @@ pub const SOLANA_HELP_BLOCKS: &[HelpBlock] = &[
         see_also: &["who", "funcs-all", "info"],
     },
     HelpBlock {
+        title: "coverage | cov",
+        aliases: &["coverage", "cov"],
+        purpose: "Aggregated runtime metrics over the active scenario: calls, failures, CU stats, CPI edges (T-R52 RuntimeOverlay).",
+        syntax: &[("coverage", "")],
+        flags: &[],
+        examples: &[("cov", "Spot ix never called, ix that always fail, programs reached via CPI")],
+        returns: "Coverage { overlay: { program, scenario, calls_per_ix, failed_per_ix, cu_stats_per_ix, cpi_edges } }.",
+        see_also: &["session", "state", "funcs"],
+    },
+    HelpBlock {
         title: "fi | finding",
         aliases: &["fi", "finding"],
         purpose: "Record a security finding tied to the latest step of the active scenario.",

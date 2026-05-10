@@ -645,3 +645,64 @@ async fn program_view_endpoint_returns_404_for_missing_program() {
         .expect("GET /view ghost");
     assert_eq!(res.status().as_u16(), 404);
 }
+
+#[tokio::test]
+async fn coverage_command_returns_overlay() {
+    let (client, port) = start_staking().await;
+    let result = cmd(&client, port, "staking", serde_json::json!("Coverage")).await;
+    let overlay = result
+        .get("Coverage")
+        .and_then(|v| v.get("overlay"))
+        .expect("Coverage.overlay variant");
+    assert_eq!(
+        overlay.get("program").and_then(|v| v.as_str()),
+        Some("staking"),
+    );
+    let scenario = overlay
+        .get("scenario")
+        .and_then(|v| v.as_str())
+        .expect("scenario field");
+    assert!(!scenario.is_empty(), "scenario name should be set");
+    let calls = overlay
+        .get("calls_per_ix")
+        .and_then(|v| v.as_object())
+        .expect("calls_per_ix object");
+    assert!(calls.is_empty(), "fresh session has no calls yet");
+    let edges = overlay
+        .get("cpi_edges")
+        .and_then(|v| v.as_array())
+        .expect("cpi_edges array");
+    assert!(edges.is_empty());
+}
+
+#[tokio::test]
+async fn program_overlay_endpoint_returns_typed_overlay() {
+    let (client, port) = start_staking().await;
+    let res = client
+        .get(format!("http://127.0.0.1:{port}/api/program/staking/overlay"))
+        .send()
+        .await
+        .expect("GET /overlay");
+    assert!(res.status().is_success());
+    let body: serde_json::Value = res.json().await.expect("json");
+    assert_eq!(
+        body.get("program").and_then(|v| v.as_str()),
+        Some("staking"),
+    );
+    assert!(body.get("scenario").and_then(|v| v.as_str()).is_some());
+    assert!(body.get("calls_per_ix").is_some());
+    assert!(body.get("failed_per_ix").is_some());
+    assert!(body.get("cu_stats_per_ix").is_some());
+    assert!(body.get("cpi_edges").is_some());
+}
+
+#[tokio::test]
+async fn program_overlay_endpoint_returns_404_for_missing_program() {
+    let (client, port) = start_staking().await;
+    let res = client
+        .get(format!("http://127.0.0.1:{port}/api/program/ghost/overlay"))
+        .send()
+        .await
+        .expect("GET /overlay ghost");
+    assert_eq!(res.status().as_u16(), 404);
+}

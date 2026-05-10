@@ -1,11 +1,12 @@
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
 use ilold_solana_core::model::ProgramDef;
+use ilold_solana_core::overlay::RuntimeOverlay;
 use ilold_solana_core::view::ProgramView;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::state::{require_solidity_msg, AppState, Backend};
 
@@ -136,6 +137,34 @@ pub async fn get_program_view(
 ) -> Result<Json<ProgramView>, (StatusCode, String)> {
     let program = find_solana_program(&state, &name)?;
     Ok(Json(program.compute_view()))
+}
+
+#[derive(Deserialize, Default)]
+pub struct OverlayQuery {
+    pub scenario: Option<String>,
+}
+
+pub async fn get_program_overlay(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    Query(params): Query<OverlayQuery>,
+) -> Result<Json<RuntimeOverlay>, (StatusCode, String)> {
+    let program = find_solana_program(&state, &name)?;
+    let scenarios = state.scenarios.read().unwrap();
+    let scenario_name = params
+        .scenario
+        .clone()
+        .unwrap_or_else(|| scenarios.active().to_string());
+    let session = scenarios.get(&scenario_name).ok_or((
+        StatusCode::NOT_FOUND,
+        format!("scenario '{scenario_name}' not found"),
+    ))?;
+    let mut overlay = RuntimeOverlay::from_session(session);
+    if overlay.program.is_empty() {
+        overlay.program = program.name.clone();
+    }
+    overlay.scenario = scenario_name;
+    Ok(Json(overlay))
 }
 
 pub async fn get_project_map(

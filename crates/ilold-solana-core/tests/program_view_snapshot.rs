@@ -1,11 +1,13 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use ilold_session_core::exploration::session::ExplorationSession;
 use ilold_solana_core::exploration::{
     execute_funcs, execute_pda, execute_who, SolanaCommandResult,
 };
 use ilold_solana_core::idl::parse_idl;
 use ilold_solana_core::model::ProgramDef;
+use ilold_solana_core::overlay::RuntimeOverlay;
 
 const LEVER_JSON: &str = include_str!("fixtures/lever.json");
 const RELATIONS_JSON: &str = include_str!("fixtures/relations.json");
@@ -127,5 +129,30 @@ fn program_view_wire_format_staking() {
     assert_eq!(
         json_trimmed, expected_trimmed,
         "ProgramView wire-format drift; if intentional, regen with ILOLD_REGEN_SNAPSHOTS=1"
+    );
+}
+
+#[test]
+fn runtime_overlay_wire_format_empty_staking() {
+    let session = ExplorationSession::new("staking", "ilold");
+    let mut overlay = RuntimeOverlay::from_session(&session);
+    overlay.scenario = "main".to_string();
+    let json = serde_json::to_string_pretty(&overlay).expect("serialize RuntimeOverlay");
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("snapshots")
+        .join("staking_overlay.json");
+    if regen_enabled() {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, format!("{json}\n")).unwrap();
+        return;
+    }
+    let expected = fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("missing wire-format snapshot {}: {e}", path.display()));
+    let expected_trimmed = expected.trim_end_matches('\n');
+    let json_trimmed = json.trim_end_matches('\n');
+    assert_eq!(
+        json_trimmed, expected_trimmed,
+        "RuntimeOverlay wire-format drift; if intentional, regen with ILOLD_REGEN_SNAPSHOTS=1"
     );
 }

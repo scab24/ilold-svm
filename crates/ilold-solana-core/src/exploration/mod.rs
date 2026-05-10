@@ -9,8 +9,8 @@ pub use commands::{
 };
 pub use execute::{
     execute_airdrop, execute_back, execute_call, execute_clear, execute_coupling,
-    execute_export, execute_finding, execute_findings_list, execute_funcs, execute_info,
-    execute_inspect, execute_note, execute_pda, execute_session, execute_state,
-    execute_status, execute_step, execute_time_warp, execute_timeline, execute_users,
-    execute_users_new, execute_vars, execute_who,
+    execute_coverage, execute_export, execute_finding, execute_findings_list, execute_funcs,
+    execute_info, execute_inspect, execute_note, execute_pda, execute_session,
+    execute_state, execute_status, execute_step, execute_time_warp, execute_timeline,
+    execute_users, execute_users_new, execute_vars, execute_who,
 };

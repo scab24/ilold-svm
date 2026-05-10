@@ -25,6 +25,66 @@ fn read_lever_so() -> Vec<u8> {
 }
 
 #[test]
+fn add_solana_step_initialize_captures_cpi_inner_instructions() {
+    // Anchor's `init` constraint CPIs into system_program::create_account.
+    // The patch in add_step.rs must surface those inner ixs in the trace.
+    let idl = parse_idl(LEVER_JSON).expect("parse lever idl");
+    let program = ProgramDef::from_idl(idl).expect("build ProgramDef");
+    let so_bytes = read_lever_so();
+    let mut vm = VmHost::boot(vec![(program.program_id, so_bytes)]).expect("boot vm");
+
+    let admin = Keypair::new();
+    vm.svm_mut()
+        .airdrop(&admin.pubkey(), 5_000_000_000)
+        .expect("airdrop admin");
+    let power = Keypair::new();
+
+    let mut accounts: HashMap<String, Address> = HashMap::new();
+    accounts.insert("power".into(), power.pubkey());
+    accounts.insert("user".into(), admin.pubkey());
+
+    let init_ix = program
+        .instructions
+        .iter()
+        .find(|i| i.name == "initialize")
+        .expect("initialize ix");
+
+    let mut session = ExplorationSession::new("lever", "ilold");
+    let outcome = add_solana_step(
+        &mut session,
+        &program,
+        init_ix,
+        &mut vm,
+        serde_json::json!({}),
+        accounts,
+        &[&admin, &power],
+        "2026-05-09T00:00:00Z",
+        None,
+    )
+    .expect("add_solana_step initialize");
+
+    assert!(
+        outcome.trace.error.is_none(),
+        "initialize errored: {:?}",
+        outcome.trace.error
+    );
+    assert!(
+        !outcome.trace.inner_instructions.is_empty(),
+        "expected inner_instructions to be populated by Anchor `init` CPI; got empty"
+    );
+    let sys = outcome
+        .trace
+        .inner_instructions
+        .iter()
+        .find(|i| i.program == "11111111111111111111111111111111");
+    assert!(
+        sys.is_some(),
+        "expected at least one inner ix targeting system_program; got {:?}",
+        outcome.trace.inner_instructions,
+    );
+}
+
+#[test]
 fn add_solana_step_runs_switch_power_against_real_program() {
     let idl = parse_idl(LEVER_JSON).expect("parse lever idl");
     let program = ProgramDef::from_idl(idl).expect("build ProgramDef");
