@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# Negative: claim_rewards without a UserStake account must fail (account
-# constraint violation: AccountOwnedByWrongProgram).
 set -e
 . "$(dirname "$0")/_lib.sh"
 NAME="03-attack-claim-without-stake"

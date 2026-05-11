@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# Negative: add_rewards signed by a non-admin user must fail (WrongAdmin).
 set -e
 . "$(dirname "$0")/_lib.sh"
 NAME="05-attack-non-admin-rewards"

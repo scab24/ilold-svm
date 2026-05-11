@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# Forking a scenario at_step=N must rewind the cloned VM to that step's
-# pre-Call snapshot, leaving main untouched. Regression for T-R33 fork rewind.
 set -e
 . "$(dirname "$0")/_lib.sh"
 NAME="06-fork-isolation"

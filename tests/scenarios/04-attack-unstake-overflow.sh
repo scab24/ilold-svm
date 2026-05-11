@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# Negative: unstake more than staked must fail (InsufficientBalance).
 set -e
 . "$(dirname "$0")/_lib.sh"
 NAME="04-attack-unstake-overflow"

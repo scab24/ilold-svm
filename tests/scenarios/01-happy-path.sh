@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# Happy path: init pool + 2 stakes accumulate total_staked.
 set -e
 . "$(dirname "$0")/_lib.sh"
 NAME="01-happy-path"

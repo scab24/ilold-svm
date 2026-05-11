@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""Captura broadcasts WS durante una sesión REST y reporta lo que recibió."""
 import asyncio
 import json
 import sys
@@ -36,7 +35,6 @@ async def driver():
     await ready.wait()
     await asyncio.sleep(0.1)
 
-    # Setup
     for name, lam in [("admin", 100_000_000), ("pool", 2_000_000),
                       ("alice", 50_000_000), ("alice_stake", 2_000_000)]:
         post({"contract":"staking","command":{"UsersNew":{"name":name,"lamports":lam}}})

@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# Back must restore the VM accounts to the pre-Call snapshot, not just pop
-# the timeline entry. Regression for T-R33.
 set -e
 . "$(dirname "$0")/_lib.sh"
 NAME="07-back-rewinds-vm"

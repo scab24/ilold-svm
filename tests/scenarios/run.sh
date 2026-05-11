@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# Scenario runner: spins up a fresh `ilold serve` per scenario file so they
-# don't pollute each other, runs the scenario, and aggregates pass/fail.
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 PORT="${ILOLD_TEST_PORT:-8081}"
@@ -63,7 +61,6 @@ for f in "$DIR"/[0-9][0-9]-*.sh; do
 done
 
 echo
-# Optional WebSocket broadcast test — requires python3 + websockets.
 WS_PY="$DIR/ws-broadcast.py"
 if [ -f "$WS_PY" ] && command -v python3 >/dev/null 2>&1 \
    && python3 -c 'import websockets' 2>/dev/null; then

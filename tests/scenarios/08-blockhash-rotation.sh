@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# T-R40 regression: 50 consecutive add_rewards calls must each execute
-# (not silently fail with cu=0 due to blockhash collision in LiteSVM).
 set -e
 . "$(dirname "$0")/_lib.sh"
 NAME="08-blockhash-rotation"

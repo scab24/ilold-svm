@@ -1,13 +1,10 @@
-# Shared helpers for scenario scripts. Each scenario sources this and exposes
-# a series of `expect_*` assertions; the runner counts them globally.
 BASE="${BASE:-http://127.0.0.1:8081}"
 
 post() {
   curl -s -X POST "$BASE/api/cmd" -H 'content-type: application/json' -d "$1"
 }
 
-# Highest-numbered pool entry — State labels look like "pool#N" where N is
-# the step index of the most recent mutation.
+# Pool labels look like "pool#N"; pick the highest-numbered entry.
 pool_total_staked() {
   post '{"contract":"staking","command":"State"}' \
     | jq -r '[.StateView.accounts[]? | select(.label|startswith("pool"))][-1].decoded.total_staked' \
@@ -39,9 +36,7 @@ step_failed() {
 }
 
 call_failed_in_logs() {
-  # $1 is the JSON response from a Call. Solana now distinguishes
-  # CallFailed (VM rejected, no step recorded) from StepAdded (success).
-  # We accept either signal.
+  # Accept either CallFailed (VM rejected, no step recorded) or StepAdded with error logs.
   local key
   key=$(echo "$1" | jq -r 'keys[0] // empty')
   case "$key" in
@@ -54,7 +49,6 @@ call_failed_in_logs() {
 }
 
 setup_users() {
-  # Convenience: create pool + admin + alice + alice_stake + bob + bob_stake.
   for n in admin pool alice alice_stake bob bob_stake; do
     local L=100000000
     case "$n" in alice_stake|bob_stake|pool) L=2000000 ;; esac
@@ -71,7 +65,6 @@ stake_as() {
   post "{\"contract\":\"staking\",\"command\":{\"Call\":{\"ix\":\"stake\",\"args\":{\"amount\":$3},\"accounts\":{\"pool\":\"pool\",\"user_stake\":\"$2\",\"user\":\"$1\"},\"signers\":[\"$2\",\"$1\"]}}}"
 }
 
-# ── Assertion helpers — each one increments PASS or FAIL globally ───────────
 PASS=${PASS:-0}; FAIL=${FAIL:-0}
 expect_eq() { # name expected actual
   if [ "$3" = "$2" ]; then echo "    PASS $1"; PASS=$((PASS+1))
