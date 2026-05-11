@@ -6,15 +6,6 @@ use serde_json::{Map, Value, json};
 
 use crate::schema::schema_for_tool;
 
-// `ilold_use` is kept in the registry but handled client-side by the MCP
-// server: it sets the active contract on the handler instead of issuing a
-// SolanaCommand. Every other tool reads that state and routes its call to
-// the active program.
-//
-// `seq | sequence` is excluded because the dedicated `/api/session/sequence`
-// endpoint is Solidity-only (gated by `require_solidity_msg`). For Solana the
-// REPL falls back to the Session view, so exposing both `ilold_session` and
-// `ilold_sequence` would be two tool names for the exact same backend call.
 const EXCLUDED_ALIASES: &[&str] = &[
     "?", "help", "h", "quit", "q", "exit", "browser", "seq", "sequence",
 ];
@@ -42,7 +33,6 @@ pub fn is_excluded(block: &HelpBlock) -> bool {
 }
 
 pub fn canonical_alias(block: &HelpBlock) -> &'static str {
-    // alias must have at least 4 chars to be canonical, so `seq` falls back to `sequence`
     block
         .aliases
         .iter()
@@ -74,9 +64,6 @@ fn value_to_json_object(v: Value) -> JsonObject {
     }
 }
 
-/// Translate MCP tool `name` + `arguments` into the SolanaCommand JSON value
-/// that the backend `/api/cmd` endpoint expects. Returns the JSON `command`
-/// payload only — the `IloldClient` wraps it with the `contract` field.
 pub fn build_command(name: &str, arguments: Option<&Value>) -> Result<Value, String> {
     let args = arguments.cloned().unwrap_or_else(|| json!({}));
     let args_obj = args.as_object().cloned().unwrap_or_default();
@@ -209,9 +196,6 @@ mod tests {
 
     #[test]
     fn tool_registry_has_30_entries() {
-        // 33 help blocks - 3 meta (?, quit, browser) - 2 sequence aliases
-        // (seq, sequence excluded because the /api/session/sequence endpoint
-        // is Solidity-only) + 1 dedicated users-new block + 1 ilold_use = 30.
         let tools = build_tool_registry();
         assert_eq!(tools.len(), 30);
     }
@@ -371,7 +355,6 @@ mod tests {
 
     #[test]
     fn build_command_users_new_includes_default_lamports() {
-        // Lamports omitted on the wire — backend applies its own default.
         let v = build_command("ilold_users_new", Some(&json!({ "name": "alice" }))).unwrap();
         let cmd: SolanaCommand = serde_json::from_value(v).expect("deserialize");
         match cmd {

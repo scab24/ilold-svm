@@ -78,9 +78,6 @@ impl VmSnapshot {
     }
 }
 
-/// Lightweight snapshot used between steps within the same VM. Skips the
-/// `programs` blob (kept loaded in the VmHost) so each entry costs ~accounts
-/// bytes instead of MBs. Restoring is done in-place via `restore_state`.
 #[derive(Clone)]
 pub struct StateSnapshot {
     pub accounts: Vec<(Address, AccountSharedData)>,
@@ -102,17 +99,12 @@ impl VmHost {
         }
     }
 
-    /// Replace the in-memory account/clock state with `snap` while keeping
-    /// the loaded programs intact. Used by Back to rewind a single step
-    /// without paying the cost of re-adding programs.
     pub fn restore_state(&mut self, snap: StateSnapshot) -> Result<(), SolanaError> {
         let live: std::collections::HashSet<Address> =
             self.svm().accounts_db().inner.keys().copied().collect();
         let snap_keys: std::collections::HashSet<Address> =
             snap.accounts.iter().map(|(k, _)| *k).collect();
 
-        // Drop accounts created after the snapshot — set_account with an
-        // empty Account zeroes the slot which LiteSVM treats as absent.
         let to_drop: Vec<Address> = live.difference(&snap_keys).copied().collect();
         for pk in to_drop {
             let empty: solana_account::Account = solana_account::Account::default();

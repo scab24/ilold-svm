@@ -90,9 +90,6 @@ fn timestamp_now() -> String {
         .unwrap_or_default()
 }
 
-/// Validate a scenario name and check it is not already taken in the store.
-/// Shared guard for both `ScenarioAction::New` and `ScenarioAction::Fork`.
-/// Returns `Err(CommandResult::Error)` ready to be propagated.
 fn reserve_name(store: &ScenarioStore, name: &str) -> Result<(), CommandResult> {
     if let Err(e) = validate_scenario_name(name) {
         return Err(CommandResult::Error { message: e });
@@ -105,9 +102,6 @@ fn reserve_name(store: &ScenarioStore, name: &str) -> Result<(), CommandResult> 
     Ok(())
 }
 
-/// Execute scenario lifecycle commands against the `ScenarioStore`. Lives
-/// in the web crate because it needs `&mut ScenarioStore` (crate boundary);
-/// `commands.rs` only defines the data types.
 fn execute_scenario(
     store: &mut ScenarioStore,
     action: ScenarioAction,
@@ -139,8 +133,6 @@ fn execute_scenario(
         ScenarioAction::Switch { name } => {
             let from = store.active().to_string();
             if name == from {
-                // idempotent no-op per spec S3.4; caller is responsible for
-                // suppressing WS broadcast when from == to.
                 return CommandResult::ScenarioSwitched { from, to: name };
             }
             match store.set_active(name.clone()) {
@@ -182,14 +174,8 @@ fn fork_scenario(
     }
     let from = store.active().to_string();
     let mut cloned = store.active_session().clone();
-    // Failed Calls are scenario-local observations; the fresh fork has not
-    // rejected anything yet so the runtime overlay starts clean.
     cloned.reset_scenario_local_observations();
 
-    // Resolve effective step count. None (legacy) → keep all steps.
-    // Some(N) → truncate to first N; error if N > current length.
-    // Mutations live inside each ExplorationStep, so truncating `steps`
-    // drops their owning step's mutations as well.
     let len = cloned.steps.len();
     let effective = match at_step {
         None => len,
@@ -207,16 +193,10 @@ fn fork_scenario(
         }
     };
 
-    // Record the fork origin on the cloned session itself. The frontend
-    // reads this (via /api/scenarios/all) to render the scenario as a
-    // branch from its source instead of a parallel timeline.
     cloned.forked_from = Some(ForkOrigin {
         scenario: from.clone(),
         at_step: effective,
     });
-    // The `BranchCreated` variant's field names (`from_function`/`branch_function`)
-    // are reused here as scenario names per design §2.4 — intentionally not
-    // renamed to preserve save-file compatibility.
     cloned.journal.record(JournalEntry::BranchCreated {
         from_function: from.clone(),
         branch_function: new_name.clone(),
@@ -248,18 +228,10 @@ pub async fn handle_command(
     })?;
 
     let mut scenarios_guard = state.scenarios.write().unwrap();
-    // SaveSession/LoadSession bypass the contract-switch reset: Save doesn't
-    // care about the request's contract field, and Load carries its own
-    // contract inside the JSON. Without the bypass, loading a file from a
-    // different contract would clear the store before the load runs.
     let is_persistence = matches!(
         solidity_command,
         SessionCommand::SaveSession | SessionCommand::LoadSession { .. }
     );
-    // Contract switch: only reset if the active session has actual steps.
-    // An empty session with a mismatched contract means the auto-seed picked
-    // a default contract that didn't match the first real request — just
-    // swap it transparently (no ClearAll, nothing was ever on the canvas).
     let needs_reset = !is_persistence
         && scenarios_guard.active_session().contract != contract_name;
     if needs_reset {
@@ -272,10 +244,6 @@ pub async fn handle_command(
             }).ok();
         }
     }
-    // Scenario / Save / Load commands operate on the store itself; all
-    // other commands are delegated to the active session. Dispatch happens
-    // here (before `active_session_mut`) to avoid partial-move errors on
-    // `req.command`.
     let result: CommandResult = match solidity_command {
         SessionCommand::Scenario { sub } => {
             let active_before = scenarios_guard.active().to_string();
@@ -287,8 +255,6 @@ pub async fn handle_command(
         }
         SessionCommand::SaveSession => {
             let active_before = scenarios_guard.active().to_string();
-            // Solidity flow does not persist keypairs (no LiteSVM users to
-            // reproduce); SDD-03 keypairs feature is Solana-only.
             let result = match scenarios_guard.save_to_json(crate::state::SaveOpts::none()) {
                 Ok(json) => CommandResult::SessionSaved { json },
                 Err(message) => CommandResult::Error { message },
@@ -381,11 +347,6 @@ async fn handle_solana_command(
 
     if let SolanaCommand::SaveSession { with_keypairs } = &command {
         let scenarios = state.scenarios.read().unwrap();
-        // When `with_keypairs` is set, snapshot the in-memory user keypairs
-        // (cloned via `insecure_clone` like the Fork path does — same
-        // semantics, no key derivation) and pass them to save_to_json so
-        // the resulting JSON can be replayed deterministically. Default
-        // remains the lighter "shape only" save.
         let users_snapshot = if *with_keypairs {
             let users_lock = solana.users.read().unwrap();
             let cloned: std::collections::HashMap<
@@ -430,16 +391,9 @@ async fn handle_solana_command(
                     .collect();
                 *scenarios = loaded;
 
-                // Drop existing VMs/snapshot stacks; we rebuild from scratch.
                 vms.clear();
                 snapshots.clear();
 
-                // SDD-03: rehydrate the per-scenario users map from the saved
-                // keypair bundle BEFORE replay runs, so that signers and PDAs
-                // come back identical. When the bundle is absent (legacy save
-                // without `--with-keypairs`) the existing `Keypair::new` path
-                // inside replay still works — pubkeys regenerate, which is
-                // the long-standing behaviour.
                 if let Some(bundle) = kp_bundle {
                     users_lock.clear();
                     for (scn, kps) in bundle {
@@ -447,12 +401,6 @@ async fn handle_solana_command(
                     }
                 }
 
-                // Rebuild a VM per scenario by replaying each step from its
-                // saved call_payload. Steps without payload (legacy saves)
-                // can't replay, so we still boot the VM but leave its state
-                // un-mutated; the timeline remains visible but inspect/state
-                // will reflect genesis. This is the only feasible compromise
-                // without breaking older snapshots.
                 let mut replay_errors: Vec<String> = Vec::new();
                 let scenario_names: Vec<String> = scenarios.names().to_vec();
                 for scn_name in &scenario_names {
@@ -468,8 +416,6 @@ async fn handle_solana_command(
                     let scn_users = users_lock
                         .entry(scn_name.clone())
                         .or_insert_with(std::collections::HashMap::new);
-                    // Re-airdrop existing users into the freshly booted VM so
-                    // replayed Calls can pay for `init` constraints.
                     const REPLAY_LAMPORTS: u64 = 10_000_000_000;
                     for kp in scn_users.values() {
                         use solana_keypair::Signer;
@@ -507,10 +453,6 @@ async fn handle_solana_command(
                             })
                             .unwrap_or_default();
                         let pre = vm.snapshot_state();
-                        // We replay against the current session in scn_users.
-                        // Calls that reference users not yet recreated will
-                        // fail; we record the error but continue so the rest
-                        // of the timeline still loads.
                         let res = ilold_solana_core::exploration::execute::execute_call(
                             &program,
                             ix_name,
@@ -524,10 +466,6 @@ async fn handle_solana_command(
                         );
                         if matches!(res, ilold_solana_core::exploration::SolanaCommandResult::StepAdded { .. }) {
                             stack.push(pre);
-                            // execute_call appended a NEW step at the end. The
-                            // replayed timeline now has duplicate entries, so
-                            // we pop the freshly-added step and keep the saved
-                            // one (preserves runtime_trace from original run).
                             session.steps.pop();
                         } else if let ilold_solana_core::exploration::SolanaCommandResult::Error { message } = res {
                             replay_errors.push(format!("{scn_name}#{idx}: {message}"));
@@ -580,8 +518,6 @@ async fn handle_solana_command(
         .or_insert_with(Vec::new);
     let session = scenarios.active_session_mut();
 
-    // Pre-Call snapshot: taken BEFORE dispatching so Back can rewind to here.
-    // Computed only for Call; everything else doesn't mutate VM state.
     let pre_call_snapshot = match &command {
         SolanaCommand::Call { .. } => Some(vm.snapshot_state()),
         _ => None,
@@ -631,10 +567,6 @@ async fn handle_solana_command(
             r
         }
         SolanaCommand::Clear => {
-            // Rewind VM to pre-step-0 (the snapshot taken before the very first
-            // Call). Without this the VM keeps the post-execution state and the
-            // next Call operates on contaminated accounts. If the stack is empty
-            // (no Calls yet, or already rewound), Clear is a no-op for the VM.
             if let Some(genesis) = stack.first().cloned() {
                 if let Err(e) = vm.restore_state(genesis) {
                     return Ok(Json(serde_json::to_value(SolanaCommandResult::Error {
@@ -658,9 +590,6 @@ async fn handle_solana_command(
         SolanaCommand::Step { index } => execute_step(session, index, &program),
         SolanaCommand::Findings => execute_findings_list(session),
         SolanaCommand::Export { metadata } => {
-            // Export aggregates findings and step lists across ALL scenarios so
-            // the auditor's deliverable reflects the full investigation, not
-            // just the currently-active branch.
             let names: Vec<String> = scenarios.names().to_vec();
             let entries: Vec<(&str, &ilold_session_core::exploration::session::ExplorationSession)> =
                 names
@@ -682,8 +611,6 @@ async fn handle_solana_command(
         | SolanaCommand::Scenario { .. } => unreachable!("handled above"),
     };
 
-    // Persist the pre-Call snapshot only when the Call actually appended a
-    // step. Failed Calls already left the VM untouched, so no rewind needed.
     if let (Some(snap), SolanaCommandResult::StepAdded { .. }) = (pre_call_snapshot, &result) {
         stack.push(snap);
     }
@@ -784,8 +711,6 @@ fn solana_scenario_action(
             }
             let from = active_before.to_string();
             let mut cloned = scenarios.active_session().clone();
-            // Failed Calls are scenario-local observations: a fork hasn't
-            // rejected anything yet, so the runtime overlay starts clean.
             cloned.reset_scenario_local_observations();
             let len = cloned.steps.len();
             let effective = match at_step {
@@ -831,12 +756,6 @@ fn solana_scenario_action(
                 }
             };
 
-            // Fork at a specific step requires rewinding the cloned VM to that
-            // step's pre-Call snapshot (otherwise VM has the full timeline's
-            // state but the cloned `steps` are truncated — auditor sees diverging
-            // state vs timeline). origin_stack[N] is the snapshot taken right
-            // before step N executed; restoring it produces the state where
-            // exactly steps [0..N) have run.
             let mut snapshots = solana.step_snapshots.write().unwrap();
             let origin_stack = snapshots.entry(from.clone()).or_insert_with(Vec::new);
             let cloned_stack: Vec<ilold_solana_core::execute::StateSnapshot> =
@@ -848,8 +767,6 @@ fn solana_scenario_action(
                     };
                 }
             }
-            // If effective == origin_stack.len() the branch keeps the full state
-            // (no rewind needed) — typical "fork at HEAD" usage.
 
             let mut users = solana.users.write().unwrap();
             let cloned_users: std::collections::HashMap<String, Keypair> = users
@@ -911,9 +828,6 @@ pub async fn get_step_detail(
     Ok(Json(narrative))
 }
 
-/// Return the persisted FlowTree of a session step. The tree is read
-/// directly from `step.flow_tree` — no recomputation against the source
-/// — so the result reflects what the auditor saw when `c <func>` ran.
 pub async fn get_session_step_trace(
     State(state): State<Arc<AppState>>,
     Path(step_index): Path<usize>,
@@ -937,7 +851,6 @@ pub async fn get_session_step_trace(
     Ok(Json(tree))
 }
 
-/// Cross-step variable history with path conditions for each write.
 pub async fn get_variable_timeline_handler(
     State(state): State<Arc<AppState>>,
     Path(variable): Path<String>,
@@ -990,8 +903,6 @@ pub struct TraceQuery {
     pub depth: Option<usize>,
     #[serde(default)]
     pub reverts: Option<bool>,
-    /// Comma-separated step_ids to force-inline beyond `depth`. Example:
-    /// `?expand=17,24` will inline both calls regardless of max_depth.
     #[serde(default)]
     pub expand: Option<String>,
 }
@@ -1016,16 +927,10 @@ pub async fn get_flow_trace(
 
 #[derive(Deserialize)]
 pub struct SliceQuery {
-    /// `backward`, `forward`, or `both`. Defaults to `both` when absent.
-    /// Short forms `b`/`f` and synonyms `back`/`fwd`/`all` are accepted.
     #[serde(default)]
     pub direction: Option<String>,
 }
 
-/// Dataflow slice for `variable` inside `function` of the session's
-/// current contract. The function is resolved from the active session so
-/// the auditor doesn't have to re-type the contract name; if no session
-/// exists the endpoint returns 404.
 pub async fn get_function_slice(
     State(state): State<Arc<AppState>>,
     Path((func_name, variable)): Path<(String, String)>,
@@ -1078,10 +983,6 @@ fn parse_slice_direction(raw: Option<&str>) -> Result<SliceDirection, String> {
     }
 }
 
-/// Lightweight per-step view for the `/api/scenarios/all` snapshot. The
-/// access level is resolved against `AppState.classifications` (same lookup
-/// pattern used by `execute_who` in the core crate) so the frontend can
-/// colour the node without re-classifying.
 #[derive(Serialize)]
 pub struct SessionStepView {
     pub function: String,
@@ -1089,8 +990,6 @@ pub struct SessionStepView {
     pub step_index: usize,
 }
 
-/// Per-scenario snapshot in `AllScenariosResponse`. `forked_from` is `None`
-/// for `main` and for any scenario loaded from a pre-fork-origin save file.
 #[derive(Serialize)]
 pub struct ScenarioSnapshot {
     pub name: String,
@@ -1101,13 +1000,9 @@ pub struct ScenarioSnapshot {
 #[derive(Serialize)]
 pub struct AllScenariosResponse {
     pub active: String,
-    /// Ordered by creation order (main first, then insertion order). Not a
-    /// HashMap — the frontend composes scenarios into a visual tree and needs
-    /// stable iteration so "main" always anchors the canvas.
     pub scenarios: Vec<ScenarioSnapshot>,
 }
 
-/// Return the list of scenarios — mirrors the `scenario list` CLI command.
 pub async fn get_scenarios(
     State(state): State<Arc<AppState>>,
 ) -> Json<Vec<ScenarioInfo>> {
@@ -1125,8 +1020,6 @@ pub async fn get_scenarios(
     Json(items)
 }
 
-/// Bulk snapshot of every scenario's step list. Used by the frontend canvas
-/// to paint all scenarios at once (e.g. on reconnect / initial load).
 pub async fn get_all_scenarios(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<AllScenariosResponse>, (StatusCode, String)> {
@@ -1162,9 +1055,6 @@ pub async fn get_all_scenarios(
     Ok(Json(AllScenariosResponse { active, scenarios }))
 }
 
-/// Parse a comma-separated `expand` query value into a set of step_ids.
-/// Empty input → empty set. Whitespace around values is tolerated.
-/// Returns `Err` with a descriptive message if any value is not a usize.
 fn parse_expand_set(raw: Option<&str>) -> Result<std::collections::HashSet<usize>, String> {
     let mut set = std::collections::HashSet::new();
     let raw = match raw {

@@ -11,10 +11,6 @@ use ilold_core::sequence::types::SequenceTree;
 
 use crate::state::{require_solidity, AppState};
 
-// ============================================================================
-// Contract detail
-// ============================================================================
-
 #[derive(Serialize)]
 pub struct ContractDetail {
     pub name: String,
@@ -153,10 +149,6 @@ pub async fn get_contract(
     }))
 }
 
-// ============================================================================
-// Call graph (Cytoscape-compatible JSON)
-// ============================================================================
-
 #[derive(Serialize)]
 pub struct CytoscapeGraph {
     pub nodes: Vec<CytoscapeNode>,
@@ -241,10 +233,6 @@ pub async fn get_callgraph(
     Ok(Json(CytoscapeGraph { nodes, edges }))
 }
 
-// ============================================================================
-// CFG (Cytoscape-compatible JSON)
-// ============================================================================
-
 pub async fn get_cfg(
     State(state): State<Arc<AppState>>,
     Path((contract_name, func_name)): Path<(String, String)>,
@@ -300,19 +288,10 @@ pub async fn get_cfg(
     Ok(Json(CytoscapeGraph { nodes, edges }))
 }
 
-// ============================================================================
-// Function source (for the canvas "View source" panel + IDE deep link)
-// ============================================================================
-
 #[derive(Serialize)]
 pub struct FunctionSourceResponse {
-    /// Absolute path to the Solidity file — used as-is for the `vscode://`
-    /// deep link on the frontend.
     pub file_path: String,
-    /// Source text sliced to the function's line range (inclusive, 1-based).
     pub source: String,
-    /// Original span; frontend uses `start_line` / `start_col` for the IDE
-    /// jump, and nothing else today.
     pub span: SourceSpan,
 }
 
@@ -325,9 +304,6 @@ pub async fn get_function_source(
         .find(|c| c.name == contract_name)
         .ok_or(StatusCode::NOT_FOUND)?;
 
-    // `resolve_function` walks the inheritance chain, so a function declared
-    // in a parent contract resolves to the parent's FunctionDef (with its
-    // own span + file_index).
     let (_owning, func) = s.project.resolve_function(contract, &func_name)
         .ok_or(StatusCode::NOT_FOUND)?;
 
@@ -347,9 +323,6 @@ pub async fn get_function_source(
     }))
 }
 
-/// Return the text between `start_1based` and `end_1based` lines (inclusive).
-/// Returns an empty string for malformed ranges (`start > end`) so a bad
-/// span from the parser never panics the handler.
 fn slice_lines(src: &str, start_1based: usize, end_1based: usize) -> String {
     if start_1based == 0 || end_1based < start_1based {
         return String::new();
@@ -360,10 +333,6 @@ fn slice_lines(src: &str, start_1based: usize, end_1based: usize) -> String {
         .collect::<Vec<_>>()
         .join("\n")
 }
-
-// ============================================================================
-// Path tree
-// ============================================================================
 
 pub async fn get_paths(
     State(state): State<Arc<AppState>>,
@@ -388,10 +357,6 @@ pub async fn get_paths(
         .ok_or(StatusCode::NOT_FOUND)
 }
 
-// ============================================================================
-// Sequence tree
-// ============================================================================
-
 #[derive(Deserialize)]
 pub struct SequenceQuery {
     pub depth: Option<usize>,
@@ -410,10 +375,6 @@ pub async fn get_sequences(
         .ok_or(StatusCode::NOT_FOUND)
 }
 
-// ============================================================================
-// Sequence analysis — conditions between function transitions
-// ============================================================================
-
 use ilold_core::sequence::analysis::{analyze_sequences, SequenceAnalysis};
 
 pub async fn get_sequence_analysis(
@@ -424,10 +385,6 @@ pub async fn get_sequence_analysis(
     let analysis = analyze_sequences(&s.path_trees, &name);
     Ok(Json(analysis))
 }
-
-// ============================================================================
-// Search suggestions — what's searchable in this contract
-// ============================================================================
 
 #[derive(Serialize)]
 pub struct SearchSuggestions {
@@ -475,7 +432,6 @@ pub async fn get_search_suggestions(
         .map(|e| e.name.clone())
         .collect();
 
-    // Collect unique origins (current contract + any ancestor with accessible functions)
     let mut origins: std::collections::HashSet<String> = std::collections::HashSet::new();
     origins.insert(name.clone());
     for af in &accessible {
@@ -484,7 +440,6 @@ pub async fn get_search_suggestions(
         }
     }
 
-    // Collect unique external calls from all paths keyed by any origin
     let mut ext_calls = std::collections::HashSet::new();
     for ((c, _), pt) in &s.path_trees {
         if !origins.contains(c) { continue; }
@@ -527,10 +482,6 @@ pub async fn get_search_suggestions(
         categories,
     }))
 }
-
-// ============================================================================
-// Helpers
-// ============================================================================
 
 use ilold_core::cfg::types::{BasicBlock, BlockKind, CfgStatement};
 

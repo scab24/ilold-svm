@@ -1,13 +1,6 @@
 use schemars::Schema;
 use serde_json::{Map, Value, json};
 
-/// JSON Schema for the input arguments of a tool. The MCP spec requires
-/// `inputSchema` to be a JSON object describing the `arguments` payload.
-/// We hand-roll the schemas per tool (rather than slicing the big
-/// SolanaCommand schema) because some variants need MCP-specific shapes:
-/// for tools without arguments we return the canonical empty-object schema,
-/// for tools with arguments we lift the variant fields to the top level so
-/// the LLM sees `{ ix, args, accounts }` instead of `{ Call: { ix, ... } }`.
 pub fn schema_for_tool(name: &str) -> Value {
     match name {
         "ilold_call" => schema_for_call(),
@@ -34,10 +27,6 @@ pub fn schema_for_tool(name: &str) -> Value {
         "ilold_load" => string_only("json", "Saved scenario JSON to restore"),
         "ilold_scenario" => schema_scenario(),
         "ilold_export" => schema_export(),
-        // Tools without arguments (Funcs, Back, Clear, State, Session,
-        // Users, Vars, Findings, Coupling, Coverage, FuncsAll, Programs,
-        // Sequence). Programs is a synthesised name; the registry uses
-        // `ilold_programs` for the workspace listing handler.
         _ => empty_object_schema(),
     }
 }
@@ -294,8 +283,6 @@ fn schema_export() -> Value {
     })
 }
 
-/// Returns the schemars-generated schema for the full SolanaCommand enum.
-/// Useful for diagnostics and for the schema_consistency cross-check test.
 pub fn full_solana_command_schema() -> Schema {
     schemars::schema_for!(ilold_solana_core::exploration::SolanaCommand)
 }

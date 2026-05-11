@@ -11,9 +11,6 @@ use ilold_solana_core::view::{
 use crate::colors::{c_accent, c_danger, c_muted, c_ok, c_warn};
 use crate::fmt::pad_right;
 
-/// Render a SolanaCommandResult to text. Output is byte-identical to the
-/// legacy `print_solana_result` body (without the leading/trailing blank
-/// line); callers add framing whitespace where appropriate.
 pub fn render_solana_result(result: &SolanaCommandResult) -> String {
     let mut out = String::new();
     match result {

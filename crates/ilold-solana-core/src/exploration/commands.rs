@@ -69,14 +69,8 @@ pub enum SolanaCommand {
         ix: String,
         status: ReviewStatus,
     },
-    /// Persist the active scenario store. Backwards compatible with the legacy
-    /// unit form `"SaveSession"` (no embedded keypairs).
     #[serde(alias = "SaveSession")]
     SaveSession {
-        /// SDD-03: when true, the resulting JSON also embeds the per-scenario
-        /// user keypairs in plaintext so a future LoadSession reproduces the
-        /// same pubkeys (and any PDAs derived from them). Default false keeps
-        /// the original "save the timeline shape" behaviour.
         #[serde(default)]
         with_keypairs: bool,
     },
@@ -100,19 +94,11 @@ pub enum SolanaCommand {
     Timeline {
         pubkey: String,
     },
-    /// Detail of a single instruction — args (typed), accounts with badges,
-    /// PDAs with seeds, discriminator hex, admin-gated bool.
     Info {
         ix: String,
     },
-    /// Pairs of instructions that share at least one writable account.
     Coupling,
-    /// Account-type catalogue (`vars` in the REPL): name + discriminator +
-    /// fields. Slice of `ProgramView::accounts`.
     Vars,
-    /// Aggregated runtime metrics (calls, failures, CU, CPI edges) over the
-    /// active scenario. Backend-only computation; clients consume the typed
-    /// `RuntimeOverlay` payload.
     Coverage,
 }
 
@@ -160,18 +146,9 @@ pub enum SolanaCommandResult {
         logs_excerpt: Vec<String>,
         account_diffs_count: usize,
         compute_units: u64,
-        /// Always None for StepAdded — kept for backwards-compat with clients
-        /// that read this field. Failed Calls now produce `CallFailed` so the
-        /// scenario timeline only contains transactions that actually mutated
-        /// state (Solidity-aligned model).
         #[serde(default)]
         error: Option<String>,
     },
-    /// The VM rejected the Call (Anchor constraint, custom `require!`, etc.).
-    /// No step is appended to the session and no canvas broadcast is emitted
-    /// — the scenario timeline stays clean. The CLI prints the error + logs
-    /// inline so the auditor sees exactly what happened, and they can record
-    /// the attempt manually with `note` or `finding` if it is worth keeping.
     CallFailed {
         instruction: String,
         logs_excerpt: Vec<String>,
@@ -288,7 +265,6 @@ pub enum SolanaCommandResult {
         label: Option<String>,
         entries: Vec<TimelineEntry>,
     },
-    /// Detail for a single instruction, sliced from `ProgramView`.
     IxInfo {
         ix: IxView,
         admin_gated: bool,
@@ -313,11 +289,8 @@ pub struct StepDiffSummary {
     pub name: Option<String>,
     pub lamports_delta: i128,
     pub data_changed: bool,
-    /// Anchor-decoded snapshot of the account before the Call ran. None when
-    /// the discriminator did not match a known type (e.g. system accounts).
     #[serde(default)]
     pub decoded_before: Option<Value>,
-    /// Anchor-decoded snapshot after the Call. Same caveat as `decoded_before`.
     #[serde(default)]
     pub decoded_after: Option<Value>,
 }
@@ -337,13 +310,8 @@ pub struct WhoEntry {
     pub account_field: String,
     pub writable: bool,
     pub signer: bool,
-    /// Resolved Anchor account type (e.g. "Pool"). None for system / sysvar /
-    /// program / unknown accounts. Lets the renderer show "(as pool: Pool)".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_type: Option<String>,
-    /// Args of the instruction this entry references. Useful when the auditor
-    /// landed on this entry via an AccountType or Field query and wants to see
-    /// what knobs each ix exposes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ix_args: Option<Vec<ArgView>>,
 }
@@ -394,9 +362,6 @@ pub fn canvas_patches_from_solana(
             compute_units,
             error,
         } => vec![
-            // AddNode first, OverlayUpdate after — clients that paint badges
-            // off the canvas node need the node to exist before the delta
-            // arrives.
             CanvasPatch::AddNode {
                 scenario: active_scenario.to_string(),
                 function: instruction.clone(),

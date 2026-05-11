@@ -67,14 +67,10 @@ enum Commands {
         /// Base URL of a running `ilold serve` instance (defaults to http://127.0.0.1:8080)
         #[arg(long, env = "ILOLD_SERVER_URL", default_value = "http://127.0.0.1:8080")]
         server_url: String,
-        /// Optional initial active program. When set, every tool call routes to
-        /// this program until the LLM (or the user) invokes `ilold_use` to
-        /// switch. Leave unset to let the LLM pick the program at runtime.
+        /// Optional initial active program (LLM can switch later via ilold_use).
         #[arg(long, env = "ILOLD_CONTRACT")]
         contract: Option<String>,
-        /// Emit a `notifications/progress` MCP message before each tool call
-        /// describing intent. Useful when the client UI renders progress next
-        /// to tool calls so the human sees what the LLM is about to run.
+        /// Emit MCP progress notifications describing each tool-call intent.
         #[arg(long, env = "ILOLD_NARRATION")]
         narration: bool,
     },

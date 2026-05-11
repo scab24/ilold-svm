@@ -256,9 +256,6 @@ pub fn execute_call(
         }
     };
 
-    // Capture original inputs so LoadSession can replay this Call against a
-    // fresh VM. We serialize the user-name strings (not the resolved pubkeys)
-    // because user keypairs are recreated on Load — same name, same pubkey.
     let call_payload = serde_json::json!({
         "ix": ix_name,
         "args": args.clone(),
@@ -475,8 +472,6 @@ pub fn execute_finding(
                 .collect(),
         )
     };
-    // Capture the index of the most recent step so the export can render
-    // "Step #N" alongside the affected function. None when no steps yet.
     let affected_step_index = if session.steps.is_empty() {
         None
     } else {
@@ -652,11 +647,6 @@ where
         account_types: program.account_types.len(),
     };
 
-    // Reuse the shared markdown renderer (header + metadata + program +
-    // methodology + severity matrix + findings detail). Only the per-scenario
-    // step listing stays here because step records belong to ExplorationStep,
-    // which is owned by ilold-session-core but printed with Solana semantics
-    // (compute units, error from runtime_trace).
     let journal_pairs: Vec<(&str, &ilold_session_core::journal::types::AuditJournal)> =
         scenarios.iter().map(|(n, s)| (*n, &s.journal)).collect();
     let mut md = export_markdown_multi(
@@ -666,7 +656,6 @@ where
         program.instructions.len(),
     );
 
-    // Per-scenario step listing — Solana-specific (no Solidity counterpart).
     use std::fmt::Write;
     writeln!(md, "## Scenarios\n").unwrap();
     writeln!(md, "**Active**: `{active}`\n").unwrap();
@@ -824,8 +813,6 @@ fn who_for_field(
     owner: &str,
     field: &crate::view::FieldView,
 ) -> SolanaCommandResult {
-    // Heuristic: without source-level analysis we list every ix that touches
-    // the owner account-type as writable. The renderer must surface this.
     let mut hits: Vec<WhoEntry> = Vec::new();
     for ix in &view.instructions {
         for acc in &ix.accounts {
@@ -866,8 +853,6 @@ fn find_field_owner(
     view: &crate::view::ProgramView,
     field_name: &str,
 ) -> Option<(String, crate::view::FieldView)> {
-    // Stable iteration order: AccountView vector preserves IDL order, which is
-    // the order ProgramDef::from_idl emitted. That is deterministic per-IDL.
     for acc in &view.accounts {
         if let Some(f) = acc.fields.iter().find(|f| f.name == field_name) {
             return Some((acc.name.clone(), f.clone()));
@@ -897,8 +882,6 @@ pub fn execute_timeline(
     active_scenario: &str,
     users: &HashMap<String, Keypair>,
 ) -> SolanaCommandResult {
-    // The auditor types `tl alice` or `tl <pubkey>` interchangeably; normalise
-    // to the on-wire pubkey before walking the diffs.
     let resolved_label = users.get(raw_target).map(|_| raw_target.to_string());
     let pubkey = match users.get(raw_target) {
         Some(kp) => kp.pubkey().to_string(),
@@ -935,7 +918,6 @@ pub fn execute_timeline(
                 .zip(d.get("after").and_then(|v| v.as_array()))
                 .map(|(b, a)| b != a)
                 .unwrap_or(false);
-            // Try to decode before/after using IDL discriminators.
             let decode = |bytes_v: Option<&Value>| -> Option<Value> {
                 let arr = bytes_v.and_then(|v| v.as_array())?;
                 let bytes: Vec<u8> = arr.iter().filter_map(|b| b.as_u64().map(|n| n as u8)).collect();
@@ -1026,7 +1008,6 @@ mod tests {
             names,
             vec!["add_rewards", "claim_rewards", "initialize_pool", "stake", "unstake"]
         );
-        // Sorted alphabetically for snapshot stability.
         assert!(hits.iter().all(|w| w.account_type.as_deref() == Some("Pool")));
         assert!(hits.iter().all(|w| w.ix_args.is_some()));
         let pool_fields = fields.expect("Pool fields populated");
@@ -1056,7 +1037,6 @@ mod tests {
         assert!(accs
             .iter()
             .any(|a| a.name == "user_stake" && a.account_type.as_deref() == Some("UserStake")));
-        // The 'user' signer maps to no account type — must not crash, must be None.
         assert!(accs
             .iter()
             .any(|a| a.name == "user" && a.account_type.is_none() && a.signer));
@@ -1073,7 +1053,6 @@ mod tests {
         assert!(accounts.is_none());
         let pool_fields = fields.expect("owner_fields present");
         assert!(pool_fields.iter().any(|f| f.name == "total_staked"));
-        // All 5 ix that touch Pool as writable.
         let names: Vec<_> = hits.iter().map(|w| w.instruction.as_str()).collect();
         assert_eq!(
             names,
@@ -1093,11 +1072,6 @@ mod tests {
 
     #[test]
     fn who_field_returns_no_writers_when_account_name_does_not_map() {
-        // Edge case: lever declares the IDL account as `power` (snake) but the
-        // type is `PowerStatus` — snake_to_pascal("power") = "Power" ≠
-        // "PowerStatus". Without source-level analysis we can't bridge that gap,
-        // so the heuristic must surface zero writers for `is_on` rather than
-        // guessing. This is a known limitation we surface honestly.
         let (target, hits, kind, owner, fields, ..) =
             unwrap_who(execute_who(&lever(), "is_on"));
         assert_eq!(target, "is_on");

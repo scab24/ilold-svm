@@ -103,7 +103,7 @@ pub const SOLANA_HELP_BLOCKS: &[HelpBlock] = &[
     HelpBlock {
         title: "fa | funcs-all",
         aliases: &["fa", "funcs-all"],
-        purpose: "List instructions with full counts plus admin-gating and coupling hints (T-R50 ProgramView).",
+        purpose: "List instructions with full counts plus admin-gating and coupling hints.",
         syntax: &[("fa", "")],
         flags: &[],
         examples: &[("fa", "Spot admin-only entry points and shared-writable couplings at a glance")],
@@ -252,7 +252,7 @@ pub const SOLANA_HELP_BLOCKS: &[HelpBlock] = &[
     HelpBlock {
         title: "coupling | cp",
         aliases: &["coupling", "cp"],
-        purpose: "List instruction pairs that share a writable account (coupling heuristic from T-R50).",
+        purpose: "List instruction pairs that share a writable account.",
         syntax: &[("coupling", "")],
         flags: &[],
         examples: &[("coupling", "Surface ix that may interfere via shared writable state")],
@@ -262,7 +262,7 @@ pub const SOLANA_HELP_BLOCKS: &[HelpBlock] = &[
     HelpBlock {
         title: "coverage | cov",
         aliases: &["coverage", "cov"],
-        purpose: "Aggregated runtime metrics over the active scenario: calls, failures, CU stats, CPI edges (T-R52 RuntimeOverlay).",
+        purpose: "Aggregated runtime metrics over the active scenario: calls, failures, CU stats, CPI edges.",
         syntax: &[("coverage", "")],
         flags: &[],
         examples: &[("cov", "Spot ix never called, ix that always fail, programs reached via CPI")],

@@ -7,8 +7,6 @@ let callsPerIx = $state<Record<string, number>>({});
 let failedPerIx = $state<Record<string, number>>({});
 let cuStatsPerIx = $state<Record<string, CuStats>>({});
 let cpiEdges = $state<CpiEdge[]>([]);
-// Tracks whether the initial REST snapshot has landed; protects against WS
-// patches arriving before scenario context is known and corrupting state.
 let initialized = $state<boolean>(false);
 
 export function getCallsPerIx(): Record<string, number> {
@@ -83,9 +81,6 @@ function recomputeStats(prev: CuStats | undefined, sample: number): CuStats {
 }
 
 export function applyOverlayUpdate(patch: SessionOverlayUpdate): void {
-  // Drop patches that arrive before the initial REST snapshot. Without this
-  // guard, a WS event landing during page load would seed the store under
-  // scenario === '' and the next snapshot would silently overwrite it.
   if (!initialized) return;
   if (scenario && patch.scenario !== scenario) return;
 
@@ -118,9 +113,6 @@ export function applyOverlayUpdate(patch: SessionOverlayUpdate): void {
       map.set(`${e.from_ix}|${e.to_program}|${e.depth}`, { ...e });
     }
     for (const to of patch.cpi_targets_added) {
-      // Depth = 1 by default for incremental adds; the REST snapshot preserves
-      // the precise depth captured in the trace. Avoiding depth here keeps the
-      // wire-format minimal — accurate aggregation lands on the next reload.
       const key = `${ix}|${to}|1`;
       const prev = map.get(key);
       if (prev) {

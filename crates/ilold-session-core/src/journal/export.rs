@@ -4,9 +4,6 @@ use serde::{Deserialize, Serialize};
 
 use super::types::*;
 
-/// Optional auditor metadata threaded through the export. Pass-through, not
-/// stored in the journal — see SDD 02-audit-deliverable-export/design.md
-/// rationale (avoids JSON-format bumps and keeps PII out of saved sessions).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AuditMetadata {
     #[serde(default)]
@@ -17,9 +14,6 @@ pub struct AuditMetadata {
     pub audit_date: Option<String>,
 }
 
-/// Solana-specific program facts the renderer prints next to the metadata.
-/// Solidity callers pass `None` to `export_markdown_multi`; the body simply
-/// omits the program block.
 #[derive(Debug, Clone)]
 pub struct ProgramSection {
     pub name: String,
@@ -52,8 +46,6 @@ pub fn export_markdown(journal: &AuditJournal, total_functions: usize) -> String
 
     md
 }
-
-// ── Shared private helpers ──────────────────────────────────────────────────
 
 pub(crate) fn render_findings_block(md: &mut String, findings: &[Finding]) {
     if findings.is_empty() {
@@ -193,8 +185,7 @@ pub fn export_markdown_multi(
     let total_findings: usize = scenarios.iter().map(|(_, j)| j.findings.len()).sum();
     writeln!(md, "**Scenarios**: {} · **Total findings**: {}\n",
         scenarios.len(), total_findings).unwrap();
-    let _ = total_steps; // step listing is rendered by the Solana caller via ExplorationStep,
-                         // which the journal layer does not own — kept here for future use.
+    let _ = total_steps;
 
     if let Some(p) = program {
         writeln!(md, "## Program\n").unwrap();

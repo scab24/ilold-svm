@@ -64,8 +64,6 @@ pub async fn run(paths: Vec<PathBuf>, port: u16, max_seq_depth: usize, attach: O
         let project_info: serde_json::Value = resp.json().await?;
 
         let contracts_arr = project_info["contracts"].as_array();
-        // Pick the LAST contract (not interface/library) — in Solidity the main
-        // contract is always at the end of the file, after imports and dependencies.
         let contract_name = contracts_arr
             .and_then(|arr| arr.iter().rev().find(|c| c["kind"].as_str() == Some("Contract")))
             .or_else(|| contracts_arr.and_then(|arr| arr.last()))
@@ -73,8 +71,6 @@ pub async fn run(paths: Vec<PathBuf>, port: u16, max_seq_depth: usize, attach: O
             .unwrap_or("unknown")
             .to_string();
 
-        // /api/project only has function counts, not names.
-        // Fetch /api/contract/{name} per contract to get function names for the completer.
         let mut functions_by_contract = HashMap::<String, Vec<String>>::new();
         let contract_names_raw: Vec<String> = contracts_arr
             .map(|arr| arr.iter().filter_map(|c| c["name"].as_str().map(String::from)).collect())
@@ -322,7 +318,6 @@ fn repl_loop(
         scenario: scenario_name.clone(),
     };
 
-    // Initial prompt sync in --attach mode: pick up steps from other terminals
     if state.is_none() {
         if let Some(server_steps) = sync_steps(&handle, &client, &base_url, &contract, backend) {
             steps = server_steps;
@@ -342,7 +337,6 @@ fn repl_loop(
     }
 
     loop {
-        // Sync prompt from server in --attach mode (catches changes from other terminals)
         if state.is_none() {
             if let Some(server_steps) = sync_steps(&handle, &client, &base_url, &contract, backend) {
                 if server_steps != steps {
@@ -422,7 +416,6 @@ fn repl_loop(
                                 }
                             }
                         } else if let Some(fbc) = functions_by_contract.as_ref() {
-                            // --attach mode: use cached per-contract function map
                             if let Some(funcs) = fbc.get(&new_name) {
                                 functions = funcs.clone();
                                 if let Ok(mut comp) = completer.lock() {
@@ -488,13 +481,11 @@ fn handle_input(
             completer,
         );
     }
-    // Allow shortcuts like `st0`, `st1`, `step2` without requiring a space.
     let normalized = split_numeric_suffix(line);
     let parts: Vec<&str> = normalized.splitn(2, ' ').collect();
     let cmd = parts[0].to_lowercase();
     let arg = parts.get(1).map(|s| s.trim()).unwrap_or("");
 
-    // Inline help: appending ? to any command prints a one-line usage.
     if cmd.ends_with('?') && cmd.len() > 1 {
         let base = &cmd[..cmd.len() - 1];
         print_inline_help(base);
@@ -516,8 +507,6 @@ fn handle_input(
 
             use ilold_core::exploration::commands::ScenarioAction;
 
-            // Parse `fork <name>` or `fork <name> at <N>`. Returns Err with a
-            // user-facing message on parse failure.
             let parse_fork = |raw: &str| -> Result<ScenarioAction, String> {
                 let parts: Vec<&str> = raw.split_whitespace().collect();
                 match parts.as_slice() {
@@ -564,7 +553,6 @@ fn handle_input(
             });
             match send_command(handle, client, base_url, &body) {
                 Ok(result) => {
-                    // Update local trackers before printing.
                     let mut did_update_scenario = false;
                     match &result {
                         CommandResult::ScenarioCreated { name } => {
@@ -614,7 +602,6 @@ fn handle_input(
                     _ => print_contracts(state, contract),
                 }
             } else {
-                // --attach mode: fetch contract list from server
                 match handle.block_on(async {
                     let resp = client.get(format!("{base_url}/api/project")).send().await?;
                     resp.json::<serde_json::Value>().await
@@ -698,7 +685,6 @@ fn handle_input(
                     }
                 }
             } else {
-                // --attach mode: switch directly, let the server validate commands
                 let name = arg.to_string();
                 if name == contract {
                     println!("  Already using {}", c_accent(&name));
@@ -819,7 +805,6 @@ fn handle_input(
             if arg.is_empty() {
                 handle_finding_interactive(handle, client, base_url, contract, steps);
             } else {
-                // Parse: fi <severity> <title> [description]
                 let finding_parts: Vec<&str> = arg.splitn(2, ' ').collect();
                 if finding_parts.len() < 2 {
                     println!("  Usage: fi <severity> <title>");
@@ -929,9 +914,6 @@ fn handle_input(
                 TraceTarget::Function(func_name) => {
                     let mut url = format!("{base_url}/api/session/trace/{contract}/{func_name}");
                     let mut sep = '?';
-                    // Interactive mode needs more context to be useful, so
-                    // bump the default depth to 4 when `-i` is set and the
-                    // user didn't pass an explicit `--depth`.
                     let effective_depth = parsed.depth
                         .or(if parsed.interactive { Some(4) } else { None });
                     if let Some(d) = effective_depth {
@@ -952,7 +934,6 @@ fn handle_input(
                     url
                 }
                 TraceTarget::SessionStep(idx) => {
-                    // Persisted tree — depth/reverts/expand flags ignored.
                     format!("{base_url}/api/session/step/{idx}/trace")
                 }
             };
@@ -996,9 +977,6 @@ fn handle_input(
         }
         "sl" | "slice" => {
             let parts: Vec<&str> = arg.split_whitespace().collect();
-            // Separate flags from positional args so order doesn't matter:
-            // `sl deposit totalStaked --backward` and `sl --backward deposit totalStaked`
-            // both parse correctly.
             let mut positionals: Vec<&str> = Vec::new();
             let mut direction: Option<&str> = None;
             for part in &parts {
@@ -1438,8 +1416,6 @@ fn handle_solana_input(
                 println!("  Severity: critical | high | medium | low | info");
                 return InputResult::Continue;
             }
-            // Strip a trailing --rec="..." (or unquoted) before splitting
-            // severity + title so the title can contain spaces.
             let (rest, rec): (&str, Option<String>) = match arg.find("--rec=") {
                 Some(idx) => {
                     let head = arg[..idx].trim_end();
@@ -1474,8 +1450,6 @@ fn handle_solana_input(
             dispatch_solana(handle, client, base_url, contract, body, steps)
         }
         "seq" | "sequence" => {
-            // Solana lacks the dedicated sequence-narrative endpoint; fall back
-            // to the Session view which renders the step list with CU/diffs.
             dispatch_solana(
                 handle,
                 client,
@@ -1509,9 +1483,6 @@ fn handle_solana_input(
                 println!("  Usage: save <name> [--with-keypairs]");
                 return InputResult::Continue;
             }
-            // SDD-03: parse the optional --with-keypairs flag. The flag may
-            // come before or after <name>; everything else is rejected so a
-            // typo never silently saves without secrets.
             let mut with_keypairs = false;
             let mut name: Option<&str> = None;
             for tok in arg.split_whitespace() {
@@ -1590,9 +1561,6 @@ fn handle_solana_input(
                     return InputResult::Continue;
                 }
             };
-            // SDD-03: warn the auditor at load time when the bundle carries
-            // plaintext keypairs, so accidental git commits get a visible
-            // reminder. Cheap detection — we already have the JSON in memory.
             if json.contains("\"keypairs_present\": true")
                 || json.contains("\"keypairs_present\":true")
             {
@@ -1625,9 +1593,6 @@ fn handle_solana_input(
             steps,
         ),
         "export" | "ex" => {
-            // Parse optional --auditor=, --version=, --date= flags. Anything
-            // else is an error so a typo never produces a half-empty
-            // deliverable.
             let mut auditor: Option<String> = None;
             let mut version: Option<String> = None;
             let mut date: Option<String> = None;
@@ -2006,9 +1971,6 @@ fn sync_scenarios(
     }
 }
 
-/// Fetch current session steps from the server (for --attach prompt sync).
-/// Dispatches by backend kind: Solidity uses `CommandResult::SessionView`,
-/// Solana uses `SolanaCommandResult::SessionView` (different shape, same name).
 fn sync_steps(
     handle: &tokio::runtime::Handle,
     client: &reqwest::Client,
@@ -2148,7 +2110,6 @@ fn parse_trace_args(arg: &str) -> TraceArgs {
             interactive = true;
             i += 1;
         } else if let Some(rest) = t.strip_prefix('+') {
-            // `+N` — force-inline the call at canonical step_id N.
             if let Ok(id) = rest.parse::<usize>() {
                 expand.push(id);
             }
@@ -2157,9 +2118,6 @@ fn parse_trace_args(arg: &str) -> TraceArgs {
             && target.is_none()
             && tokens.get(i + 1).and_then(|s| s.parse::<usize>().ok()).is_some()
         {
-            // `tr step <N>` — re-render a persisted session step.
-            // Only treated as a keyword when the next token parses as usize;
-            // otherwise `step` falls through to be treated as a function name.
             let idx = tokens[i + 1].parse::<usize>().unwrap();
             target = Some(TraceTarget::SessionStep(idx));
             i += 2;
@@ -2173,8 +2131,6 @@ fn parse_trace_args(arg: &str) -> TraceArgs {
     TraceArgs { target, depth, reverts, expand, interactive }
 }
 
-/// Strip a single surrounding pair of double or single quotes from a CLI flag
-/// value (`--rec="hello world"` → `hello world`). No-op when not quoted.
 fn strip_quotes(s: &str) -> &str {
     let s = s.trim();
     if (s.starts_with('"') && s.ends_with('"') && s.len() >= 2)
@@ -2389,8 +2345,6 @@ fn print_findings_list(
         _ => println!("  Could not retrieve findings."),
     }
 }
-
-// ─── Output formatting ─────────────────────────────────────────────────────
 
 fn print_result(result: &CommandResult, steps: &[String]) {
     match result {
@@ -2674,8 +2628,6 @@ fn print_narrative(val: &serde_json::Value) {
         println!("  {} [{}]{}", c_bright(name), c_accent(access), mod_str);
     }
 
-    // Build the list of sections that will be shown so we know which is last
-    // (for picking the trailing branch character).
     #[derive(Default)]
     struct TransitiveGroup {
         writes: Vec<String>,
@@ -2737,7 +2689,6 @@ fn print_narrative(val: &serde_json::Value) {
         sections.push(Section::StringList { label: "Events", label_color: SectionColor::Accent, items: events });
     }
 
-    // Transitive effects (grouped by chain)
     let collect_transitive = |key: &str| -> Vec<(Vec<String>, String)> {
         val.get(key)
             .and_then(|v| v.as_array())
@@ -3055,7 +3006,6 @@ fn print_inline_help(cmd: &str) {
         (&["save"],           "save <name>",                     "Save session to disk. Example: save my-audit"),
         (&["load"],           "load <name>",                     "Load session from disk. Example: load my-audit"),
         (&["browser"],        "browser",                         "Open the web UI in a browser."),
-        // Solana-specific commands:
         (&["users"],          "users [new <name> [<lamports>]]", "List or create keypairs in active scenario."),
         (&["airdrop", "air"], "airdrop <name> <lamports>",       "Top up a user's SOL balance."),
         (&["tw", "time-warp"],"time-warp <delta_seconds>",       "Warp the Clock sysvar (positive forward, negative back)."),
@@ -3072,8 +3022,6 @@ fn print_inline_help(cmd: &str) {
     }
     println!("  {} unknown command: {}", c_danger("✗"), cmd);
 }
-
-// ─── Reedline: Prompt ──────────────────────────────────────────────────────
 
 struct IloldPrompt {
     contract: String,
@@ -3121,8 +3069,6 @@ impl Prompt for IloldPrompt {
         }
     }
 }
-
-// ─── Reedline: Completer ───────────────────────────────────────────────────
 
 struct IloldCompleter {
     functions: Vec<String>,

@@ -18,15 +18,6 @@ use crate::error::SolanaError;
 use crate::execute::{build_instruction, build_transaction, VmHost};
 use crate::model::{InstructionDef, ProgramDef};
 
-/// Outcome of executing a Call against the VM.
-///
-/// `step_index = Some(N)` means the call succeeded and was appended to
-/// `session.steps[N]`. `step_index = None` means the VM rejected the call
-/// (Anchor constraint, custom `require!`, runtime panic) — we deliberately
-/// do NOT push a step in that case so the scenario timeline only contains
-/// runs that actually mutated state. Mirrors how Solidity's `c <fn>` only
-/// records valid entry points; the auditor still gets the full trace via
-/// the `trace` field for inspection.
 pub struct StepOutcome {
     pub step_index: Option<usize>,
     pub trace: RuntimeTrace,
@@ -60,10 +51,7 @@ pub fn add_solana_step(
     let tx = build_transaction(instruction.clone(), vm.payer(), extra_signers, blockhash)?;
     let account_keys: Vec<Address> = tx.message.static_account_keys().to_vec();
     let result = vm.svm_mut().send_transaction(tx);
-    // LiteSVM does NOT rotate the blockhash automatically. Two Calls in the same
-    // session would collide (BlockhashNotFound) and the second silently fails
-    // with cu=0 / no state mutation. Expire after every send so the next Call
-    // gets a fresh blockhash.
+    // LiteSVM does not rotate the blockhash automatically; force expiry.
     vm.svm_mut().expire_blockhash();
 
     let (runtime_trace, mutations) = match result {
@@ -109,10 +97,6 @@ pub fn add_solana_step(
         }
     };
 
-    // Failed Calls never reach the timeline: the auditor wanted to try the
-    // attack, the VM blocked it, and the canonical model is "session steps
-    // are real successful transactions". The full trace is still returned
-    // so the CLI can print logs / CU / error.
     if runtime_trace.error.is_some() {
         return Ok(StepOutcome { step_index: None, trace: runtime_trace });
     }
@@ -142,10 +126,6 @@ pub fn add_solana_step(
 }
 
 
-// Maps the LiteSVM `inner_instructions` (Vec<Vec<InnerInstruction>>, one outer
-// entry per top-level ix) into the trace shape consumed by the overlay. The
-// `program_id_index` is into `tx.message.static_account_keys`, captured before
-// `send_transaction` consumed the tx.
 fn project_inner_instructions(
     meta: &TransactionMetadata,
     account_keys: &[Address],
@@ -157,10 +137,6 @@ fn project_inner_instructions(
                 .get(ii.instruction.program_id_index as usize)
                 .map(|k| k.to_string())
                 .unwrap_or_else(|| format!("idx:{}", ii.instruction.program_id_index));
-            // Anchor instruction discriminators are the first 8 bytes; the
-            // first byte (or its bs58 head) is enough as a stable, legible
-            // disambiguator for the overlay aggregation key. Empty payload
-            // gets a placeholder so cpi_edges still aggregates by program.
             let instruction = if ii.instruction.data.is_empty() {
                 "ix".to_string()
             } else {

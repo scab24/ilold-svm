@@ -12,10 +12,6 @@ pub struct ExplorationSession {
     pub journal: AuditJournal,
     #[serde(default)]
     pub forked_from: Option<ForkOrigin>,
-    /// Counts CallFailed outcomes per instruction. Lives off `steps` because
-    /// failed Calls deliberately do not push a step (Solidity-aligned model)
-    /// — without this counter the runtime overlay could never surface
-    /// "rejected Nx" badges.
     #[serde(default)]
     pub failed_calls_per_ix: BTreeMap<String, u32>,
 }
@@ -36,10 +32,6 @@ pub struct ExplorationStep {
     pub trace_config: TraceConfig,
     #[serde(default)]
     pub runtime_trace: Option<serde_json::Value>,
-    /// Solana-only: the original Call inputs (args, accounts, signer names) so
-    /// LoadSession can replay the step against a fresh VM and reconstruct the
-    /// post-step accounts state. None for Solidity (no replay) or for steps
-    /// that came from an older save without this field.
     #[serde(default)]
     pub call_payload: Option<serde_json::Value>,
 }
@@ -114,10 +106,6 @@ impl ExplorationSession {
             .or_insert(0) += 1;
     }
 
-    /// Reset scenario-local observations that must not survive a fork.
-    /// Currently only `failed_calls_per_ix`, but kept as a single helper so
-    /// future scenario-local counters land in one place instead of fanning
-    /// out across every fork site.
     pub fn reset_scenario_local_observations(&mut self) {
         self.failed_calls_per_ix.clear();
     }
@@ -206,7 +194,6 @@ mod tests {
         assert_eq!(s.failed_calls_per_ix.get("stake").copied(), Some(2));
         s.reset_scenario_local_observations();
         assert!(s.failed_calls_per_ix.is_empty());
-        // Steps stay; the reset is scoped to scenario-local observations.
         assert_eq!(s.steps.len(), 1);
     }
 

@@ -66,20 +66,13 @@
   let selectedPath: any = $state(null);
   let funcPaths: Record<string, any> = $state({});
   let expandedFuncs: Set<string> = $state(new Set());
-  // Driven by SvelteFlow's onselectionchange — used only for the status bar
-  // selection chip. Kept as a plain count (not the full node list) since no
-  // other consumer needs per-node selection data at this level.
   let selectionCount: number = $state(0);
-  // Default: Seq mode is the auditor-friendly view; Session mode flips the
-  // sidebar click into "add step" and hides exploration nodes on the canvas
-  // so only the scenarios tree is visible.
   let mode: 'cfg' | 'sequences' | 'session' = $state('sequences');
   let seqTree: any = $state(null);
   let seqAnalysis: SequenceAnalysis | null = $state(null);
   let seqExpanded: Map<string, boolean> = $state(new Map());
   let seqDirection: 'TB' | 'LR' = $state('TB');
 
-  // Context menu: right-click on nodes
   let contextMenu: {
     x: number;
     y: number;
@@ -89,18 +82,12 @@
     sessionStep?: { stepIndex: number };
   } | null = $state(null);
 
-  let canvasFuncs: Set<string> = $state(new Set()); // functions currently on canvas
+  let canvasFuncs: Set<string> = $state(new Set());
 
-  // Project map (all contracts in the workspace) — fetched once on mount so
-  // the Cmd+K palette can offer cross-contract navigation without every
-  // keystroke hitting the REST endpoint.
   let projectMap: MapContract[] = $state([]);
 
-  // Inline source-viewer panel state. Null when closed. Set by the
-  // ContextMenu "View source" entry.
   let sourcePanel: { func: string } | null = $state(null);
 
-  // Session → canvas auto-paint state
   let sessionVisCount = $state(0);
   const sessionHighlight = $derived(getHighlightedFunction());
 
@@ -131,28 +118,16 @@
     return null;
   }
 
-  // BFS tree layout constants for seq subtrees (shared by relayoutSeqTree)
   const SEQ_NODE_W = 220;
   const SEQ_NODE_H = 80;
-  const SEQ_SIBLING_GAP = 30; // gap between siblings at the same level
-  const SEQ_LEVEL_GAP = 120;  // gap between parent and children rank
+  const SEQ_SIBLING_GAP = 30;
+  const SEQ_LEVEL_GAP = 120;
 
-  /**
-   * Re-layout a single seq subtree rooted at `rootId` (a function node).
-   * - Anchors the root to its live (drag-aware) position so user drags are preserved.
-   * - BFS from root via seq-edges; siblings are distributed perpendicular to seqDirection.
-   * - Updates positions of all seq-next nodes in the subtree.
-   * - Updates sourceHandle/targetHandle on all seq-edges in the subtree to match seqDirection.
-   *
-   * Callers MUST add any new nodes/edges to the store BEFORE invoking this helper,
-   * so the BFS walk includes them. Placeholder positions on new nodes are fine.
-   */
   function relayoutSeqTree(rootId: string) {
     const root = findNode(rootId);
     if (!root) return;
     const rootPos = liveNodePosition(rootId) ?? root.position;
 
-    // 1. Collect the full seq subtree (root + all transitively-linked seq-next nodes)
     const subtreeIds = new Set<string>([rootId]);
     let added = true;
     while (added) {
@@ -168,7 +143,6 @@
       }
     }
 
-    // 2. Build children index from seq-edges restricted to the subtree
     const childrenMap = new Map<string, string[]>();
     const subtreeEdgeIds = new Set<string>();
     for (const e of getEdges()) {
@@ -180,7 +154,6 @@
       }
     }
 
-    // 3. BFS from root, assigning levels
     const levels = new Map<string, number>();
     levels.set(rootId, 0);
     const queue = [rootId];
@@ -197,7 +170,6 @@
       }
     }
 
-    // 4. Group nodes by level and compute positions anchored at rootPos
     const byLevel: string[][] = Array.from({ length: maxLevel + 1 }, () => []);
     for (const [id, lvl] of levels) byLevel[lvl].push(id);
 
@@ -207,7 +179,6 @@
       const ids = byLevel[lvl];
       const count = ids.length;
       if (isLR) {
-        // Children to the right, stacked vertically at same X
         const totalH = count * SEQ_NODE_H + (count - 1) * SEQ_SIBLING_GAP;
         const startY = rootPos.y + SEQ_NODE_H / 2 - totalH / 2;
         const x = rootPos.x + lvl * (SEQ_NODE_W + SEQ_LEVEL_GAP);
@@ -215,7 +186,6 @@
           posMap.set(id, { x, y: startY + i * (SEQ_NODE_H + SEQ_SIBLING_GAP) });
         });
       } else {
-        // Children below, in a horizontal row at same Y
         const totalW = count * SEQ_NODE_W + (count - 1) * SEQ_SIBLING_GAP;
         const startX = rootPos.x + SEQ_NODE_W / 2 - totalW / 2;
         const y = rootPos.y + lvl * (SEQ_NODE_H + SEQ_LEVEL_GAP);
@@ -225,7 +195,6 @@
       }
     }
 
-    // 5. Apply positions to seq-next nodes in this subtree
     setNodes(getNodes().map(n => {
       if (n.data._type === 'seq-next' && posMap.has(n.id)) {
         return { ...n, position: posMap.get(n.id)! };
@@ -233,7 +202,6 @@
       return n;
     }));
 
-    // 6. Update handle orientation on seq-edges in this subtree to match seqDirection
     const sh = isLR ? 'r' : 'b';
     const th = isLR ? 'l' : 't';
     setEdges(getEdges().map(e => {
@@ -244,9 +212,7 @@
     }));
   }
 
-  /** Re-layout and re-orient all expanded seq subtrees (used when seqDirection changes) */
   function reorientAllSeqSubtrees() {
-    // Find all root functions that have seq-next children
     const roots = new Set<string>();
     for (const n of getNodes()) {
       if (n.data._type === 'seq-next') {
@@ -259,15 +225,12 @@
     }
   }
 
-  /** Merge an opacity value into an edge's style string */
   function edgeStyle(base: string | undefined, opacity: number): string {
-    // Remove existing opacity from base style, then append new one
     const cleaned = (base ?? '').replace(/opacity:\s*[\d.]+;?/g, '').trim();
     const sep = cleaned && !cleaned.endsWith(';') ? '; ' : ' ';
     return `${cleaned}${cleaned ? sep : ''}opacity: ${opacity}`.trim();
   }
 
-  /** Reset all _dimmed state on nodes and edges */
   function resetAllDimmed() {
     setNodes(getNodes().map(n => {
       if ('_dimmed' in n.data && n.data._dimmed) {
@@ -283,7 +246,6 @@
     }));
   }
 
-  /** Remove every seq-next descendant of a seq node. */
   function collapseAllDescendants(nodeId: string) {
     const allDesc = findDescendants(nodeId);
     const toRemove = new Set<string>();
@@ -402,7 +364,6 @@
         targetHandle: 't',
       };
     }
-    // Unconditional / fallback
     return {
       color: 'var(--color-text-dim)',
       animated: false,
@@ -411,18 +372,7 @@
     };
   }
 
-  // ── Session → canvas auto-paint (Phase S5) ──────────────────
-  // The session store owns an `activeScenario` + Map<name, steps[]>. This
-  // effect composes ALL scenarios into a unified tree (shared prefix +
-  // divergent tails) via `composeScenarioTree`, then syncs the canvas.
-  //
-  // Strategy: on every run, remove all `session:*` step nodes/edges and
-  // re-emit from the composed tree. Cheap (nodes are tiny) and avoids a
-  // fragile per-id diff. `activeScenario` is read so restyling (pill colors,
-  // active glow vs muted) re-runs when the user switches scenarios even if
-  // the tree shape is identical.
   $effect(() => {
-    // Reactive reads — trigger re-run on scenario changes + active-scenario flip.
     const scenarios = getScenarios();
     const forkOrigins = getForkOrigins();
     const active = getActiveScenario();
@@ -435,10 +385,6 @@
 
     const tree = composeScenarioTree(scenarios, forkOrigins);
 
-    // Graph-store reads/writes are wrapped in untrack() to prevent a reactive
-    // cycle: reading getNodes() would subscribe this effect to `nodes`, and
-    // the subsequent removeNodesById/addNodes/addEdges would re-trigger it
-    // (infinite loop that froze the canvas on every c <func>).
     untrack(() => {
       const toRemove = new Set<string>();
       for (const n of getNodes()) {
@@ -453,11 +399,6 @@
 
       const allFuncs = [...(contract?.functions ?? []), ...(contract?.inherited_functions ?? [])];
 
-      // Lane-per-scenario tree. Each scenario renders only its divergent
-      // tail (`steps[at_step..end]`) on its own horizontal lane; the
-      // inherited prefix is reused from the origin's lane. A fork edge
-      // connects origin:step:{at_step-1} → self:step:{at_step} so branches
-      // visibly emerge from their fork point.
       const SESSION_BASE_X = 200;
       const SESSION_BASE_Y = 300;
       const SESSION_STEP_WIDTH = 280;
@@ -527,9 +468,6 @@
     });
   });
 
-  // Mode visibility filter: in session mode show only session nodes/edges; in
-  // any other mode hide them. Nodes are kept in the graph so switching back
-  // restores them without re-painting.
   $effect(() => {
     const currentMode = mode;
     untrack(() => {
@@ -546,14 +484,6 @@
     });
   });
 
-  // Invalidate stale NodeInspector selection. Any flow that removes
-  // nodes (CFG collapse, removeFuncFromCanvas, removeSeqNode, DEL key,
-  // Clear from the sidebar) converges here — callers don't need to
-  // remember to null out selectedNode themselves. The read inside
-  // findNode creates a reactive dependency so the guard re-runs whenever
-  // the graph store mutates. Safe against loops: when we set
-  // selectedNode = null the effect re-runs, short-circuits on the null
-  // check, and exits without further writes.
   $effect(() => {
     if (!selectedNode) return;
     if (!findNode(selectedNode.id)) {
@@ -562,7 +492,6 @@
     }
   });
 
-  // Highlight the function node when the session broadcasts session_highlight
   $effect(() => {
     const funcName = sessionHighlight;
     if (!funcName) return;
@@ -617,8 +546,6 @@
       },
     });
     solanaCanvasIxs = new Set([...solanaCanvasIxs, ixName]);
-    // Paint CPI edges that the overlay already knows about for this ix —
-    // happens when the auditor added an ix node after Calls had already run.
     paintCpiEdges();
     if (flowApi) flowApi.fitView({ nodes: [{ id: `ix:${ixName}` }], padding: 0.5, duration: 400 });
   }
@@ -633,8 +560,6 @@
       if (data?._type === 'account' && data.parentInstruction === ixName) ids.add(n.id);
     }
     removeNodesById(ids);
-    // Drop CPI edges that started at this ix; placeholder externals that lose
-    // their last incoming cpi edge are pruned by orphanCleanup below.
     const edgePrefix = `cpi:${ixName}->`;
     const filtered = getEdges().filter((e) => !e.id.startsWith(edgePrefix));
     if (filtered.length !== getEdges().length) setEdges(filtered);
@@ -741,9 +666,6 @@
 
       solanaTraceCount = tree.nodes.length;
 
-      // Drop runtime entries whose trace node no longer exists (after Clear,
-      // Back, scenario delete) so a re-execute of the same step doesn't show
-      // stale CU/logs from a previous run.
       const liveKeys = new Set(tree.nodes.map((n) => `${n._scenario}:${n.stepIndex}`));
       let mutated = false;
       const next = new Map(solanaRuntimeByStep);
@@ -951,10 +873,6 @@
     const unsub = subscribeWs('solana_users_changed', () => {
       if (solanaProgram) refreshSolanaUsers();
     });
-    // Fill solanaRuntimeByStep from the broadcast so calls executed in another
-    // terminal (CLI, second browser) show CU/diffs/logs in this canvas instead
-    // of "0 CU 0 diffs". Locally-issued calls also flow through here, harmless
-    // because handleSolanaSubmit already wrote the same data.
     const unsubAdd = subscribeWs('session_add_node', (msg) => {
       const runtime = (msg as any).runtime;
       if (!runtime) return;
@@ -1028,10 +946,6 @@
       const scenario = getActiveScenario() ?? 'main';
       const runtimeKey = `${scenario}:${sa.step_index}`;
       const next = new Map(solanaRuntimeByStep);
-      // SDD T-R47: StepAdded now carries the structured error from the VM
-      // (None when the Call succeeded). Falls back to scanning the logs for
-      // the historical AnchorError / failed: / panicked markers when the
-      // field is absent — covers older saves replayed in this session.
       const explicitError: string | null = (sa.error as string | null | undefined) ?? null;
       const logs: string[] = sa.logs_excerpt ?? [];
       const inferredError = logs.find((l) =>
@@ -1048,11 +962,6 @@
     await refreshSolanaUsers();
   }
 
-  // Guard against navigation race: an async onMount that awaits multiple
-  // network calls can complete AFTER the user navigates to a different
-  // contract, overwriting the new contract's state with the old one's
-  // data. mountToken is captured before the first await; if the user
-  // navigates we bump cancel via onDestroy and the guard short-circuits.
   let mountCancelled = $state(false);
   onDestroy(() => {
     mountCancelled = true;
@@ -1065,9 +974,6 @@
     if (!contractName) return;
     const expected = contractName;
     const stillFresh = () => !mountCancelled && page.params.name === expected;
-    // Graph store is global — stale nodes from a previous contract must be
-    // wiped or they'd pollute this contract's canvas (and leave the sidebar
-    // out of sync because local Sets re-init empty on re-mount).
     clearGraph();
     canvasFuncs = new Set();
     expandedFuncs = new Set();
@@ -1105,7 +1011,6 @@
       const callgraphData = await getCallGraph(contractName);
       if (!stillFresh()) return;
       callgraphRaw = callgraphData;
-      // Sequences/analysis are Solidity-only; expected to 400 for Solana.
       try {
         const tree = await getSequences(contractName);
         if (stillFresh()) seqTree = tree;
@@ -1123,13 +1028,6 @@
     }
   });
 
-  // Listen for search result navigation. Only `getSearchNavigate()` is
-  // tracked — everything else is accessed via untrack so mutations inside
-  // the IIFE (canvasFuncs, funcPaths, expandedFuncs, edges via
-  // highlightPath) don't re-enter this effect and trigger an
-  // effect_update_depth_exceeded loop. The effect re-runs exactly when
-  // the palette publishes a new navigation target; subsequent state
-  // writes are handled inside the async task.
   $effect(() => {
     const nav = getSearchNavigate();
     if (!nav) return;
@@ -1177,10 +1075,6 @@
     });
   });
 
-  // Sidebar click dispatcher. In Session mode, the sidebar is the entry
-  // point for building a scenario — clicking a function fires a Call
-  // command and the WS session_add_node event repaints the scenario tree.
-  // In CFG/Seq modes, clicking adds the function as an exploration node.
   function notifyFailure(label: string, e: unknown) {
     const reason = e instanceof Error ? e.message : String(e);
     console.warn(`${label} failed:`, e);
@@ -1208,7 +1102,6 @@
     const nodeData = callgraphRaw.nodes.find(n => n.data.label === funcName);
     if (!nodeData) return;
 
-    // Look up enrichment data from ContractDetail
     const allFuncs = [...(contract?.functions ?? []), ...(contract?.inherited_functions ?? [])];
     const funcDetail = allFuncs.find((f: any) => f.name === funcName);
 
@@ -1234,7 +1127,6 @@
       },
     } as Node<GraphNodeData>);
 
-    // Add call edges where BOTH source and target are on canvas
     for (const e of callgraphRaw.edges) {
       const srcOnCanvas = canvasFuncs.has(
         callgraphRaw.nodes.find(n => n.data.id === e.data.source)?.data.label ?? ''
@@ -1291,18 +1183,15 @@
 
     const toRemove = new Set<string>([nodeId]);
 
-    // CFG children (blocks with _parentFunc === funcName)
     for (const n of getNodes()) {
       if ('_parentFunc' in n.data && n.data._parentFunc === funcName) {
         toRemove.add(n.id);
       }
     }
 
-    // Seq descendants (recursive via _seqParent)
     const seqDesc = findDescendants(nodeId);
     for (const id of seqDesc) toRemove.add(id);
 
-    // Also find seq nodes whose _seqParent starts with nodeId→
     for (const n of getNodes()) {
       if ('_seqParent' in n.data) {
         const sp = n.data._seqParent as string;
@@ -1326,10 +1215,6 @@
     seqExpanded = new Map(seqExpanded);
   }
 
-  // Keyboard-driven delete from the canvas (Figma/Excalidraw pattern).
-  // Dispatches each selected node to the right existing helper so all the
-  // store bookkeeping (canvasFuncs, expandedFuncs, seqExpanded, dim state)
-  // stays in one place. Session mode is guarded at the canvas prop level.
   function handleNodesDelete(nodes: Node<GraphNodeData>[]) {
     if (mode === 'session') return;
     const funcsToRemove = new Set<string>();
@@ -1350,14 +1235,12 @@
     selectedNode = null;
   }
 
-  // --- Event handlers ---
 
   async function handleNodeTap(node: Node<GraphNodeData>) {
     const data = node.data;
 
     if (!selectedNode || selectedNode.id !== node.id) {
       selectedPath = null;
-      // Reset CFG block highlighting when clicking a different node
       setNodes(getNodes().map(n => {
         if (n.data._type === 'block' && '_dimmed' in n.data && n.data._dimmed) {
           return { ...n, data: { ...n.data, _dimmed: false } as GraphNodeData };
@@ -1389,9 +1272,6 @@
     resetAllDimmed();
   }
 
-  // Right-click "⎇ Fork scenario here": forks the active scenario, keeping
-  // steps [0..=stepIndex] (i.e. truncate at stepIndex + 1). Surfaces backend
-  // errors via console.warn — ScenarioStore enforces uniqueness of names.
   async function handleForkScenario(stepIndex: number) {
     contextMenu = null;
     const name = promptScenarioName();
@@ -1439,15 +1319,11 @@
     }
   }
 
-  // Right-click "{} View source": open the inline CodeMirror panel.
   function handleViewSource(funcName: string) {
     contextMenu = null;
     sourcePanel = { func: funcName };
   }
 
-  // Right-click "↗ Open in code": fetch the function's absolute path + line
-  // from the source endpoint and fire the `vscode://` deep link. If no IDE
-  // is registered the browser silently drops the request — no UI nag.
   async function handleOpenInIde(funcName: string) {
     contextMenu = null;
     const projectName = kind === 'solana' ? solanaProgram?.name : contract?.name;
@@ -1462,10 +1338,6 @@
     }
   }
 
-  // Right-click "✕ Remove from here": truncate the active scenario at
-  // `stepIndex` by firing N Back commands. N = current length - stepIndex.
-  // Using Back (which the backend already supports) avoids needing a new
-  // truncate command on the server.
   async function handleRemoveFromHere(stepIndex: number) {
     contextMenu = null;
     const active = getActiveScenario();
@@ -1484,10 +1356,6 @@
 
   function handleContextMenu(event: MouseEvent, node: Node<GraphNodeData>) {
     const data = node.data;
-    // "Fork scenario here" is only meaningful when the active scenario's
-    // path passes through this node — either it owns the node or inherits
-    // it from an ancestor. `_scenariosPassingThrough` already encodes both
-    // cases so the check is a single Array.includes.
     let sessionStep: { stepIndex: number } | undefined;
     if ((data._type === 'function' || data._type === 'trace') && data._sessionStep === true) {
       const { _scenariosPassingThrough: scns, _activeScenario: active, stepIndex: idx } = data;
@@ -1506,11 +1374,7 @@
   }
 
   async function handleNodeClick(node: Node<GraphNodeData>, event?: MouseEvent) {
-    // Selection first (sync), then expand/collapse (async)
     handleNodeTap(node);
-    // In Session mode the canvas is read-only for exploration — clicks only
-    // select. Expansion would add CFG blocks / seq-next children that we
-    // deliberately hide in this mode.
     if (mode === 'session') return;
     const d = node.data;
     if (d._type === 'instruction' && mode === 'cfg') {
@@ -1533,10 +1397,6 @@
   }
 
   async function handleSeqNodeTap(funcName: string, nodeId: string, seqParent: string, event?: MouseEvent) {
-    // Plain click commits to one sibling path: collapse the auto-expanded
-    // sub-trees of all siblings at this level. Shift+click skips the
-    // collapse so the user can keep multiple branches open in parallel —
-    // matches the "Shift+click → add branch" hint shown in Legend.
     const keepSiblings = event?.shiftKey === true;
     if (seqParent && !keepSiblings) {
       const siblings = getNodes().filter(
@@ -1562,7 +1422,6 @@
     const parentId = anchorNodeId || `${contract.name}::${funcName}`;
 
     if (expandedFuncs.has(funcName)) {
-      // --- COLLAPSE ---
       const toRemove = new Set<string>();
       for (const n of getNodes()) {
         if ('_parentFunc' in n.data && n.data._parentFunc === funcName) {
@@ -1577,14 +1436,12 @@
       return;
     }
 
-    // --- EXPAND ---
     if (!cfgCache[funcName]) {
       cfgCache[funcName] = await getCfg(contract.name, funcName);
     }
     const cfg = cfgCache[funcName];
     const parentPos = liveNodePosition(parentId) ?? { x: 300, y: 200 };
 
-    // 1. Build Svelte Flow nodes (initially at parent position for animation)
     const cfgNodes: Node<GraphNodeData>[] = cfg.nodes.map(n => ({
       id: `cfg:${funcName}:${n.data.id}`,
       type: 'block',
@@ -1598,7 +1455,6 @@
       },
     }));
 
-    // 2. Build edges with color-coded styles, arrows, and explicit handles
     const cfgEdges: Edge[] = cfg.edges.map((e, i) => {
       const es = cfgEdgeStyle(e.data.kind);
       return {
@@ -1622,7 +1478,6 @@
       };
     });
 
-    // 3. Link edge: function node → CFG entry block
     const entryNode = cfg.nodes.find(n => n.data.node_type === 'Entry');
     if (entryNode) {
       cfgEdges.push({
@@ -1638,12 +1493,10 @@
       });
     }
 
-    // 4. Run dagre on CFG subset to get positions
     const layoutNodes = runDagreLayout(cfgNodes, cfgEdges, {
       rankDir: 'TB', nodeSep: 40, rankSep: 60, nodeWidth: 180,
     });
 
-    // 5. Offset all positions below the parent function node
     let minX = Infinity, minY = Infinity, maxX = -Infinity;
     for (const n of layoutNodes) {
       if (n.position.x < minX) minX = n.position.x;
@@ -1659,7 +1512,6 @@
       finalPositions.set(n.id, { x: n.position.x + offsetX, y: n.position.y + offsetY });
     }
 
-    // Add nodes at their final dagre-computed positions (no animation, predictable)
     for (const n of cfgNodes) {
       const final = finalPositions.get(n.id);
       if (final) n.position = final;
@@ -1667,7 +1519,6 @@
     addNodes(cfgNodes);
     addEdges(cfgEdges);
 
-    // Dim function nodes + call edges
     dimFunctionLayer(parentId);
 
     expandedFuncs.add(funcName);
@@ -1675,40 +1526,27 @@
   }
 
   async function toggleSeqExpand(funcName: string, parentNodeId: string) {
-    // ── COLLAPSE ──
     if (seqExpanded.has(parentNodeId)) {
       collapseAllDescendants(parentNodeId);
       seqExpanded.delete(parentNodeId);
       seqExpanded = new Map(seqExpanded);
 
-      // If no seq-next nodes remain, un-dim everything
       const anySeq = getNodes().some(n => n.data._type === 'seq-next');
       if (!anySeq) resetAllDimmed();
       return;
     }
 
-    // ── EXPAND ──
     if (!seqTree || !seqTree.functions) return;
 
-    // Find the root function node for this seq subtree (walk up _seqParent chain)
     const rootFunc = findSeqRootFunction(parentNodeId);
     if (!rootFunc) return;
 
     const seqFunctions: Array<{ name: string; visibility: string; read_only: boolean; path_count: number }> = seqTree.functions;
 
-    // Show every contract function as a candidate next-step, matching the
-    // CLI `f` listing. The "interesting transition" signal (⚠ conditions
-    // badge + dashed border) is preserved automatically via the per-child
-    // `_transition` lookup below — no filtering needed here.
     const targets = seqFunctions;
 
-    // Reuse the same lookup the scenarios canvas uses to pull modifier/
-    // mutability info that isn't on `SequenceFunction`. `contract` already
-    // holds the full function detail.
     const allFuncs = [...(contract?.functions ?? []), ...(contract?.inherited_functions ?? [])];
 
-    // Build new seq-next children with placeholder positions — relayoutSeqTree
-    // will assign final positions from the shared BFS walk.
     const newNodes: Node<GraphNodeData>[] = [];
     const newEdges: Edge[] = [];
     for (const func of targets) {
@@ -1750,8 +1588,6 @@
       });
     }
 
-    // Commit new nodes/edges to the store first, then let the shared helper
-    // re-run BFS over the whole subtree (root + existing + new) coherently.
     addNodes(newNodes);
     addEdges(newEdges);
     relayoutSeqTree(rootFunc.id);
@@ -1795,19 +1631,16 @@
   function highlightPath(funcName: string, path: any) {
     selectedPath = path;
 
-    // Build set of highlighted block IDs
     const highlightedIds = new Set<string>(
       path.nodes.map((n: any) => `cfg:${funcName}:b${n.block_id}`)
     );
 
-    // Build set of highlighted edge pairs (consecutive path nodes)
     const highlightedEdgePairs = new Set<string>();
     const blockIds = [...highlightedIds];
     for (let i = 0; i < blockIds.length - 1; i++) {
       highlightedEdgePairs.add(`${blockIds[i]}→${blockIds[i + 1]}`);
     }
 
-    // Update nodes: dim all CFG blocks except highlighted ones
     setNodes(getNodes().map(n => {
       if (n.data._type === 'block' && n.data._parentFunc === funcName) {
         const dimmed = !highlightedIds.has(n.id);
@@ -1816,7 +1649,6 @@
       return n;
     }));
 
-    // Update edges: dim all CFG edges except path edges
     setEdges(getEdges().map(e => {
       if (e.data?._parentFunc === funcName && e.data?._type === 'cfg-edge') {
         const key = `${e.source}→${e.target}`;
@@ -1827,11 +1659,6 @@
     }));
   }
 
-  // ── Cmd+K palette: publish context commands ──────────────────────────
-  // Rebuilds whenever any input state changes (contract, scenarios,
-  // active scenario, mode, canvas state, project map). The palette store
-  // is global, so on route unmount we clear the list to avoid leaking
-  // stale handlers back to the next page.
   $effect(() => {
     if (kind === 'solana' && solanaProgram) {
       const prog = solanaProgram;
@@ -1893,14 +1720,12 @@
     const ctr = contract;
     const cmds: Command[] = [];
 
-    // Modes — always present. Icon hints the layout.
     cmds.push(
       { id: 'mode:cfg', label: 'Mode: CFG', category: 'Mode', icon: '⊟', keywords: ['cfg', 'control flow'], run: () => switchMode('cfg') },
       { id: 'mode:sequences', label: 'Mode: Sequences', category: 'Mode', icon: '⇵', keywords: ['seq', 'calls'], run: () => switchMode('sequences') },
       { id: 'mode:session', label: 'Mode: Session', category: 'Mode', icon: '⎇', keywords: ['scenario', 'session'], run: () => switchMode('session') },
     );
 
-    // Canvas / terminal actions.
     cmds.push(
       { id: 'canvas:center', label: 'Center canvas', category: 'Action', icon: '⊙', keywords: ['fit', 'zoom', 'reset view'], run: () => { flowApi?.fitView({ padding: 0.1 }); } },
       { id: 'canvas:clear', label: 'Clear canvas', category: 'Action', icon: '✕', keywords: ['reset', 'wipe'], run: () => {
@@ -1910,16 +1735,11 @@
       { id: 'terminal:toggle', label: 'Toggle terminal', category: 'Action', icon: '>_', keywords: ['console', 'repl', 'pty'], run: () => toggleTerminal() },
     );
 
-    // Session controls — only meaningful while there is an active scenario
-    // with at least one step. We still expose them otherwise so users can
-    // discover the shortcut; the handlers already guard empty scenarios.
     cmds.push(
       { id: 'session:back', label: 'Back — remove last step', category: 'Action', icon: '↶', keywords: ['undo', 'step'], run: () => handleSessionBack() },
       { id: 'session:clear', label: 'Clear scenario', category: 'Action', icon: '🗑', keywords: ['reset scenario'], run: () => handleSessionClear() },
     );
 
-    // Scenario lifecycle. "Switch to X" and "Delete X" per existing
-    // scenario; "New scenario" always available.
     cmds.push({
       id: 'scenario:new',
       label: 'New scenario',
@@ -1952,11 +1772,6 @@
       }
     }
 
-    // Functions — own + inherited. Jump = add to canvas (Session mode
-    // turns it into an add-step, which matches the sidebar click).
-    // Solidity allows overloading by signature so names may repeat; we
-    // include the index in the id to keep every row uniquely keyed even
-    // when two rows end up with the same label.
     const allFuncs = [
       ...(ctr.functions ?? []).map((f) => ({ name: f.name, source: 'own' as const })),
       ...(ctr.inherited_functions ?? []).map((f) => ({ name: f.name, source: 'inherited' as const })),
@@ -1973,9 +1788,6 @@
       });
     });
 
-    // Cross-contract navigation. Skip the current one and dedupe by name
-    // — ProjectMap may list the same interface twice (keyed each would
-    // throw on duplicate ids).
     const seenContracts = new Set<string>([ctr.name]);
     for (const c of projectMap) {
       if (seenContracts.has(c.name)) continue;
@@ -1994,9 +1806,6 @@
     setPaletteCommands(cmds);
   });
 
-  // Clear published commands on unmount so the palette doesn't render
-  // stale handlers if the user lands on a page that doesn't publish its
-  // own list.
   onDestroy(() => {
     clearPaletteCommands();
   });

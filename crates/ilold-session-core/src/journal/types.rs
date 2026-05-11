@@ -34,14 +34,8 @@ pub struct Finding {
     pub description: String,
     pub notes: Vec<String>,
     pub created_at: String,
-    /// Step index that motivated the finding. Captured automatically at
-    /// recording time from `session.steps.len() - 1`. None when the finding
-    /// is recorded before any step has been executed.
     #[serde(default)]
     pub affected_step_index: Option<usize>,
-    /// Optional remediation suggestion (Solana auditor flow opts in via
-    /// `fi <sev> <title> --rec="…"`). When present the export markdown
-    /// renders a separate "Recommendation" block per finding.
     #[serde(default)]
     pub recommendation: Option<String>,
 }
@@ -187,7 +181,6 @@ mod tests {
         assert_eq!(j.findings.len(), 1);
         assert_eq!(j.findings[0].id, "F-01");
         assert_eq!(j.findings[0].created_at, "2026-03-31T10:00:00Z");
-        // add_finding also records a FindingRecorded entry
         assert_eq!(j.entries.len(), 1);
     }
 

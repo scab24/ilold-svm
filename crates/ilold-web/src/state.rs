@@ -28,12 +28,8 @@ use solana_keypair::Keypair;
 
 use serde::{Deserialize, Serialize};
 
-/// The default scenario name, auto-created for every fresh session.
 pub const DEFAULT_SCENARIO: &str = "main";
 
-/// Holds all scenarios for a contract. One is "active" at any time; commands
-/// without explicit scenario targeting operate on it. Insertion order is
-/// preserved via `order` for deterministic `names()` output.
 pub struct ScenarioStore {
     pub version: u32,
     pub contract: String,
@@ -118,13 +114,6 @@ impl ScenarioStore {
         Ok(())
     }
 
-    /// Serialize the entire store as v2 JSON (`{ version: 2, contract, active,
-    /// scenarios, order, [keypairs_present, keypairs] }`). When `opts.keypairs`
-    /// is `Some`, the file embeds the per-scenario user keypairs as 64-byte
-    /// arrays so a future load can rehydrate the same identities (PDAs and
-    /// signatures match across save/load). The boolean header
-    /// `keypairs_present` lets a reader detect a bundle with secrets without
-    /// parsing the body — see SDD-03 design.md threat-model section.
     pub fn save_to_json(&self, opts: SaveOpts<'_>) -> Result<String, String> {
         let (keypairs_present, keypairs) = match opts.keypairs {
             Some(map) => {
@@ -154,10 +143,6 @@ impl ScenarioStore {
         serde_json::to_string_pretty(&file).map_err(|e| format!("Serialize failed: {e}"))
     }
 
-    /// Parse a save file. Tries v2 (`ScenarioStoreFile`) first; on failure
-    /// falls back to v1 (bare `ExplorationSession`) and wraps it as a single
-    /// `main` scenario. Any structural anomaly (active not in scenarios,
-    /// empty order) is repaired so the returned store is always valid.
     pub fn load_from_json(json: &str) -> Result<(Self, Option<KeypairBundle>), String> {
         match serde_json::from_str::<ScenarioStoreFile>(json) {
             Ok(file) => {
@@ -194,7 +179,6 @@ impl ScenarioStore {
         if file.scenarios.is_empty() {
             return Err("Save file has no scenarios".into());
         }
-        // Repair `order`: if missing names or empty, rebuild from scenarios.
         let mut order = file.order;
         order.retain(|n| file.scenarios.contains_key(n));
         for name in file.scenarios.keys() {
@@ -202,8 +186,6 @@ impl ScenarioStore {
                 order.push(name.clone());
             }
         }
-        // Repair `active`: fall back to first ordered name if the recorded
-        // active was deleted out-of-band before the save.
         let active = if file.scenarios.contains_key(&file.active) {
             file.active
         } else {
@@ -222,13 +204,6 @@ impl ScenarioStore {
     }
 }
 
-/// On-disk wire format for `ScenarioStore`. Decoupled from the in-memory
-/// type to keep private fields private and allow the wire format to evolve
-/// independently. v1 saves are bare `ExplorationSession` JSON — they're
-/// detected by the failed parse + retry in `ScenarioStore::load_from_json`.
-///
-/// SDD-03 added the optional `keypairs_present` / `keypairs` pair, both
-/// `#[serde(default)]` so older v2 saves keep loading.
 #[derive(Serialize, Deserialize)]
 struct ScenarioStoreFile {
     version: u32,
@@ -242,14 +217,8 @@ struct ScenarioStoreFile {
     keypairs: Option<HashMap<String, HashMap<String, Vec<u8>>>>,
 }
 
-/// Bundle of per-scenario, per-user-name keypairs surfaced by
-/// `ScenarioStore::load_from_json`. Solana's LoadSession dispatcher uses it
-/// to rehydrate `solana.users` before the replay loop runs.
 pub type KeypairBundle = HashMap<String, HashMap<String, Keypair>>;
 
-/// Options for `ScenarioStore::save_to_json`. Today only `keypairs` is
-/// configurable; future work (encrypted bundle) will extend this struct
-/// without breaking call sites.
 pub struct SaveOpts<'a> {
     pub keypairs: Option<&'a HashMap<String, HashMap<String, Keypair>>>,
 }
@@ -298,10 +267,6 @@ pub struct SolanaState {
     pub program_artifacts: Vec<(Address, Vec<u8>)>,
     pub vms: RwLock<HashMap<String, VmHost>>,
     pub users: RwLock<HashMap<String, HashMap<String, Keypair>>>,
-    /// Per-scenario stack of pre-Call snapshots, indexed by step. Used by
-    /// `Back` to rewind the VM state and by `Fork(at_step=N)` to seed the
-    /// new scenario's VM with the N-th snapshot. Cleared on `Clear` and
-    /// truncated on `Back`. Empty after `LoadSession` (replay rebuilds it).
     pub step_snapshots: RwLock<HashMap<String, Vec<ilold_solana_core::execute::StateSnapshot>>>,
 }
 
@@ -473,7 +438,6 @@ impl AppState {
             classifications.insert(contract.name.clone(), classify_all(contract));
         }
 
-        // Compute transitive effects across contracts (inheritance-aware).
         analyze_project(&project, &mut sequence_analyses);
 
         let (session_tx, _) = broadcast::channel(64);

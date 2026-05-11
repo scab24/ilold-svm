@@ -4,11 +4,6 @@ use ilold_session_core::exploration::session::ExplorationSession;
 use ilold_session_core::runtime_trace::RuntimeTrace;
 use serde::{Deserialize, Serialize};
 
-/// Extract the deduplicated, insertion-ordered list of CPI program IDs
-/// invoked by a RuntimeTrace. Lifted out so both the overlay aggregator
-/// and the WS broadcast site share one decoder for `inner_instructions`.
-/// Order mirrors `inner_instructions` (first hit wins) so the resulting
-/// list reflects the CPI call sequence the program actually emitted.
 pub fn extract_cpi_programs(trace: &RuntimeTrace) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
@@ -58,8 +53,6 @@ impl RuntimeOverlay {
         };
 
         let mut cu_samples: BTreeMap<String, Vec<u64>> = BTreeMap::new();
-        // Aggregation key for CPI edges: (from_ix, to_program, depth). Tracked
-        // separately so the final Vec<CpiEdge> can be deterministic-sorted.
         let mut cpi_counts: BTreeMap<(String, String, u32), u32> = BTreeMap::new();
 
         for step in &session.steps {
@@ -194,8 +187,6 @@ mod tests {
     fn from_session_reads_failed_calls_counter() {
         let mut session = empty_session();
         session.steps.push(step_with_trace("stake", ok_trace(11_000)));
-        // Failed Calls never push a step (they go through record_failed_call
-        // in execute_call::CallFailed). Mirror that real flow here.
         session.record_failed_call("stake");
         session.record_failed_call("unstake");
 
@@ -263,7 +254,6 @@ mod tests {
 
         let overlay = RuntimeOverlay::from_session(&session);
         assert_eq!(overlay.cpi_edges.len(), 3);
-        // Sorted by (from_ix, to_program, depth).
         let stake_sys = &overlay.cpi_edges[0];
         assert_eq!(stake_sys.from_ix, "stake");
         assert_eq!(stake_sys.to_program, "11111111111111111111111111111111");

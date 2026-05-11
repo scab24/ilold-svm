@@ -66,10 +66,6 @@ pub async fn get_project(
     }))
 }
 
-// ============================================================================
-// Project Map — full contract details with cross-contract relationships
-// ============================================================================
-
 #[derive(Serialize)]
 pub struct ProjectMap {
     pub kind: &'static str,
@@ -143,10 +139,6 @@ pub async fn get_program_view(
     Ok(Json(program.compute_view()))
 }
 
-/// Resolve the per-scenario `pubkey -> user name` map. Lets the canvas show
-/// "alice" instead of "Bxk7…" when a runtime field matches a known user.
-/// Lives in its own endpoint (not on `RuntimeOverlay`) because users mutate
-/// independently of the overlay; see design.md §"authority_resolutions".
 pub async fn get_user_labels(
     State(state): State<Arc<AppState>>,
     Path(scenario): Path<String>,
@@ -311,13 +303,6 @@ fn build_solidity_map(state: &Arc<AppState>) -> ProjectMap {
     }
 }
 
-// ============================================================================
-// Instruction source — Anchor handler body for the canvas "View source" panel
-// and the IDE deep link. Mirrors `get_function_source` for Solidity.
-// ============================================================================
-
-/// Shape mirrors `FunctionSourceResponse` so the frontend can reuse the
-/// `FunctionSourcePanel` component without a parallel type.
 #[derive(Serialize)]
 pub struct InstructionSourceResponse {
     pub file_path: String,
@@ -330,8 +315,6 @@ pub async fn get_instruction_source(
     Path((name, ix)): Path<(String, String)>,
 ) -> Result<Json<InstructionSourceResponse>, (StatusCode, String)> {
     let program = find_solana_program(&state, &name)?;
-    // Reject early: 404 if the IDL has no such instruction. Avoids reading
-    // the file just to return the same error after parsing.
     if !program.instructions.iter().any(|i| i.name == ix) {
         return Err((
             StatusCode::NOT_FOUND,
@@ -372,18 +355,12 @@ pub async fn get_instruction_source(
     }))
 }
 
-/// Parse `lib.rs` with syn and locate the `pub fn <ix>` inside the
-/// `#[program] pub mod ...` module. Falls back to top-level fns and to a
-/// recursive walk so handlers nested in unusual layouts still resolve.
 pub(crate) fn extract_handler_span(source: &str, ix: &str) -> Option<SourceSpan> {
     let file = syn::parse_file(source).ok()?;
     find_fn_in_items(&file.items, ix)
 }
 
 fn find_fn_in_items(items: &[syn::Item], ix: &str) -> Option<SourceSpan> {
-    // Prefer the `#[program]`-attributed module — that is where Anchor places
-    // the IDL-visible handlers, so we avoid colliding with helper fns named
-    // the same elsewhere in the file.
     for item in items {
         if let syn::Item::Mod(m) = item {
             if has_program_attr(&m.attrs) {
@@ -450,7 +427,6 @@ mod tests {
     #[test]
     fn extract_handler_span_finds_stake() {
         let span = extract_handler_span(STAKING_LIB, "stake").expect("stake handler");
-        // `pub fn stake(...)` is on line 19 in the fixture (1-based).
         assert_eq!(span.start_line, 19, "start line off: {span:?}");
         assert!(
             span.end_line > span.start_line,
