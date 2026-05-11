@@ -62,6 +62,12 @@ enum Commands {
         #[arg(long)]
         attach: Option<String>,
     },
+    /// Run the MCP server (stdio transport) exposing Solana REPL commands as tools
+    Mcp {
+        /// Base URL of a running `ilold serve` instance (defaults to http://127.0.0.1:8080)
+        #[arg(long, env = "ILOLD_SERVER_URL", default_value = "http://127.0.0.1:8080")]
+        server_url: String,
+    },
 }
 
 #[tokio::main]
@@ -92,6 +98,7 @@ async fn main() -> Result<()> {
                 ProjectKind::Solana => explore::run_solana(detected, port).await,
             }
         }
+        Commands::Mcp { server_url } => ilold_mcp::run(server_url).await,
     }
 }
 
