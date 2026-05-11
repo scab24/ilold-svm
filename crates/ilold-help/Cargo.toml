@@ -2,4 +2,7 @@
 name = "ilold-help"
 version.workspace = true
 edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
 description = "Shared HelpBlock registry for Ilold REPL commands"

@@ -2,6 +2,9 @@
 name = "ilold-cli"
 version.workspace = true
 edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
 description = "CLI for Ilold: smart contract execution path analyzer"
 
 [[bin]]

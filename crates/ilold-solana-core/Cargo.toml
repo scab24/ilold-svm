@@ -2,6 +2,9 @@
 name = "ilold-solana-core"
 version.workspace = true
 edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
 description = "Anchor IDL parser and (later) Solana execution backend for Ilold."
 
 [dependencies]

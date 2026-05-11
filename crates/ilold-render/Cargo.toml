@@ -2,6 +2,9 @@
 name = "ilold-render"
 version.workspace = true
 edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
 description = "Shared text renderers for Ilold (REPL + MCP). Output is byte-identical to the legacy CLI prints."
 
 [dependencies]

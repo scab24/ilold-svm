@@ -2,6 +2,9 @@
 name = "ilold-session-core"
 version.workspace = true
 edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
 description = "Language-agnostic session and audit-journal types shared by ilold-core (Solidity) and ilold-solana-core."
 
 [dependencies]

@@ -2,6 +2,9 @@
 name = "ilold-web"
 version.workspace = true
 edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
 description = "Web server and interactive viewer for Ilold"
 
 [dependencies]

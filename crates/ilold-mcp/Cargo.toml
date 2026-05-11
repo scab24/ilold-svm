@@ -2,6 +2,9 @@
 name = "ilold-mcp"
 version.workspace = true
 edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
 description = "MCP (Model Context Protocol) server exposing Ilold Solana REPL commands as tools"
 
 [dependencies]

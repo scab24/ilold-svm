@@ -2,6 +2,9 @@
 name = "ilold-core"
 version.workspace = true
 edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
 description = "Core library for Ilold: smart contract execution path analysis engine"
 
 [dependencies]
