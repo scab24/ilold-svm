@@ -4,11 +4,13 @@ use std::sync::Arc;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
+use ilold_core::model::common::SourceSpan;
 use ilold_solana_core::model::ProgramDef;
 use ilold_solana_core::overlay::RuntimeOverlay;
 use ilold_solana_core::view::ProgramView;
 use serde::{Deserialize, Serialize};
 use solana_keypair::Signer;
+use syn::spanned::Spanned;
 
 use crate::state::{require_solidity_msg, AppState, Backend};
 
@@ -306,5 +308,158 @@ fn build_solidity_map(state: &Arc<AppState>) -> ProjectMap {
         contracts,
         programs: Vec::new(),
         relationships,
+    }
+}
+
+// ============================================================================
+// Instruction source — Anchor handler body for the canvas "View source" panel
+// and the IDE deep link. Mirrors `get_function_source` for Solidity.
+// ============================================================================
+
+/// Shape mirrors `FunctionSourceResponse` so the frontend can reuse the
+/// `FunctionSourcePanel` component without a parallel type.
+#[derive(Serialize)]
+pub struct InstructionSourceResponse {
+    pub file_path: String,
+    pub source: String,
+    pub span: SourceSpan,
+}
+
+pub async fn get_instruction_source(
+    State(state): State<Arc<AppState>>,
+    Path((name, ix)): Path<(String, String)>,
+) -> Result<Json<InstructionSourceResponse>, (StatusCode, String)> {
+    let program = find_solana_program(&state, &name)?;
+    // Reject early: 404 if the IDL has no such instruction. Avoids reading
+    // the file just to return the same error after parsing.
+    if !program.instructions.iter().any(|i| i.name == ix) {
+        return Err((
+            StatusCode::NOT_FOUND,
+            format!("instruction '{ix}' not found in program '{name}'"),
+        ));
+    }
+
+    let file_path = state
+        .project_root
+        .join("programs")
+        .join(&program.name)
+        .join("src")
+        .join("lib.rs");
+    let content = std::fs::read_to_string(&file_path).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("read {}: {e}", file_path.display()),
+        )
+    })?;
+
+    let span = extract_handler_span(&content, &ix).ok_or((
+        StatusCode::NOT_FOUND,
+        format!("handler '{ix}' not found in {}", file_path.display()),
+    ))?;
+
+    let source = slice_lines(&content, span.start_line as usize, span.end_line as usize);
+
+    Ok(Json(InstructionSourceResponse {
+        file_path: file_path.to_string_lossy().into_owned(),
+        source,
+        span,
+    }))
+}
+
+/// Parse `lib.rs` with syn and locate the `pub fn <ix>` inside the
+/// `#[program] pub mod ...` module. Falls back to top-level fns and to a
+/// recursive walk so handlers nested in unusual layouts still resolve.
+pub(crate) fn extract_handler_span(source: &str, ix: &str) -> Option<SourceSpan> {
+    let file = syn::parse_file(source).ok()?;
+    find_fn_in_items(&file.items, ix)
+}
+
+fn find_fn_in_items(items: &[syn::Item], ix: &str) -> Option<SourceSpan> {
+    // Prefer the `#[program]`-attributed module — that is where Anchor places
+    // the IDL-visible handlers, so we avoid colliding with helper fns named
+    // the same elsewhere in the file.
+    for item in items {
+        if let syn::Item::Mod(m) = item {
+            if has_program_attr(&m.attrs) {
+                if let Some((_, inner)) = &m.content {
+                    if let Some(span) = find_fn_in_items(inner, ix) {
+                        return Some(span);
+                    }
+                }
+            }
+        }
+    }
+    for item in items {
+        match item {
+            syn::Item::Fn(f) if f.sig.ident == ix => return Some(span_of(f)),
+            syn::Item::Mod(m) => {
+                if let Some((_, inner)) = &m.content {
+                    if let Some(span) = find_fn_in_items(inner, ix) {
+                        return Some(span);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn has_program_attr(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|a| a.path().is_ident("program"))
+}
+
+fn span_of(item: &syn::ItemFn) -> SourceSpan {
+    let span = item.span();
+    let start = span.start();
+    let end = span.end();
+    SourceSpan {
+        file_index: 0,
+        start_line: start.line as u32,
+        start_col: start.column as u32,
+        end_line: end.line as u32,
+        end_col: end.column as u32,
+    }
+}
+
+fn slice_lines(src: &str, start_1based: usize, end_1based: usize) -> String {
+    if start_1based == 0 || end_1based < start_1based {
+        return String::new();
+    }
+    src.lines()
+        .skip(start_1based - 1)
+        .take(end_1based - start_1based + 1)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const STAKING_LIB: &str = include_str!(
+        "../../../../tests/fixtures/solana/staking/programs/staking/src/lib.rs"
+    );
+
+    #[test]
+    fn extract_handler_span_finds_stake() {
+        let span = extract_handler_span(STAKING_LIB, "stake").expect("stake handler");
+        // `pub fn stake(...)` is on line 19 in the fixture (1-based).
+        assert_eq!(span.start_line, 19, "start line off: {span:?}");
+        assert!(
+            span.end_line > span.start_line,
+            "stake body must span >1 lines: {span:?}",
+        );
+        let body = slice_lines(STAKING_LIB, span.start_line as usize, span.end_line as usize);
+        assert!(body.contains("pub fn stake"), "body missing signature:\n{body}");
+        assert!(
+            body.contains("StakingError::ZeroAmount"),
+            "body missing require!:\n{body}",
+        );
+    }
+
+    #[test]
+    fn extract_handler_span_missing_returns_none() {
+        assert!(extract_handler_span(STAKING_LIB, "does_not_exist").is_none());
     }
 }

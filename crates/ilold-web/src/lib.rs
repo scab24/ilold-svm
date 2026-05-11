@@ -19,6 +19,7 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/project/map", get(api::project::get_project_map))
         .route("/api/program/{name}/view", get(api::project::get_program_view))
         .route("/api/program/{name}/overlay", get(api::project::get_program_overlay))
+        .route("/api/program/{name}/{ix}/source", get(api::project::get_instruction_source))
         .route("/api/users/{scenario}/labels", get(api::project::get_user_labels))
         .route("/api/contract/{name}", get(api::contract::get_contract))
         .route("/api/contract/{name}/callgraph", get(api::contract::get_callgraph))

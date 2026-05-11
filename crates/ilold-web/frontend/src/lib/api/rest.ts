@@ -294,6 +294,19 @@ export async function getFunctionSource(
   return res.json();
 }
 
+// Solana counterpart — same response shape as `getFunctionSource` so the
+// `FunctionSourcePanel` component is agnostic to backend.
+export async function getInstructionSource(
+  programName: string,
+  ixName: string,
+): Promise<FunctionSourceResponse> {
+  const res = await fetch(
+    `${BASE}/api/program/${encodeURIComponent(programName)}/${encodeURIComponent(ixName)}/source`,
+  );
+  if (!res.ok) throw new Error(`Source for ${ixName} not found`);
+  return res.json();
+}
+
 export interface SequenceAnalysis {
   functions: {
     name: string;
