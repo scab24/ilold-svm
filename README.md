@@ -158,7 +158,3 @@ docs/guide/           Public mdbook documentation
 ilold is licensed under the [GNU Affero General Public License v3](LICENSE). The AGPL section 13 (remote network interaction) applies: if you run a modified version of ilold on a network server, you must offer the modified source to users of that server.
 
 Copyright (C) 2026 scab24.
-
----
-
-Built with Rust, Svelte 5, `@xyflow/svelte`, LiteSVM, `solang-parser`, Anchor IDL, and `rmcp`.
