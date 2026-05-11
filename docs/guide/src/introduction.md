@@ -28,4 +28,5 @@ ilold does not detect vulnerabilities automatically. It gives the auditor primit
 - [Solidity Backend](./solidity/overview.md): Solidity REPL, CLI, workflows.
 - [Solana Backend](./solana/overview.md): Solana REPL, runtime commands, workflows.
 - [Reference](./reference/api-endpoints.md): HTTP API and WebSocket events.
+- [MCP server](./reference/mcp.md): drive ilold from an LLM agent.
 - [Roadmap](./roadmap/solidity.md): known gaps and future work.

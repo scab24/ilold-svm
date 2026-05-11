@@ -42,6 +42,7 @@
 
 - [HTTP API](./reference/api-endpoints.md)
 - [WebSocket events](./reference/websocket.md)
+- [MCP server](./reference/mcp.md)
 - [Known limitations](./reference/limitations.md)
 
 # Roadmap
