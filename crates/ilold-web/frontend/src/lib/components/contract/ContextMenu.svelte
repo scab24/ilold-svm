@@ -36,7 +36,7 @@
   // View source / Open in code are read-only operations meaningful for
   // any canvas node that identifies a function. Shown in every mode.
   const canViewSource = $derived(
-    menu != null && (menu.nodeType === 'function' || menu.nodeType === 'seq-next')
+    menu != null && (menu.nodeType === 'function' || menu.nodeType === 'seq-next' || menu.nodeType === 'instruction')
   );
 
   // Canvas-action buttons (Expand CFG, Remove from canvas, Collapse, Remove

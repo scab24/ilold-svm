@@ -1,7 +1,7 @@
 <script lang="ts">
   import { page } from '$app/state';
   import { onMount, onDestroy, tick, untrack } from 'svelte';
-  import { getContract, getCallGraph, getCfg, getPaths, getSequences, getSequenceAnalysis, getFunctionSource, getProjectMap, getProgramView, type ContractDetail, type CytoscapeGraph, type SequenceAnalysis, type MapContract, type MapProgram, type ProgramView, type IxView, type AccountView, type IxAccountView } from '$lib/api/rest';
+  import { getContract, getCallGraph, getCfg, getPaths, getSequences, getSequenceAnalysis, getFunctionSource, getInstructionSource, getProjectMap, getProgramView, type ContractDetail, type CytoscapeGraph, type SequenceAnalysis, type MapContract, type MapProgram, type ProgramView, type IxView, type AccountView, type IxAccountView } from '$lib/api/rest';
   import {
     applyOverlayUpdate as applyRuntimeOverlayUpdate,
     clearOverlay as clearRuntimeOverlay,
@@ -1450,9 +1450,12 @@
   // is registered the browser silently drops the request — no UI nag.
   async function handleOpenInIde(funcName: string) {
     contextMenu = null;
-    if (!contract) return;
+    const projectName = kind === 'solana' ? solanaProgram?.name : contract?.name;
+    if (!projectName) return;
     try {
-      const res = await getFunctionSource(contract.name, funcName);
+      const res = kind === 'solana'
+        ? await getInstructionSource(projectName, funcName)
+        : await getFunctionSource(projectName, funcName);
       openInIde(res.file_path, res.span.start_line, res.span.start_col);
     } catch (e) {
       notifyFailure('open in IDE', e);
@@ -2109,10 +2112,11 @@
       onclose={() => contextMenu = null}
     />
 
-    {#if sourcePanel && contract}
+    {#if sourcePanel && (contract || (kind === 'solana' && solanaProgram))}
       <FunctionSourcePanel
-        contract={contract.name}
+        contract={kind === 'solana' ? solanaProgram!.name : contract!.name}
         func={sourcePanel.func}
+        kind={kind}
         onclose={() => sourcePanel = null}
       />
     {/if}
