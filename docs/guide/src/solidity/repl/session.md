@@ -11,7 +11,7 @@ Adds a function call to the session sequence. Only external and public functions
 ```
 ilold[Staking]> c deposit
 
-  + Step 0: deposit [public] external
+  + Step 0: deposit [P] external
     State writes:
       · balances
       · totalStaked
@@ -21,12 +21,14 @@ ilold[Staking]> c deposit
 ```
 ilold[→ deposit]> c withdraw
 
-  + Step 1: withdraw [public] external
+  + Step 1: withdraw [P] external
     State writes:
       · balances
       · totalStaked
     Sequence: deposit → withdraw
 ```
+
+**Returns:** `StepAdded { step_index, function, access, state_changed }`. `access` is one of `Public`, `Restricted { role }`, `Internal`, `Special { kind }`.
 
 Attempting to call an internal function:
 
@@ -75,14 +77,16 @@ ilold[→ deposit → withdraw]> s
 
   ═══════════════════[ STATE ]═══════════════════
   balances
-    balances[msg.sender] += msg.value  (deposit)
-    balances[msg.sender] -= amount  (withdraw)
+    += msg.value (step 0, deposit)
+    -= amount (step 1, withdraw)
   totalStaked
-    totalStaked += msg.value  (deposit)
-    totalStaked -= amount  (withdraw)
+    += msg.value (step 0, deposit)
+    -= amount (step 1, withdraw)
 ```
 
-If the session is empty, `state` tells you to add steps first.
+Each change line is `<operator> <value_expr> (step <N>, <function>)`, with an optional `via <modifier>` suffix when the mutation comes from a modifier body.
+
+**Returns:** `StateView { summary: [VariableSummary { variable, changes }] }`. If the session is empty, `state` tells you to add steps first.
 
 ## sequence
 

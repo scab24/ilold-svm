@@ -10,17 +10,24 @@ cd ilold
 cargo build --release
 ```
 
-The binary is at `target/release/ilold`.
+The binary is at `target/release/ilold`. The four subcommands are `analyze`, `context`, `serve`, and `explore` (see `crates/ilold-cli/src/main.rs`).
 
-## Running
+## Backend detection
 
-Point ilold at a Solidity file or directory:
+`serve` and `explore` auto-detect the backend from the path:
+
+- A directory or file containing `.sol` sources is treated as a Solidity project.
+- A directory containing `Anchor.toml` (with `idls/<program>.json`) is treated as a Solana project.
+
+`analyze` and `context` are Solidity-only.
+
+## Running against a Solidity project
 
 ```
-cargo run -- explore contracts/staking.sol
+cargo run -- explore tests/fixtures/staking.sol
 ```
 
-ilold parses the files, builds the model and CFGs, and drops you into the REPL:
+ilold parses the files, builds the model and per-function CFGs, and drops the auditor into the REPL:
 
 ```
   ╭──────────────────────────────────────────╮
@@ -32,87 +39,74 @@ ilold parses the files, builds the model and CFGs, and drops you into the REPL:
 ilold[Staking]>
 ```
 
-The port is assigned automatically unless you pass `--port`.
+The port defaults to `0` (auto-assigned) for `explore` and `8080` for `serve`. Override with `--port`.
 
-## First Session
+## Running against a Solana project
 
-A typical first exploration of a staking contract:
+```
+cargo run -- explore tests/fixtures/solana/staking
+```
 
-**1. Add a function call to the session:**
+ilold loads the IDL under `idls/<program>.json`, boots a LiteSVM with the program binary from `target/deploy/<program>.so` (or `bin/<program>.so`), and opens the REPL:
+
+```
+ilold[staking]>
+```
+
+Without a compiled `.so` the REPL still starts and IDL navigation (`f`, `i`, `pda`, `vars`) works, but commands that drive the VM (`call`, `state`, `inspect`) fail until the program is built.
+
+## First session
+
+A typical first exploration of the Solidity staking contract:
+
+```
+ilold[Staking]> f
+
+  [P] deposit         writes state, external calls
+  [P] withdraw        writes state, external calls
+  [P] claimRewards    writes state, external calls
+  [R] setRewardRate   writes state
+  [R] pause           writes state
+  [R] unpause         writes state
+  [P] rewardPerToken  view
+  [P] earned          view
+```
 
 ```
 ilold[Staking]> c deposit
 
-  + Step 0: deposit [public] external
+  + Step 0: deposit [P] external
     State writes:
-      · balances
+      · balances[msg.sender]
+      · lastUpdateTime
+      · rewardPerTokenStored
+      · rewards[account]
       · totalStaked
+      · userRewardPerTokenPaid[account]
     Sequence: deposit
 ```
 
-**2. Check accumulated state:**
-
 ```
-ilold[→ deposit]> s
+ilold[Staking → deposit]> s
 
-  ═══════════════════[ STATE ]═══════════════════
-  balances
-    balances[msg.sender] += msg.value  (deposit)
+  ════════════════════════════════════════════[ STATE ]═════════════════════════════════════════════
+  balances[msg.sender]
+    += amount (step 0:15, deposit)
+  lastUpdateTime
+    = block.timestamp (step 0:8, deposit)
+  rewardPerTokenStored
+    = rewardPerToken() (step 0:7, deposit)
+  rewards[account]
+    = earned(account) (step 0:11, deposit)
   totalStaked
-    totalStaked += msg.value  (deposit)
+    += amount (step 0:16, deposit)
+  userRewardPerTokenPaid[account]
+    = rewardPerTokenStored (step 0:12, deposit)
 ```
 
-**3. See who else touches a variable:**
+The full audit flow (`who`, `tr`, `sl`, `tl`, scenarios, findings, export) is covered in [Solidity: Audit walkthrough](./solidity/workflows/audit-walkthrough.md). For the Solana equivalent (`users new`, `call <ix>`, `state`, `step`, `timeline <pubkey>`) see [Solana: Audit walkthrough](./solana/workflows/audit-walkthrough.md).
 
-```
-ilold[→ deposit]> who totalStaked
-
-  who: totalStaked
-    Writers:
-      [public] deposit
-      [public] withdraw
-    Readers:
-      [public] getStakeInfo
-  → sl deposit totalStaked, sl withdraw totalStaked
-  → tl totalStaked
-```
-
-**4. Slice the data flow:**
-
-```
-ilold[→ deposit]> sl deposit totalStaked
-
-  deposit · totalStaked — dataflow slice
-  ════════════════════════════════════════════════════════════
-  [backward]
-    L42   require(msg.value > 0, "Zero deposit")
-    L45   totalStaked += msg.value
-  [forward]
-    L47   emit Deposited(msg.sender, msg.value)
-  → tr deposit | tl totalStaked
-```
-
-**5. Trace the full execution flow:**
-
-```
-ilold[→ deposit]> tr deposit
-
-  ╭──────────────────────────────────────╮
-  │ Staking::deposit()                   │
-  │ modifiers: whenNotPaused             │
-  │ max inlining depth: 2               │
-  ╰──────────────────────────────────────╯
-
-  001 │ ▶ deposit()
-  002 │ ├─ ◇ require(!paused, "Paused")  [from: whenNotPaused]
-  003 │ ├─ ◇ require(msg.value > 0, "Zero deposit")
-  004 │ ├─ ✏ balances[msg.sender] += msg.value
-  005 │ ├─ ✏ totalStaked += msg.value
-  006 │ └─ ◆ emit Deposited(msg.sender, msg.value)
-  → sl deposit balances, sl deposit totalStaked
-```
-
-## Inline Help
+## Inline help
 
 Type `?` at the prompt for the full command reference. Append `?` to any command for its usage:
 
@@ -120,3 +114,5 @@ Type `?` at the prompt for the full command reference. Append `?` to any command
 ilold[Staking]> sl?
   slice <func> <var> [--backward]  Dataflow slice. Example: sl deposit totalStaked --backward
 ```
+
+On Solana, appending `?` renders the structured help block for the command, including syntax, flags, examples, return shape, and related commands.

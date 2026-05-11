@@ -45,23 +45,7 @@ ilold[→ deposit → withdraw]> n Check if msg.value can be zero here
   ✓ Note added
 ```
 
-## scenario
-
-`sc <name>` or `scenario <name>`
-
-Names the current call sequence. Run without arguments to see the current name.
-
-```
-ilold[→ deposit → withdraw]> sc reentrancy-attack
-
-  Scenario: reentrancy-attack
-```
-
-```
-ilold[→ deposit → withdraw]> sc
-
-  Current scenario: reentrancy-attack
-```
+Scenarios are managed by the dedicated `sc | scenario` command family (`scenario new <name>`, `scenario fork <name> [at <N>]`, `scenario switch <name>`, `scenario list`, `scenario delete <name>`). See [Scenarios](./scenarios.md) for the full reference.
 
 ## status
 

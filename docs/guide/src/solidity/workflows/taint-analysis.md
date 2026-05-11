@@ -100,4 +100,4 @@ Forward slice results map to common vulnerability classes:
 ## Related pages
 
 - [Full Audit Walkthrough](./audit-walkthrough.md)
-- [Known Limitations](../reference/limitations.md) -- forward slice caveats
+- [Known Limitations](../limitations.md) -- forward slice caveats

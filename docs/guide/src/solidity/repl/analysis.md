@@ -13,15 +13,17 @@ ilold[Staking]> who totalStaked
 
   who: totalStaked
     Writers:
-      [public] deposit
-      [public] withdraw
+      [P] deposit
+      [P] withdraw
     Readers:
-      [public] getStakeInfo
+      [P] rewardPerToken
   → sl deposit totalStaked, sl withdraw totalStaked
   → tl totalStaked
 ```
 
-The cross-reference hints suggest running [slice](#slice) for each writer and [timeline](#timeline) for the variable.
+The cross-reference hints suggest running [slice](#slice) for each writer and [timeline](#timeline) for the variable. Access badges: `[P]` public/external, `[R]` restricted (admin-gated), `[I]` internal, `[S]` special.
+
+**Returns:** `VariableInfo { variable, writers, readers }` where each writer/reader is a `(String, AccessLevel)` pair.
 
 ## info
 

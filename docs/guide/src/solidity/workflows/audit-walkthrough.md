@@ -228,7 +228,7 @@ Each command's output contains the variable names, function names, and modifier 
 
 ## Related pages
 
-- [Session commands](../commands/session.md)
+- [Session commands](../repl/session.md)
 - [Taint Analysis](./taint-analysis.md)
-- [HTTP API Reference](../reference/api-endpoints.md)
-- [Known Limitations](../reference/limitations.md)
+- [HTTP API Reference](../../reference/api-endpoints.md)
+- [Known Limitations](../limitations.md)

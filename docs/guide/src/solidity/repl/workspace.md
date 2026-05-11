@@ -34,7 +34,7 @@ The prompt updates to reflect the loaded steps. The session replaces whatever is
 
 `browser`
 
-Opens the web UI. ilold starts an API server on startup; `browser` provides the URL.
+Prints the base URL of the HTTP API the REPL is talking to. `explore` runs the API in-process by default; pass `--attach <url>` to point the REPL at a separate `serve` instance instead.
 
 ```
 ilold[Staking]> browser
@@ -42,10 +42,12 @@ ilold[Staking]> browser
   API running at http://127.0.0.1:52431/api/
 ```
 
+The web canvas (when running `serve` and opening the URL in a browser) subscribes to the same HTTP/WS endpoints. See [HTTP API Reference](../../reference/api-endpoints.md) for the full surface.
+
 ## quit
 
 `q`, `quit`, or `exit`
 
-Exits the REPL. You can also press `Ctrl+D` or `Ctrl+C`.
+Exits the REPL. `Ctrl+D` and `Ctrl+C` also work.
 
-Unsaved session data is lost on exit. Use [save](#save) before quitting if you want to resume later.
+Unsaved session data is lost on exit. Use [save](#save) before quitting if the session needs to survive.
