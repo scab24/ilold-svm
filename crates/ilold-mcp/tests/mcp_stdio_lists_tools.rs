@@ -8,9 +8,11 @@ fn registry_lists_29_solana_tools() {
     assert!(names.contains(&"ilold_call"));
     assert!(names.contains(&"ilold_funcs"));
     assert!(names.contains(&"ilold_coverage"));
+    assert!(names.contains(&"ilold_users_new"));
     assert!(!names.contains(&"ilold_use"));
     assert!(!names.contains(&"ilold_help"));
     assert!(!names.contains(&"ilold_quit"));
+    assert!(!names.contains(&"ilold_sequence"));
 }
 
 #[test]

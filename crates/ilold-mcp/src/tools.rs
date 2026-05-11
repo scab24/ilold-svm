@@ -10,8 +10,13 @@ use crate::schema::schema_for_tool;
 // CLI prompt; it has no SolanaCommand variant and the MCP transport selects
 // the program via the `--contract` flag instead, so the tool is excluded
 // from the registry.
+//
+// `seq | sequence` is excluded because the dedicated `/api/session/sequence`
+// endpoint is Solidity-only (gated by `require_solidity_msg`). For Solana the
+// REPL falls back to the Session view, so exposing both `ilold_session` and
+// `ilold_sequence` would be two tool names for the exact same backend call.
 const EXCLUDED_ALIASES: &[&str] = &[
-    "?", "help", "h", "quit", "q", "exit", "browser", "use",
+    "?", "help", "h", "quit", "q", "exit", "browser", "use", "seq", "sequence",
 ];
 const TOOL_NAME_PREFIX: &str = "ilold_";
 
@@ -101,7 +106,7 @@ pub fn build_command(name: &str, arguments: Option<&Value>) -> Result<Value, Str
         "ilold_funcs" | "ilold_functions" => Ok(json!("Funcs")),
         "ilold_funcs_all" => Ok(json!("Funcs")),
         "ilold_state" => Ok(json!("State")),
-        "ilold_session" | "ilold_sequence" => Ok(json!("Session")),
+        "ilold_session" => Ok(json!("Session")),
         "ilold_info" => Ok(json!({ "Info": { "ix": require_str(&args_obj, "ix")? } })),
         "ilold_vars" => Ok(json!("Vars")),
         "ilold_users" => Ok(json!("Users")),
@@ -203,8 +208,29 @@ mod tests {
 
     #[test]
     fn tool_registry_has_29_entries() {
+        // 33 help blocks - 4 meta (?, quit, browser, use) - 2 sequence aliases
+        // (seq, sequence excluded because the /api/session/sequence endpoint
+        // is Solidity-only) + 1 dedicated users-new block = 29.
         let tools = build_tool_registry();
         assert_eq!(tools.len(), 29);
+    }
+
+    #[test]
+    fn registry_includes_users_new() {
+        let tools = build_tool_registry();
+        assert!(
+            tools.iter().any(|t| t.name == "ilold_users_new"),
+            "ilold_users_new must be exposed as a dedicated tool"
+        );
+    }
+
+    #[test]
+    fn registry_excludes_sequence() {
+        let tools = build_tool_registry();
+        assert!(
+            !tools.iter().any(|t| t.name == "ilold_sequence"),
+            "ilold_sequence must NOT appear; /api/session/sequence is Solidity-only"
+        );
     }
 
     #[test]
