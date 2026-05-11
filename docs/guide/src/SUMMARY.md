@@ -38,6 +38,10 @@
 - [Workflow: Scenarios and forks](./solana/workflows/scenarios.md)
 - [Limitations](./solana/limitations.md)
 
+# Recipes
+
+- [LLM-driven audit demo](./recipes/llm-demo.md)
+
 # Reference
 
 - [HTTP API](./reference/api-endpoints.md)
