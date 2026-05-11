@@ -7,3 +7,4 @@ description = "Language-agnostic session and audit-journal types shared by ilold
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+schemars = { workspace = true }

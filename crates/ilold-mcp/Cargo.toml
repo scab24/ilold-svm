@@ -6,9 +6,16 @@ description = "MCP (Model Context Protocol) server exposing Ilold Solana REPL co
 
 [dependencies]
 ilold-help = { path = "../ilold-help" }
+ilold-render = { path = "../ilold-render" }
+ilold-solana-core = { path = "../ilold-solana-core" }
+ilold-session-core = { path = "../ilold-session-core" }
 rmcp = { workspace = true }
+schemars = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
+thiserror = { workspace = true }
 tokio = { workspace = true }
+tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+reqwest = { version = "0.12", features = ["json"] }

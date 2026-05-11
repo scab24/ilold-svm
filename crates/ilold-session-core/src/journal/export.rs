@@ -7,7 +7,7 @@ use super::types::*;
 /// Optional auditor metadata threaded through the export. Pass-through, not
 /// stored in the journal — see SDD 02-audit-deliverable-export/design.md
 /// rationale (avoids JSON-format bumps and keeps PII out of saved sessions).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AuditMetadata {
     #[serde(default)]
     pub auditor: Option<String>,

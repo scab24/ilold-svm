@@ -10,15 +10,25 @@ use serde_json::Value;
 use crate::overlay::RuntimeOverlay;
 use crate::view::{AccountView, ArgView, CouplingPair, FieldView, IxView};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum SolanaCommand {
     Call {
+        #[schemars(description = "Instruction name (e.g. stake, initialize_pool).")]
         ix: String,
         #[serde(default)]
+        #[schemars(
+            description = "Anchor instruction args as a JSON object (e.g. {\"amount\": 1000}). Required keys depend on the instruction — call `ilold_info <ix>` first to discover them. Defaults to {}."
+        )]
         args: Value,
         #[serde(default)]
+        #[schemars(
+            description = "Map of account-name (from the IDL) to user handle or pubkey (e.g. {\"pool\":\"pool\",\"user\":\"alice\"})."
+        )]
         accounts: HashMap<String, String>,
         #[serde(default)]
+        #[schemars(
+            description = "Override the default signer set. Empty list means use the IDL defaults."
+        )]
         signers: Vec<String>,
     },
     Back,

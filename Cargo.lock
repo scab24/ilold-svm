@@ -2435,6 +2435,7 @@ dependencies = [
  "ilold-core",
  "ilold-help",
  "ilold-mcp",
+ "ilold-render",
  "ilold-solana-core",
  "ilold-web",
  "nu-ansi-term",
@@ -2468,17 +2469,36 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "ilold-help",
+ "ilold-render",
+ "ilold-session-core",
+ "ilold-solana-core",
+ "reqwest",
  "rmcp",
+ "schemars",
  "serde",
  "serde_json",
+ "thiserror 2.0.18",
  "tokio",
+ "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "ilold-render"
+version = "0.1.0"
+dependencies = [
+ "colored",
+ "ilold-core",
+ "ilold-session-core",
+ "ilold-solana-core",
+ "serde_json",
 ]
 
 [[package]]
 name = "ilold-session-core"
 version = "0.1.0"
 dependencies = [
+ "schemars",
  "serde",
  "serde_json",
 ]
@@ -2493,6 +2513,7 @@ dependencies = [
  "bs58",
  "ilold-session-core",
  "litesvm",
+ "schemars",
  "serde",
  "serde_json",
  "solana-account",

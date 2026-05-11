@@ -1,0 +1,12 @@
+[package]
+name = "ilold-render"
+version.workspace = true
+edition.workspace = true
+description = "Shared text renderers for Ilold (REPL + MCP). Output is byte-identical to the legacy CLI prints."
+
+[dependencies]
+ilold-core = { path = "../ilold-core" }
+ilold-solana-core = { path = "../ilold-solana-core" }
+ilold-session-core = { path = "../ilold-session-core" }
+serde_json = { workspace = true }
+colored = "3"

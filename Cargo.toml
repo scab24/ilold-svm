@@ -8,6 +8,7 @@ members = [
     "crates/ilold-solana-core",
     "crates/ilold-mcp",
     "crates/ilold-help",
+    "crates/ilold-render",
 ]
 
 [workspace.package]

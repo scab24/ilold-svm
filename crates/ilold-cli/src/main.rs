@@ -67,6 +67,11 @@ enum Commands {
         /// Base URL of a running `ilold serve` instance (defaults to http://127.0.0.1:8080)
         #[arg(long, env = "ILOLD_SERVER_URL", default_value = "http://127.0.0.1:8080")]
         server_url: String,
+        /// Target program name. All tool calls route to this program via the
+        /// `contract` field of `/api/cmd`. Required so the MCP client never
+        /// has to think about workspace topology.
+        #[arg(long, env = "ILOLD_CONTRACT")]
+        contract: String,
     },
 }
 
@@ -98,7 +103,7 @@ async fn main() -> Result<()> {
                 ProjectKind::Solana => explore::run_solana(detected, port).await,
             }
         }
-        Commands::Mcp { server_url } => ilold_mcp::run(server_url).await,
+        Commands::Mcp { server_url, contract } => ilold_mcp::run(server_url, contract).await,
     }
 }
 

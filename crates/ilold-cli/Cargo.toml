@@ -14,6 +14,7 @@ ilold-solana-core = { path = "../ilold-solana-core" }
 ilold-web = { path = "../ilold-web" }
 ilold-mcp = { path = "../ilold-mcp" }
 ilold-help = { path = "../ilold-help" }
+ilold-render = { path = "../ilold-render" }
 anyhow = { workspace = true }
 clap = { workspace = true }
 tokio = { workspace = true }
