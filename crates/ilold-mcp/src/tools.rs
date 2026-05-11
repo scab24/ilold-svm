@@ -28,11 +28,12 @@ pub fn is_excluded(block: &HelpBlock) -> bool {
 }
 
 pub fn canonical_alias(block: &HelpBlock) -> &'static str {
+    // alias must have at least 4 chars to be canonical, so `seq` falls back to `sequence`
     block
         .aliases
         .iter()
         .copied()
-        .find(|a| a.len() >= 3)
+        .find(|a| a.len() >= 4)
         .unwrap_or_else(|| block.aliases[0])
 }
 
@@ -56,7 +57,7 @@ fn empty_object_schema() -> JsonObject {
     let v = json!({
         "type": "object",
         "properties": {},
-        "additionalProperties": true
+        "additionalProperties": false
     });
     match v {
         Value::Object(map) => map,
@@ -71,11 +72,7 @@ mod tests {
     #[test]
     fn tool_registry_not_empty() {
         let tools = build_tool_registry();
-        assert!(
-            tools.len() >= 20,
-            "expected at least 20 tools, got {}",
-            tools.len()
-        );
+        assert_eq!(tools.len(), 30);
     }
 
     #[test]
