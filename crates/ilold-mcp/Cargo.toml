@@ -22,3 +22,4 @@ reqwest = { version = "0.12", features = ["json"] }
 
 [dev-dependencies]
 jsonschema = { version = "0.46", default-features = false }
+httpmock = "0.7"

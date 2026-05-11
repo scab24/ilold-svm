@@ -72,6 +72,11 @@ enum Commands {
         /// has to think about workspace topology.
         #[arg(long, env = "ILOLD_CONTRACT")]
         contract: String,
+        /// Emit a `notifications/progress` MCP message before each tool call
+        /// describing intent. Useful when the client UI renders progress next
+        /// to tool calls so the human sees what the LLM is about to run.
+        #[arg(long, env = "ILOLD_NARRATION")]
+        narration: bool,
     },
 }
 
@@ -103,7 +108,9 @@ async fn main() -> Result<()> {
                 ProjectKind::Solana => explore::run_solana(detected, port).await,
             }
         }
-        Commands::Mcp { server_url, contract } => ilold_mcp::run(server_url, contract).await,
+        Commands::Mcp { server_url, contract, narration } => {
+            ilold_mcp::run(ilold_mcp::Config { server_url, contract, narration }).await
+        }
     }
 }
 

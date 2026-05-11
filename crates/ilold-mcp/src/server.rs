@@ -6,21 +6,24 @@ use ilold_solana_core::exploration::SolanaCommandResult;
 use rmcp::ServerHandler;
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, Content, Implementation, ListToolsResult,
-    PaginatedRequestParams, ServerCapabilities, ServerInfo,
+    PaginatedRequestParams, ProgressNotificationParam, ProgressToken, ServerCapabilities,
+    ServerInfo,
 };
-use rmcp::service::{RequestContext, RoleServer};
+use rmcp::service::{Peer, RequestContext, RoleServer};
 use serde_json::Value;
 
 use crate::client::IloldClient;
+use crate::narration::intent_for_tool;
 use crate::tools;
 
 pub struct IloldMcpServer {
     client: Arc<IloldClient>,
+    narration: bool,
 }
 
 impl IloldMcpServer {
-    pub fn new(client: Arc<IloldClient>) -> Self {
-        Self { client }
+    pub fn new(client: Arc<IloldClient>, narration: bool) -> Self {
+        Self { client, narration }
     }
 }
 
@@ -50,12 +53,35 @@ impl ServerHandler for IloldMcpServer {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let tool_name = request.name.to_string();
         let args_value = request.arguments.map(Value::Object);
+        if self.narration {
+            let token = context.meta.get_progress_token();
+            emit_intent_progress(&context.peer, token, &tool_name, args_value.as_ref()).await;
+        }
         let res = dispatch(&self.client, &tool_name, args_value.as_ref()).await;
         Ok(res)
+    }
+}
+
+async fn emit_intent_progress(
+    peer: &Peer<RoleServer>,
+    token: Option<ProgressToken>,
+    tool_name: &str,
+    arguments: Option<&Value>,
+) {
+    let Some(progress_token) = token else { return };
+    let message = intent_for_tool(tool_name, arguments);
+    let params = ProgressNotificationParam {
+        progress_token,
+        progress: 0.0,
+        total: Some(1.0),
+        message: Some(message),
+    };
+    if let Err(err) = peer.notify_progress(params).await {
+        tracing::debug!(?err, "notify_progress failed");
     }
 }
 
