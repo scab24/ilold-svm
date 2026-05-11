@@ -40,7 +40,7 @@ async fn client_send_command_serializes_body_correctly() {
         }));
     });
 
-    let client = IloldClient::new(server.base_url(), "staking".into());
+    let client = IloldClient::new(server.base_url());
     let command = json!({
         "Call": {
             "ix": "stake",
@@ -50,7 +50,7 @@ async fn client_send_command_serializes_body_correctly() {
         }
     });
     let result = client
-        .send_command(command)
+        .send_command("staking", command)
         .await
         .expect("send_command succeeds");
     match result {
@@ -73,7 +73,7 @@ async fn client_health_check_rejects_solidity() {
         }));
     });
 
-    let client = IloldClient::new(server.base_url(), "Foo".into());
+    let client = IloldClient::new(server.base_url());
     let err = client
         .health_check()
         .await
@@ -95,9 +95,9 @@ async fn client_passes_contract_field() {
         then.status(200).json_body(json!("NoteAdded"));
     });
 
-    let client = IloldClient::new(server.base_url(), "lever".into());
+    let client = IloldClient::new(server.base_url());
     let _ = client
-        .send_command(json!("Funcs"))
+        .send_command("lever", json!("Funcs"))
         .await
         .expect("send_command serializes contract");
     mock.assert();
@@ -114,7 +114,7 @@ async fn client_health_check_accepts_solana() {
         }));
     });
 
-    let client = IloldClient::new(server.base_url(), "staking".into());
+    let client = IloldClient::new(server.base_url());
     client
         .health_check()
         .await

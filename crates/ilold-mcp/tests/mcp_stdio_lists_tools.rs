@@ -1,15 +1,15 @@
 use ilold_mcp::tools::build_tool_registry;
 
 #[test]
-fn registry_lists_29_solana_tools() {
+fn registry_lists_30_solana_tools() {
     let tools = build_tool_registry();
-    assert_eq!(tools.len(), 29);
+    assert_eq!(tools.len(), 30);
     let names: Vec<&str> = tools.iter().map(|t| t.name.as_ref()).collect();
     assert!(names.contains(&"ilold_call"));
     assert!(names.contains(&"ilold_funcs"));
     assert!(names.contains(&"ilold_coverage"));
     assert!(names.contains(&"ilold_users_new"));
-    assert!(!names.contains(&"ilold_use"));
+    assert!(names.contains(&"ilold_use"));
     assert!(!names.contains(&"ilold_help"));
     assert!(!names.contains(&"ilold_quit"));
     assert!(!names.contains(&"ilold_sequence"));

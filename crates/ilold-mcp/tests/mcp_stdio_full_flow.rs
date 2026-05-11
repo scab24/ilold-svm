@@ -153,7 +153,7 @@ fn mcp_stdio_full_flow_initialize_list_call() {
         .and_then(|v| v.as_array())
         .cloned()
         .expect("tools array");
-    assert_eq!(tools.len(), 29, "expected 29 tools, got {}", tools.len());
+    assert_eq!(tools.len(), 30, "expected 30 tools, got {}", tools.len());
     let names: Vec<&str> = tools
         .iter()
         .filter_map(|t| t.get("name").and_then(|n| n.as_str()))

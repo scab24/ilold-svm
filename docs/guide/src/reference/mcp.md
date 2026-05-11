@@ -33,20 +33,22 @@ The `ilold` binary must be on the client's `PATH`. If it is not, use the absolut
 ## CLI reference
 
 ```
-ilold mcp [OPTIONS] --contract <CONTRACT>
+ilold mcp [OPTIONS]
 ```
 
 | Flag | Required | Default | Description |
 | --- | --- | --- | --- |
 | `--server-url <URL>` | no | `http://127.0.0.1:8080` | Base URL of the `ilold serve` instance. Environment variable: `ILOLD_SERVER_URL`. |
-| `--contract <NAME>` | yes | : | Target program name. Every tool call routes to this program through the `contract` field of `/api/cmd`. Environment variable: `ILOLD_CONTRACT`. |
+| `--contract <NAME>` | no | unset | Optional initial active program. When unset the LLM (or the user) must call `ilold_use <program>` before any other tool. Pre-setting it is handy when the workspace has a single program. Environment variable: `ILOLD_CONTRACT`. |
 | `--narration` | no | off | Emit a `notifications/progress` MCP message before each tool call describing intent (for example `Calling \`stake\` with amount=1000`). Environment variable: `ILOLD_NARRATION`. |
+
+The MCP server is agnostic to the active contract. A single registration in the client works against multi-program workspaces: the LLM lists programs with `ilold_programs` and then fixes the active one with `ilold_use`.
 
 The MCP transport reserves stdout for JSON-RPC; logs and panics go to stderr.
 
 ## Client configuration
 
-Every snippet below assumes the backend is running on `http://127.0.0.1:8080` and the target program is `staking`. Adjust both values to your workspace.
+Every snippet below assumes the backend is running on `http://127.0.0.1:8080`. The MCP server is registered once and stays agnostic to the active program — the LLM calls `ilold_use <program>` to switch contract during the session. Pre-setting `--contract <name>` is optional and only seeds the initial value.
 
 ### Claude Code
 
@@ -61,18 +63,19 @@ Two options. The first is project-scoped (`.mcp.json` at the repository root, ch
       "command": "ilold",
       "args": [
         "mcp",
-        "--server-url", "http://127.0.0.1:8080",
-        "--contract", "staking"
+        "--server-url", "http://127.0.0.1:8080"
       ]
     }
   }
 }
 ```
 
+Add `"--contract", "<name>"` to the `args` list to pre-set the initial active program.
+
 Equivalent CLI form:
 
 ```
-claude mcp add --transport stdio ilold -- ilold mcp --server-url http://127.0.0.1:8080 --contract staking
+claude mcp add --transport stdio ilold -- ilold mcp --server-url http://127.0.0.1:8080
 ```
 
 ### Claude Desktop
@@ -89,15 +92,14 @@ Edit `claude_desktop_config.json` (Developer → Edit Config in the desktop sett
       "command": "ilold",
       "args": [
         "mcp",
-        "--server-url", "http://127.0.0.1:8080",
-        "--contract", "staking"
+        "--server-url", "http://127.0.0.1:8080"
       ]
     }
   }
 }
 ```
 
-Restart Claude Desktop after saving. The MCP indicator in the input box lists `ilold` and its tools when the connection is healthy.
+Restart Claude Desktop after saving. The MCP indicator in the input box lists `ilold` and its tools when the connection is healthy. Append `"--contract", "<name>"` to `args` to pre-set an initial program.
 
 ### Cursor
 
@@ -110,15 +112,14 @@ Place the file at `.cursor/mcp.json` (project) or `~/.cursor/mcp.json` (global):
       "command": "ilold",
       "args": [
         "mcp",
-        "--server-url", "http://127.0.0.1:8080",
-        "--contract", "staking"
+        "--server-url", "http://127.0.0.1:8080"
       ]
     }
   }
 }
 ```
 
-Optional `env` and `envFile` keys are supported by Cursor for passing environment variables.
+Optional `env` and `envFile` keys are supported by Cursor for passing environment variables. Append `"--contract", "<name>"` to `args` to pre-set an initial program.
 
 ### Continue
 
@@ -133,9 +134,9 @@ mcpServers:
       - mcp
       - --server-url
       - http://127.0.0.1:8080
-      - --contract
-      - staking
 ```
+
+Append `- --contract` and `- <name>` to `args` to pre-set an initial program.
 
 ## Tools
 
@@ -202,10 +203,21 @@ The registry is derived at startup from `crates/ilold-help/src/lib.rs::SOLANA_HE
 
 | Tool | Purpose |
 | --- | --- |
+| `ilold_use` | Set the active program for the rest of the MCP session. Every other tool call routes to this program. |
 | `ilold_save` | Serialise the active scenario to `~/.ilold/sessions/<name>.json`. |
 | `ilold_load` | Restore a scenario JSON from disk and replay it into the VM. |
 
-Total: 29 tools. The REPL meta commands (`?`, `help`, `quit`, `browser`, `use`, `seq`) are intentionally excluded: the MCP client discovers tools via `tools/list`, the subprocess exits on stdin EOF, the canvas URL is already on the human side, and the active program is fixed by `--contract`.
+Total: 30 tools. The REPL meta commands (`?`, `help`, `quit`, `browser`, `seq`) are intentionally excluded: the MCP client discovers tools via `tools/list`, the subprocess exits on stdin EOF, and the canvas URL is already on the human side.
+
+## Switching programs
+
+Multi-program workspaces are handled at runtime, not at registration time:
+
+1. `ilold_programs` lists every program detected by the backend. The active one is marked.
+2. `ilold_use <program>` sets the active program. The handler validates the name against `/api/project/map` and rejects unknown names.
+3. Subsequent tool calls (`ilold_funcs`, `ilold_call`, etc.) route to the active program automatically.
+
+If no contract is active (no `--contract` flag and no prior `ilold_use` call), every tool other than `ilold_programs` and `ilold_use` returns a clear error asking the LLM to set one. `ilold_use` can be called any number of times in the same session to switch back and forth between programs.
 
 ## Example session
 
@@ -227,7 +239,7 @@ Every step also fires a WebSocket patch from `ilold serve`, so a browser tab poi
 ## Limitations
 
 - **Solana only.** The MCP server refuses to start when the backend is a Solidity project. Solidity support is in the [cross-cutting roadmap](../roadmap/cross-cutting.md).
-- **Single program per session.** `--contract` is fixed at startup; switching programs requires restarting the subprocess. Multi-program workspaces are still discoverable through `ilold_programs`.
+- **Single active program at a time.** The handler tracks one active program. Call `ilold_use <program>` to switch — the MCP subprocess does not need to be restarted to point at a different program in the same workspace.
 - **Static tool registry.** Tools are derived from `SOLANA_HELP_BLOCKS` once at startup. Reloading the backend project does not change the tool set; only the data behind the tools.
 - **No sandbox over the LLM.** Every tool that mutates the VM (`ilold_call`, `ilold_clear`, `ilold_back`, `ilold_scenario`) is invocable without confirmation from the server. Sandboxing is delegated to the MCP client: mature clients prompt the human before destructive tools (those whose names contain `clear`, `delete`, `reset`).
 - **Narration is best-effort.** `--narration` emits a `notifications/progress` message keyed by the request `progressToken`. Clients that do not declare a progress token in the request silently drop the notification.
@@ -240,4 +252,5 @@ Every step also fires a WebSocket patch from `ilold serve`, so a browser tab poi
 | `Cannot reach Ilold server at <url>` on startup | `ilold serve` is not running, or `--server-url` points to the wrong port. |
 | `Server at <url> is not a Solana project (kind=solidity)` | The backend was started against a Solidity workspace. Point `ilold serve` at a Solana project. |
 | Tools do not appear in the client | The client could not spawn `ilold`. Check that the binary is on `PATH` or use an absolute path in `command`. Inspect the client log (`~/Library/Logs/Claude/mcp-server-ilold.log` for Claude Desktop on macOS). |
-| Tool call returns `Error: ...` | The backend rejected the `SolanaCommand`. The error text is the same as the REPL would print; check the `--contract` and the instruction arguments. |
+| `No active contract` from every tool but `ilold_programs` | The session has no active program. Call `ilold_use <program>` (or restart the subprocess with `--contract <name>`). |
+| Tool call returns `Error: ...` | The backend rejected the `SolanaCommand`. The error text is the same as the REPL would print; check the active program (`ilold_programs`) and the instruction arguments. |

@@ -11,6 +11,10 @@ use serde_json::{Map, Value, json};
 pub fn schema_for_tool(name: &str) -> Value {
     match name {
         "ilold_call" => schema_for_call(),
+        "ilold_use" => string_only(
+            "program",
+            "Program name to make active (must match an entry returned by ilold_programs)",
+        ),
         "ilold_info" => string_only("ix", "Instruction name to inspect"),
         "ilold_pda" => string_only("instruction", "Instruction whose PDAs to list"),
         "ilold_inspect" => string_only("pubkey", "Account pubkey (or named keypair)"),

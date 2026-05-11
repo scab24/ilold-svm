@@ -17,7 +17,7 @@ pub use error::McpClientError;
 #[derive(Debug, Clone)]
 pub struct Config {
     pub server_url: String,
-    pub contract: String,
+    pub contract: Option<String>,
     pub narration: bool,
 }
 
@@ -31,13 +31,13 @@ pub async fn run(cfg: Config) -> Result<()> {
         .try_init()
         .ok();
 
-    let client = Arc::new(IloldClient::new(cfg.server_url, cfg.contract));
+    let client = Arc::new(IloldClient::new(cfg.server_url));
     client
         .health_check()
         .await
         .context("Ilold backend health-check failed")?;
 
-    let handler = server::IloldMcpServer::new(client, cfg.narration);
+    let handler = server::IloldMcpServer::new(client, cfg.contract, cfg.narration);
     let service = handler.serve(stdio()).await?;
     service.waiting().await?;
     Ok(())

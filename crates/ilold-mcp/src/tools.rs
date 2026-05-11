@@ -6,17 +6,17 @@ use serde_json::{Map, Value, json};
 
 use crate::schema::schema_for_tool;
 
-// `use` is a REPL-only meta command that switches the active program in the
-// CLI prompt; it has no SolanaCommand variant and the MCP transport selects
-// the program via the `--contract` flag instead, so the tool is excluded
-// from the registry.
+// `ilold_use` is kept in the registry but handled client-side by the MCP
+// server: it sets the active contract on the handler instead of issuing a
+// SolanaCommand. Every other tool reads that state and routes its call to
+// the active program.
 //
 // `seq | sequence` is excluded because the dedicated `/api/session/sequence`
 // endpoint is Solidity-only (gated by `require_solidity_msg`). For Solana the
 // REPL falls back to the Session view, so exposing both `ilold_session` and
 // `ilold_sequence` would be two tool names for the exact same backend call.
 const EXCLUDED_ALIASES: &[&str] = &[
-    "?", "help", "h", "quit", "q", "exit", "browser", "use", "seq", "sequence",
+    "?", "help", "h", "quit", "q", "exit", "browser", "seq", "sequence",
 ];
 const TOOL_NAME_PREFIX: &str = "ilold_";
 
@@ -81,6 +81,7 @@ pub fn build_command(name: &str, arguments: Option<&Value>) -> Result<Value, Str
     let args = arguments.cloned().unwrap_or_else(|| json!({}));
     let args_obj = args.as_object().cloned().unwrap_or_default();
     match name {
+        "ilold_use" => Err("ilold_use is handled client-side and has no SolanaCommand mapping".to_string()),
         "ilold_call" => {
             let ix = require_str(&args_obj, "ix")?;
             let call_args = args_obj.get("args").cloned().unwrap_or_else(|| json!({}));
@@ -207,12 +208,12 @@ mod tests {
     use ilold_solana_core::exploration::SolanaCommand;
 
     #[test]
-    fn tool_registry_has_29_entries() {
-        // 33 help blocks - 4 meta (?, quit, browser, use) - 2 sequence aliases
+    fn tool_registry_has_30_entries() {
+        // 33 help blocks - 3 meta (?, quit, browser) - 2 sequence aliases
         // (seq, sequence excluded because the /api/session/sequence endpoint
-        // is Solidity-only) + 1 dedicated users-new block = 29.
+        // is Solidity-only) + 1 dedicated users-new block + 1 ilold_use = 30.
         let tools = build_tool_registry();
-        assert_eq!(tools.len(), 29);
+        assert_eq!(tools.len(), 30);
     }
 
     #[test]
@@ -221,6 +222,15 @@ mod tests {
         assert!(
             tools.iter().any(|t| t.name == "ilold_users_new"),
             "ilold_users_new must be exposed as a dedicated tool"
+        );
+    }
+
+    #[test]
+    fn registry_includes_use() {
+        let tools = build_tool_registry();
+        assert!(
+            tools.iter().any(|t| t.name == "ilold_use"),
+            "ilold_use must be exposed so the LLM can switch the active program"
         );
     }
 
@@ -253,7 +263,6 @@ mod tests {
             "ilold_q",
             "ilold_exit",
             "ilold_browser",
-            "ilold_use",
         ];
         for f in forbidden {
             assert!(

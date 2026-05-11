@@ -11,6 +11,7 @@ use rmcp::model::{
 };
 use rmcp::service::{Peer, RequestContext, RoleServer};
 use serde_json::Value;
+use tokio::sync::Mutex;
 
 use crate::client::IloldClient;
 use crate::narration::intent_for_tool;
@@ -18,12 +19,21 @@ use crate::tools;
 
 pub struct IloldMcpServer {
     client: Arc<IloldClient>,
+    current_contract: Arc<Mutex<Option<String>>>,
     narration: bool,
 }
 
 impl IloldMcpServer {
-    pub fn new(client: Arc<IloldClient>, narration: bool) -> Self {
-        Self { client, narration }
+    pub fn new(
+        client: Arc<IloldClient>,
+        initial_contract: Option<String>,
+        narration: bool,
+    ) -> Self {
+        Self {
+            client,
+            current_contract: Arc::new(Mutex::new(initial_contract)),
+            narration,
+        }
     }
 }
 
@@ -34,9 +44,10 @@ impl ServerHandler for IloldMcpServer {
         info.server_info = Implementation::new("ilold-mcp", env!("CARGO_PKG_VERSION"));
         info.instructions = Some(format!(
             "Ilold MCP server. Exposes Solana REPL commands as MCP tools \
-             backed by the Ilold backend at {}. Target program: {}.",
+             backed by the Ilold backend at {}. Call ilold_programs to list \
+             available programs and ilold_use <program> to fix the active one \
+             before issuing other tool calls.",
             self.client.base_url(),
-            self.client.contract(),
         ));
         info
     }
@@ -61,7 +72,13 @@ impl ServerHandler for IloldMcpServer {
             let token = context.meta.get_progress_token();
             emit_intent_progress(&context.peer, token, &tool_name, args_value.as_ref()).await;
         }
-        let res = dispatch(&self.client, &tool_name, args_value.as_ref()).await;
+        let res = dispatch(
+            &self.client,
+            &self.current_contract,
+            &tool_name,
+            args_value.as_ref(),
+        )
+        .await;
         Ok(res)
     }
 }
@@ -85,51 +102,105 @@ async fn emit_intent_progress(
     }
 }
 
-async fn dispatch(
+pub async fn dispatch(
     client: &IloldClient,
+    current_contract: &Arc<Mutex<Option<String>>>,
     tool_name: &str,
     arguments: Option<&Value>,
 ) -> CallToolResult {
-    if tool_name == "ilold_programs" {
-        return handle_programs(client).await;
+    if tool_name == "ilold_use" {
+        return handle_use(client, current_contract, arguments).await;
     }
+    if tool_name == "ilold_programs" {
+        let active = current_contract.lock().await.clone();
+        return handle_programs(client, active.as_deref()).await;
+    }
+    let active = match current_contract.lock().await.clone() {
+        Some(c) => c,
+        None => {
+            return error_result(
+                "No active contract. Call ilold_use <program> first or list available programs with ilold_programs."
+                    .to_string(),
+            );
+        }
+    };
     let command = match tools::build_command(tool_name, arguments) {
         Ok(cmd) => cmd,
         Err(message) => return error_result(format!("Invalid arguments: {message}")),
     };
-    match client.send_command(command).await {
+    match client.send_command(&active, command).await {
         Ok(result) => build_tool_response(&result),
         Err(err) => error_result(err.to_string()),
     }
 }
 
-async fn handle_programs(client: &IloldClient) -> CallToolResult {
-    let url = format!("{}/api/project/map", client.base_url());
-    let resp = match reqwest::get(&url).await {
-        Ok(r) => r,
-        Err(e) => return error_result(format!("cannot reach {url}: {e}")),
+async fn handle_use(
+    client: &IloldClient,
+    current_contract: &Arc<Mutex<Option<String>>>,
+    arguments: Option<&Value>,
+) -> CallToolResult {
+    let program = match arguments
+        .and_then(|v| v.as_object())
+        .and_then(|o| o.get("program"))
+        .and_then(|v| v.as_str())
+    {
+        Some(p) if !p.is_empty() => p.to_string(),
+        _ => return error_result("missing or empty field: program".to_string()),
     };
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        return error_result(format!("HTTP {status}: {body}"));
-    }
-    let value: Value = match resp.json().await {
+    let map = match client.project_map().await {
         Ok(v) => v,
-        Err(e) => return error_result(format!("invalid response: {e}")),
+        Err(err) => return error_result(err.to_string()),
     };
-    let text = render_programs(&value, client.contract());
+    let kind = map.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+    if kind != "solana" {
+        return error_result(format!(
+            "backend reports kind={kind}; ilold_use only supports Solana workspaces"
+        ));
+    }
+    let known: Vec<String> = map
+        .get("programs")
+        .and_then(|p| p.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|p| p.get("name").and_then(|n| n.as_str()).map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    if !known.iter().any(|n| n == &program) {
+        return error_result(format!(
+            "unknown program `{program}`. Available: {}",
+            if known.is_empty() {
+                "(none)".to_string()
+            } else {
+                known.join(", ")
+            }
+        ));
+    }
+    *current_contract.lock().await = Some(program.clone());
+    let text = format!("Active contract set to `{program}`.");
+    let mut out = CallToolResult::structured(serde_json::json!({
+        "active_contract": program,
+    }));
+    out.content = vec![Content::text(text)];
+    out
+}
+
+async fn handle_programs(client: &IloldClient, active_contract: Option<&str>) -> CallToolResult {
+    let value = match client.project_map().await {
+        Ok(v) => v,
+        Err(err) => return error_result(err.to_string()),
+    };
+    let text = render_programs(&value, active_contract);
     let structured = value.clone();
     let mut out = CallToolResult::structured(serde_json::json!({ "project_map": structured }));
     out.content = vec![Content::text(text)];
     out
 }
 
-fn render_programs(map: &Value, active_contract: &str) -> String {
+fn render_programs(map: &Value, active_contract: Option<&str>) -> String {
     let mut out = String::new();
-    out.push_str(&format!(
-        "  workspace programs (active: {active_contract})\n"
-    ));
+    let label = active_contract.unwrap_or("(none — call ilold_use to set one)");
+    out.push_str(&format!("  workspace programs (active: {label})\n"));
     if let Some(programs) = map.get("programs").and_then(|p| p.as_array()) {
         for p in programs {
             let name = p.get("name").and_then(|n| n.as_str()).unwrap_or("?");
@@ -139,7 +210,11 @@ fn render_programs(map: &Value, active_contract: &str) -> String {
                 .and_then(|i| i.as_array())
                 .map(|a| a.len())
                 .unwrap_or(0);
-            let marker = if name == active_contract { " ← active" } else { "" };
+            let marker = if Some(name) == active_contract {
+                " ← active"
+            } else {
+                ""
+            };
             out.push_str(&format!(
                 "  · {name} (program_id={pid}, instructions={ix_count}){marker}\n"
             ));

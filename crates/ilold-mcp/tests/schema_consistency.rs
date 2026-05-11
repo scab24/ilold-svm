@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 fn sample_arguments(name: &str) -> Option<Value> {
     match name {
         "ilold_call" => Some(json!({ "ix": "stake" })),
+        "ilold_use" => Some(json!({ "program": "staking" })),
         "ilold_info" => Some(json!({ "ix": "stake" })),
         "ilold_pda" => Some(json!({ "instruction": "stake" })),
         "ilold_inspect" => Some(json!({ "pubkey": "alice" })),
@@ -39,11 +40,12 @@ fn sample_arguments(name: &str) -> Option<Value> {
     }
 }
 
-/// `ilold_programs` is a special-case in the dispatcher (REST GET to
-/// /api/project/map). It has no SolanaCommand variant so we only validate the
-/// schema, not the build_command path.
+/// `ilold_programs` and `ilold_use` are special-cases in the dispatcher:
+/// `ilold_programs` calls REST GET /api/project/map and `ilold_use` updates
+/// the handler's active-contract state. Neither has a SolanaCommand variant,
+/// so we only validate the schema, not the build_command path.
 fn skips_build_command(name: &str) -> bool {
-    name == "ilold_programs"
+    matches!(name, "ilold_programs" | "ilold_use")
 }
 
 #[test]
