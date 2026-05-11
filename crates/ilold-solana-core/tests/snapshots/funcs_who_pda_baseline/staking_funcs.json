@@ -1,0 +1,53 @@
+{
+  "InstructionList": {
+    "items": [
+      {
+        "name": "add_rewards",
+        "args_count": 1,
+        "accounts_count": 2,
+        "has_pdas": false,
+        "signers": [
+          "admin"
+        ]
+      },
+      {
+        "name": "claim_rewards",
+        "args_count": 0,
+        "accounts_count": 3,
+        "has_pdas": false,
+        "signers": [
+          "user"
+        ]
+      },
+      {
+        "name": "initialize_pool",
+        "args_count": 1,
+        "accounts_count": 3,
+        "has_pdas": false,
+        "signers": [
+          "pool",
+          "admin"
+        ]
+      },
+      {
+        "name": "stake",
+        "args_count": 1,
+        "accounts_count": 4,
+        "has_pdas": false,
+        "signers": [
+          "user_stake",
+          "user"
+        ]
+      },
+      {
+        "name": "unstake",
+        "args_count": 1,
+        "accounts_count": 3,
+        "has_pdas": false,
+        "signers": [
+          "user"
+        ]
+      }
+    ]
+  }
+}

@@ -29,7 +29,14 @@ enum ServerMessage {
     #[serde(rename = "error")]
     Error { message: String },
     #[serde(rename = "session_add_node")]
-    SessionAddNode { scenario: String, function: String, access: AccessLevel, step_index: usize },
+    SessionAddNode {
+        scenario: String,
+        function: String,
+        access: AccessLevel,
+        step_index: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        runtime: Option<ilold_session_core::exploration::canvas::RuntimeMeta>,
+    },
     #[serde(rename = "session_remove_node")]
     SessionRemoveNode { scenario: String },
     #[serde(rename = "session_clear")]
@@ -46,6 +53,18 @@ enum ServerMessage {
     ScenarioForked { from: String, to: String, at_step: usize },
     #[serde(rename = "scenario_store_reloaded")]
     ScenarioStoreReloaded { active: String },
+    #[serde(rename = "solana_users_changed")]
+    SolanaUsersChanged { scenario: String },
+    #[serde(rename = "session_overlay_update")]
+    SessionOverlayUpdate {
+        scenario: String,
+        ix_name: String,
+        calls_added: u32,
+        failed_added: u32,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cu: Option<u64>,
+        cpi_targets_added: Vec<String>,
+    },
 }
 
 pub async fn ws_handler(
@@ -57,8 +76,8 @@ pub async fn ws_handler(
 
 fn server_message_from_patch(patch: CanvasPatch) -> ServerMessage {
     match patch {
-        CanvasPatch::AddNode { scenario, function, access, step_index } => {
-            ServerMessage::SessionAddNode { scenario, function, access, step_index }
+        CanvasPatch::AddNode { scenario, function, access, step_index, runtime } => {
+            ServerMessage::SessionAddNode { scenario, function, access, step_index, runtime }
         }
         CanvasPatch::RemoveLastNode { scenario } => ServerMessage::SessionRemoveNode { scenario },
         CanvasPatch::ClearAll { scenario } => ServerMessage::SessionClear { scenario },
@@ -75,6 +94,24 @@ fn server_message_from_patch(patch: CanvasPatch) -> ServerMessage {
             ScenarioEvent::Reloaded { active } => {
                 ServerMessage::ScenarioStoreReloaded { active }
             }
+        },
+        CanvasPatch::SolanaUsersChanged { scenario } => {
+            ServerMessage::SolanaUsersChanged { scenario }
+        }
+        CanvasPatch::OverlayUpdate {
+            scenario,
+            ix_name,
+            calls_added,
+            failed_added,
+            cu,
+            cpi_targets_added,
+        } => ServerMessage::SessionOverlayUpdate {
+            scenario,
+            ix_name,
+            calls_added,
+            failed_added,
+            cu,
+            cpi_targets_added,
         },
     }
 }
@@ -107,7 +144,10 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
 
                 match parsed {
                     ClientMessage::Search(query) => {
-                        let results = search::search_paths(&state, &query);
+                        let results = match state.solidity() {
+                            Some(s) => search::search_paths(s, &query),
+                            None => Vec::new(),
+                        };
                         let total = results.len();
 
                         for result in results {

@@ -1,0 +1,11 @@
+
+  Coverage for program staking (scenario main)
+
+  Instruction   Calls Failed CU avg CU max CPIs
+  claim_rewards 2     1      8750   9500   0
+  stake         4     0      12500  15000  4
+
+  CPIs detected:
+    · stake → token_program (depth 1, 4×)
+
+  Total: 6 calls, 1 failed

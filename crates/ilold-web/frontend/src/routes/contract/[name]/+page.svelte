@@ -1,18 +1,29 @@
 <script lang="ts">
   import { page } from '$app/state';
   import { onMount, onDestroy, tick, untrack } from 'svelte';
-  import { getContract, getCallGraph, getCfg, getPaths, getSequences, getSequenceAnalysis, getFunctionSource, getProjectMap, type ContractDetail, type CytoscapeGraph, type SequenceAnalysis, type MapContract } from '$lib/api/rest';
+  import { getContract, getCallGraph, getCfg, getPaths, getSequences, getSequenceAnalysis, getFunctionSource, getInstructionSource, getProjectMap, getProgramView, type ContractDetail, type CytoscapeGraph, type SequenceAnalysis, type MapContract, type MapProgram, type ProgramView, type IxView, type AccountView, type IxAccountView } from '$lib/api/rest';
+  import {
+    applyOverlayUpdate as applyRuntimeOverlayUpdate,
+    clearOverlay as clearRuntimeOverlay,
+    loadInitialOverlay as loadRuntimeOverlay,
+    getCpiEdges,
+  } from '$lib/stores/runtimeOverlay.svelte';
+  import {
+    loadUserLabels,
+    clearUserLabels,
+  } from '$lib/stores/userLabels.svelte';
   import { goto } from '$app/navigation';
   import { toggleTerminal } from '$lib/stores/terminal.svelte';
   import { openInIde } from '$lib/utils/ide-links';
   import { setSearchContext, getSearchNavigate, setSearchNavigate } from '$lib/stores/search.svelte';
+  import { subscribe as subscribeWs } from '$lib/api/ws';
   import { togglePalette, setPaletteCommands, clearPaletteCommands } from '$lib/stores/palette.svelte';
   import type { Command } from '$lib/commands/registry';
   import { getHighlightedFunction, getScenarios, getActiveScenario, getForkOrigins } from '$lib/stores/session.svelte';
   import { composeScenarioTree, type ComposedNode } from '$lib/canvas/scenarios';
   import { promptScenarioName } from '$lib/scenarios/name';
   import { dispatchScenarioAction } from '$lib/scenarios/dispatch';
-  import { postCommand } from '$lib/api/session';
+  import { postCommand, postSolanaCommand } from '$lib/api/session';
   import Legend from '$lib/components/contract/Legend.svelte';
   import FunctionSidebar from '$lib/components/contract/FunctionSidebar.svelte';
   import TopBar from '$lib/components/contract/TopBar.svelte';
@@ -36,25 +47,32 @@
   import type { Node, Edge } from '@xyflow/svelte';
 
   let contract: ContractDetail | null = $state(null);
+  let solanaProgram: ProgramView | null = $state(null);
+  let kind: 'solidity' | 'solana' = $state('solidity');
+  let solanaCanvasIxs: Set<string> = $state(new Set());
+  let solanaExpandedIxs: Set<string> = $state(new Set());
+  let solanaUsers: { name: string; pubkey: string; lamports: number }[] = $state([]);
+  let solanaTraceCount = $state(0);
+  let hideSystem = $state(false);
+  type SolanaRuntimeInfo = {
+    computeUnits: number;
+    diffsCount: number;
+    logsExcerpt: string[];
+    error?: string | null;
+  };
+  let solanaRuntimeByStep: Map<string, SolanaRuntimeInfo> = $state(new Map());
   let error: string | null = $state(null);
   let selectedNode: any = $state(null);
   let selectedPath: any = $state(null);
   let funcPaths: Record<string, any> = $state({});
   let expandedFuncs: Set<string> = $state(new Set());
-  // Driven by SvelteFlow's onselectionchange — used only for the status bar
-  // selection chip. Kept as a plain count (not the full node list) since no
-  // other consumer needs per-node selection data at this level.
   let selectionCount: number = $state(0);
-  // Default: Seq mode is the auditor-friendly view; Session mode flips the
-  // sidebar click into "add step" and hides exploration nodes on the canvas
-  // so only the scenarios tree is visible.
   let mode: 'cfg' | 'sequences' | 'session' = $state('sequences');
   let seqTree: any = $state(null);
   let seqAnalysis: SequenceAnalysis | null = $state(null);
   let seqExpanded: Map<string, boolean> = $state(new Map());
   let seqDirection: 'TB' | 'LR' = $state('TB');
 
-  // Context menu: right-click on nodes
   let contextMenu: {
     x: number;
     y: number;
@@ -64,18 +82,12 @@
     sessionStep?: { stepIndex: number };
   } | null = $state(null);
 
-  let canvasFuncs: Set<string> = $state(new Set()); // functions currently on canvas
+  let canvasFuncs: Set<string> = $state(new Set());
 
-  // Project map (all contracts in the workspace) — fetched once on mount so
-  // the Cmd+K palette can offer cross-contract navigation without every
-  // keystroke hitting the REST endpoint.
   let projectMap: MapContract[] = $state([]);
 
-  // Inline source-viewer panel state. Null when closed. Set by the
-  // ContextMenu "View source" entry.
   let sourcePanel: { func: string } | null = $state(null);
 
-  // Session → canvas auto-paint state
   let sessionVisCount = $state(0);
   const sessionHighlight = $derived(getHighlightedFunction());
 
@@ -106,28 +118,16 @@
     return null;
   }
 
-  // BFS tree layout constants for seq subtrees (shared by relayoutSeqTree)
   const SEQ_NODE_W = 220;
   const SEQ_NODE_H = 80;
-  const SEQ_SIBLING_GAP = 30; // gap between siblings at the same level
-  const SEQ_LEVEL_GAP = 120;  // gap between parent and children rank
+  const SEQ_SIBLING_GAP = 30;
+  const SEQ_LEVEL_GAP = 120;
 
-  /**
-   * Re-layout a single seq subtree rooted at `rootId` (a function node).
-   * - Anchors the root to its live (drag-aware) position so user drags are preserved.
-   * - BFS from root via seq-edges; siblings are distributed perpendicular to seqDirection.
-   * - Updates positions of all seq-next nodes in the subtree.
-   * - Updates sourceHandle/targetHandle on all seq-edges in the subtree to match seqDirection.
-   *
-   * Callers MUST add any new nodes/edges to the store BEFORE invoking this helper,
-   * so the BFS walk includes them. Placeholder positions on new nodes are fine.
-   */
   function relayoutSeqTree(rootId: string) {
     const root = findNode(rootId);
     if (!root) return;
     const rootPos = liveNodePosition(rootId) ?? root.position;
 
-    // 1. Collect the full seq subtree (root + all transitively-linked seq-next nodes)
     const subtreeIds = new Set<string>([rootId]);
     let added = true;
     while (added) {
@@ -143,7 +143,6 @@
       }
     }
 
-    // 2. Build children index from seq-edges restricted to the subtree
     const childrenMap = new Map<string, string[]>();
     const subtreeEdgeIds = new Set<string>();
     for (const e of getEdges()) {
@@ -155,7 +154,6 @@
       }
     }
 
-    // 3. BFS from root, assigning levels
     const levels = new Map<string, number>();
     levels.set(rootId, 0);
     const queue = [rootId];
@@ -172,7 +170,6 @@
       }
     }
 
-    // 4. Group nodes by level and compute positions anchored at rootPos
     const byLevel: string[][] = Array.from({ length: maxLevel + 1 }, () => []);
     for (const [id, lvl] of levels) byLevel[lvl].push(id);
 
@@ -182,7 +179,6 @@
       const ids = byLevel[lvl];
       const count = ids.length;
       if (isLR) {
-        // Children to the right, stacked vertically at same X
         const totalH = count * SEQ_NODE_H + (count - 1) * SEQ_SIBLING_GAP;
         const startY = rootPos.y + SEQ_NODE_H / 2 - totalH / 2;
         const x = rootPos.x + lvl * (SEQ_NODE_W + SEQ_LEVEL_GAP);
@@ -190,7 +186,6 @@
           posMap.set(id, { x, y: startY + i * (SEQ_NODE_H + SEQ_SIBLING_GAP) });
         });
       } else {
-        // Children below, in a horizontal row at same Y
         const totalW = count * SEQ_NODE_W + (count - 1) * SEQ_SIBLING_GAP;
         const startX = rootPos.x + SEQ_NODE_W / 2 - totalW / 2;
         const y = rootPos.y + lvl * (SEQ_NODE_H + SEQ_LEVEL_GAP);
@@ -200,7 +195,6 @@
       }
     }
 
-    // 5. Apply positions to seq-next nodes in this subtree
     setNodes(getNodes().map(n => {
       if (n.data._type === 'seq-next' && posMap.has(n.id)) {
         return { ...n, position: posMap.get(n.id)! };
@@ -208,7 +202,6 @@
       return n;
     }));
 
-    // 6. Update handle orientation on seq-edges in this subtree to match seqDirection
     const sh = isLR ? 'r' : 'b';
     const th = isLR ? 'l' : 't';
     setEdges(getEdges().map(e => {
@@ -219,9 +212,7 @@
     }));
   }
 
-  /** Re-layout and re-orient all expanded seq subtrees (used when seqDirection changes) */
   function reorientAllSeqSubtrees() {
-    // Find all root functions that have seq-next children
     const roots = new Set<string>();
     for (const n of getNodes()) {
       if (n.data._type === 'seq-next') {
@@ -234,15 +225,12 @@
     }
   }
 
-  /** Merge an opacity value into an edge's style string */
   function edgeStyle(base: string | undefined, opacity: number): string {
-    // Remove existing opacity from base style, then append new one
     const cleaned = (base ?? '').replace(/opacity:\s*[\d.]+;?/g, '').trim();
     const sep = cleaned && !cleaned.endsWith(';') ? '; ' : ' ';
     return `${cleaned}${cleaned ? sep : ''}opacity: ${opacity}`.trim();
   }
 
-  /** Reset all _dimmed state on nodes and edges */
   function resetAllDimmed() {
     setNodes(getNodes().map(n => {
       if ('_dimmed' in n.data && n.data._dimmed) {
@@ -258,7 +246,6 @@
     }));
   }
 
-  /** Remove every seq-next descendant of a seq node. */
   function collapseAllDescendants(nodeId: string) {
     const allDesc = findDescendants(nodeId);
     const toRemove = new Set<string>();
@@ -377,7 +364,6 @@
         targetHandle: 't',
       };
     }
-    // Unconditional / fallback
     return {
       color: 'var(--color-text-dim)',
       animated: false,
@@ -386,29 +372,19 @@
     };
   }
 
-  // ── Session → canvas auto-paint (Phase S5) ──────────────────
-  // The session store owns an `activeScenario` + Map<name, steps[]>. This
-  // effect composes ALL scenarios into a unified tree (shared prefix +
-  // divergent tails) via `composeScenarioTree`, then syncs the canvas.
-  //
-  // Strategy: on every run, remove all `session:*` step nodes/edges and
-  // re-emit from the composed tree. Cheap (nodes are tiny) and avoids a
-  // fragile per-id diff. `activeScenario` is read so restyling (pill colors,
-  // active glow vs muted) re-runs when the user switches scenarios even if
-  // the tree shape is identical.
   $effect(() => {
-    // Reactive reads — trigger re-run on scenario changes + active-scenario flip.
     const scenarios = getScenarios();
     const forkOrigins = getForkOrigins();
     const active = getActiveScenario();
+    if (kind === 'solana') {
+      if (!solanaProgram) return;
+      paintSolanaScenarioTree(scenarios, forkOrigins, active);
+      return;
+    }
     if (!contract || !callgraphRaw) return;
 
     const tree = composeScenarioTree(scenarios, forkOrigins);
 
-    // Graph-store reads/writes are wrapped in untrack() to prevent a reactive
-    // cycle: reading getNodes() would subscribe this effect to `nodes`, and
-    // the subsequent removeNodesById/addNodes/addEdges would re-trigger it
-    // (infinite loop that froze the canvas on every c <func>).
     untrack(() => {
       const toRemove = new Set<string>();
       for (const n of getNodes()) {
@@ -423,11 +399,6 @@
 
       const allFuncs = [...(contract?.functions ?? []), ...(contract?.inherited_functions ?? [])];
 
-      // Lane-per-scenario tree. Each scenario renders only its divergent
-      // tail (`steps[at_step..end]`) on its own horizontal lane; the
-      // inherited prefix is reused from the origin's lane. A fork edge
-      // connects origin:step:{at_step-1} → self:step:{at_step} so branches
-      // visibly emerge from their fork point.
       const SESSION_BASE_X = 200;
       const SESSION_BASE_Y = 300;
       const SESSION_STEP_WIDTH = 280;
@@ -497,35 +468,22 @@
     });
   });
 
-  // Session mode visibility filter: hide every non-session node and every
-  // non-session-path edge so the canvas shows the scenarios tree alone.
-  // Switching mode back unhides — no state is destroyed.
   $effect(() => {
     const currentMode = mode;
-    // Wrapped in untrack: setNodes/setEdges would otherwise re-trigger this
-    // effect via getNodes()/getEdges() subscriptions.
     untrack(() => {
       setNodes(getNodes().map((n) => {
-        const isSessionNode = (n.data as any)._sessionStep === true;
-        const shouldHide = currentMode === 'session' && !isSessionNode;
+        const isSessionNode = (n.data as any)?._sessionStep === true;
+        const shouldHide = currentMode === 'session' ? !isSessionNode : isSessionNode;
         return n.hidden === shouldHide ? n : { ...n, hidden: shouldHide };
       }));
       setEdges(getEdges().map((e) => {
         const isSessionEdge = (e.data as any)?._type === 'session-path';
-        const shouldHide = currentMode === 'session' && !isSessionEdge;
+        const shouldHide = currentMode === 'session' ? !isSessionEdge : isSessionEdge;
         return e.hidden === shouldHide ? e : { ...e, hidden: shouldHide };
       }));
     });
   });
 
-  // Invalidate stale NodeInspector selection. Any flow that removes
-  // nodes (CFG collapse, removeFuncFromCanvas, removeSeqNode, DEL key,
-  // Clear from the sidebar) converges here — callers don't need to
-  // remember to null out selectedNode themselves. The read inside
-  // findNode creates a reactive dependency so the guard re-runs whenever
-  // the graph store mutates. Safe against loops: when we set
-  // selectedNode = null the effect re-runs, short-circuits on the null
-  // check, and exits without further writes.
   $effect(() => {
     if (!selectedNode) return;
     if (!findNode(selectedNode.id)) {
@@ -534,7 +492,6 @@
     }
   });
 
-  // Highlight the function node when the session broadcasts session_highlight
   $effect(() => {
     const funcName = sessionHighlight;
     if (!funcName) return;
@@ -544,43 +501,533 @@
     if (node) selectedNode = node;
   });
 
+  function snakeToPascal(s: string): string {
+    return s
+      .split('_')
+      .filter((p) => p.length > 0)
+      .map((p) => p.charAt(0).toUpperCase() + p.slice(1))
+      .join('');
+  }
+
+  function findAccountType(program: ProgramView, accountName: string): AccountView | undefined {
+    const target = snakeToPascal(accountName);
+    return program.accounts.find((a) => a.name === target);
+  }
+
+  function isAdminGated(program: ProgramView, ixName: string): boolean {
+    return (program.admin_gated ?? []).includes(ixName);
+  }
+
+  function handleSolanaIxAdd(ixName: string) {
+    if (!solanaProgram) return;
+    if (solanaCanvasIxs.has(ixName)) {
+      const existing = findNode(`ix:${ixName}`);
+      if (existing && flowApi) flowApi.fitView({ nodes: [{ id: existing.id }], padding: 0.5, duration: 400 });
+      return;
+    }
+    const ix = solanaProgram.instructions.find((i) => i.name === ixName);
+    if (!ix) return;
+    const idx = solanaCanvasIxs.size;
+    addNode({
+      id: `ix:${ixName}`,
+      type: 'instruction',
+      position: { x: idx * 220, y: 200 },
+      data: {
+        _type: 'instruction',
+        label: ixName,
+        programName: solanaProgram.name,
+        programId: solanaProgram.program_id,
+        args: ix.args ?? [],
+        accountsCount: (ix.accounts ?? []).length,
+        hasPdas: (ix.accounts ?? []).some((a) => a.pda != null),
+        signers: (ix.accounts ?? []).filter((a) => a.signer).map((a) => a.name),
+        adminGated: isAdminGated(solanaProgram, ixName),
+        discriminator_hex: ix.discriminator_hex,
+      },
+    });
+    solanaCanvasIxs = new Set([...solanaCanvasIxs, ixName]);
+    paintCpiEdges();
+    if (flowApi) flowApi.fitView({ nodes: [{ id: `ix:${ixName}` }], padding: 0.5, duration: 400 });
+  }
+
+  function handleSolanaIxRemove(ixName: string) {
+    const next = new Set(solanaCanvasIxs);
+    next.delete(ixName);
+    solanaCanvasIxs = next;
+    const ids = new Set<string>([`ix:${ixName}`]);
+    for (const n of getNodes()) {
+      const data: any = n.data;
+      if (data?._type === 'account' && data.parentInstruction === ixName) ids.add(n.id);
+    }
+    removeNodesById(ids);
+    const edgePrefix = `cpi:${ixName}->`;
+    const filtered = getEdges().filter((e) => !e.id.startsWith(edgePrefix));
+    if (filtered.length !== getEdges().length) setEdges(filtered);
+    pruneOrphanExternals();
+    solanaExpandedIxs = new Set([...solanaExpandedIxs].filter((n) => n !== ixName));
+  }
+
+  /** Remove external-program placeholder nodes that have no incoming cpi edge
+   *  left. Keeps the canvas clean after an ix is removed or after the overlay
+   *  drops samples for a target. */
+  function pruneOrphanExternals() {
+    const usedTargets = new Set<string>();
+    for (const e of getEdges()) {
+      if (e.id.startsWith('cpi:')) usedTargets.add(e.target);
+    }
+    const orphans = new Set<string>();
+    for (const n of getNodes()) {
+      if (n.id.startsWith('external:') && !usedTargets.has(n.id)) orphans.add(n.id);
+    }
+    if (orphans.size > 0) removeNodesById(orphans);
+  }
+
+  function paintSolanaScenarioTree(
+    scenarios: Map<string, any[]>,
+    forkOrigins: Map<string, any>,
+    active: string,
+  ) {
+    untrack(() => {
+      const toRemove = new Set<string>();
+      for (const n of getNodes()) {
+        if (n.id.startsWith('session:') || n.id.startsWith('trace:')) toRemove.add(n.id);
+      }
+      if (toRemove.size > 0) removeNodesById(toRemove);
+
+      const tree = composeScenarioTree(scenarios, forkOrigins);
+      if (tree.nodes.length === 0) {
+        solanaTraceCount = 0;
+        return;
+      }
+
+      const SESSION_BASE_X = 200;
+      const SESSION_BASE_Y = 200;
+      const SESSION_STEP_WIDTH = 240;
+      const SESSION_LANE_HEIGHT = 130;
+
+      const composedNodes = tree.nodes.map((cn) => {
+        const runtimeKey = `${cn._scenario}:${cn.stepIndex}`;
+        const runtime = solanaRuntimeByStep.get(runtimeKey);
+        return {
+          id: cn.id,
+          type: 'trace',
+          position: {
+            x: SESSION_BASE_X + cn.stepIndex * SESSION_STEP_WIDTH,
+            y: SESSION_BASE_Y + cn.lane * SESSION_LANE_HEIGHT,
+          },
+          data: {
+            _type: 'trace',
+            _sessionStep: true,
+            _scenario: cn._scenario,
+            _scenariosPassingThrough: cn._scenariosPassingThrough,
+            _activeScenario: active,
+            stepIndex: cn.stepIndex,
+            label: `${cn.function} #${cn.stepIndex}`,
+            instruction: cn.function,
+            scenario: cn._scenario,
+            computeUnits: runtime?.computeUnits ?? 0,
+            diffsCount: runtime?.diffsCount ?? 0,
+            logsExcerpt: runtime?.logsExcerpt ?? [],
+            error: runtime?.error ?? null,
+          } as any,
+        } as Node<GraphNodeData>;
+      });
+      addNodes(composedNodes);
+
+      const nodeScenarios = new Map<string, string[]>(
+        tree.nodes.map((n) => [n.id, n._scenariosPassingThrough]),
+      );
+
+      const composedEdges = tree.edges.map((ce) => {
+        const isFork = ce._forkEdge === true;
+        const sourceScns = nodeScenarios.get(ce.source) ?? [];
+        const targetScns = nodeScenarios.get(ce.target) ?? [];
+        const onActivePath = sourceScns.includes(active) && targetScns.includes(active);
+        const color = onActivePath
+          ? (isFork ? 'var(--color-accent)' : 'var(--color-accent-hover)')
+          : 'var(--color-text-dim)';
+        const opacity = onActivePath ? 1 : 0.4;
+        return {
+          id: ce.id,
+          source: ce.source,
+          target: ce.target,
+          sourceHandle: 'r',
+          targetHandle: 'l',
+          type: 'default',
+          animated: isFork && onActivePath,
+          style: `stroke: ${color}; opacity: ${opacity}; ${isFork ? 'stroke-dasharray: 4 4;' : ''}`,
+          markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12, color },
+          labelBgStyle: { fill: 'var(--color-surface)', fillOpacity: 0.85 },
+          labelBgPadding: [3, 5] as [number, number],
+          data: { _type: 'session-path', _scenario: ce._scenario, _forkEdge: isFork },
+        };
+      });
+      addEdges(composedEdges);
+
+      solanaTraceCount = tree.nodes.length;
+
+      const liveKeys = new Set(tree.nodes.map((n) => `${n._scenario}:${n.stepIndex}`));
+      let mutated = false;
+      const next = new Map(solanaRuntimeByStep);
+      for (const k of next.keys()) {
+        if (!liveKeys.has(k)) {
+          next.delete(k);
+          mutated = true;
+        }
+      }
+      if (mutated) solanaRuntimeByStep = next;
+    });
+  }
+
+  function isHiddenAccount(accName: string): boolean {
+    if (!hideSystem || !solanaProgram?.system_accounts) return false;
+    return solanaProgram.system_accounts.includes(accName);
+  }
+
+  function paintIxAccounts(ixName: string) {
+    if (!solanaProgram) return;
+    const ix = solanaProgram.instructions.find((i) => i.name === ixName);
+    if (!ix) return;
+    const parent = findNode(`ix:${ixName}`);
+    const baseX = parent?.position?.x ?? 0;
+    const baseY = (parent?.position?.y ?? 200) - 200;
+    const accounts = (ix.accounts ?? []).filter((acc) => !isHiddenAccount(acc.name));
+    const totalWidth = (accounts.length - 1) * 170;
+    const newNodes: any[] = [];
+    const newEdges: any[] = [];
+    accounts.forEach((acc: IxAccountView, i: number) => {
+      const id = `ix:${ixName}:acc:${acc.name}`;
+      const matched = findAccountType(solanaProgram!, acc.name);
+      newNodes.push({
+        id,
+        type: 'account',
+        position: { x: baseX - totalWidth / 2 + i * 170, y: baseY },
+        data: {
+          _type: 'account',
+          label: acc.name,
+          programName: solanaProgram!.name,
+          parentInstruction: ixName,
+          fields: matched?.fields ?? [],
+          discriminator_hex: matched?.discriminator_hex,
+          account_type: matched?.name,
+          signer: acc.signer,
+          writable: acc.writable,
+          pda: acc.pda != null,
+          kind: acc.kind,
+        },
+      });
+      const edgeColor = acc.writable ? 'var(--color-accent-hover)' : 'var(--color-text-muted)';
+      newEdges.push({
+        id: `e:${ixName}:${acc.name}`,
+        source: `ix:${ixName}`,
+        sourceHandle: 't',
+        target: id,
+        targetHandle: 'b',
+        style: acc.writable ? `stroke: ${edgeColor};` : `stroke-dasharray: 5 3; stroke: ${edgeColor};`,
+        markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12, color: edgeColor },
+      });
+    });
+    if (newNodes.length > 0) addNodes(newNodes);
+    if (newEdges.length > 0) addEdges(newEdges);
+  }
+
+  /** Friendly labels for well-known Solana programs. Anything not in this map
+   *  falls back to a base58-truncated id rendered by ExternalProgramNode. */
+  const KNOWN_PROGRAMS: Record<string, string> = {
+    '11111111111111111111111111111111': 'system_program',
+    'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA': 'token_program',
+    'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb': 'token_program_2022',
+    'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL': 'associated_token_program',
+    'SysvarRent111111111111111111111111111111111': 'sysvar:rent',
+    'SysvarC1ock11111111111111111111111111111111': 'sysvar:clock',
+  };
+
+  function externalNodeId(programId: string): string {
+    return `external:${programId}`;
+  }
+  function cpiEdgeId(fromIx: string, programId: string): string {
+    return `cpi:${fromIx}->${programId}`;
+  }
+
+  /** Paint dashed `cpi` edges from on-canvas instruction nodes to placeholder
+   *  external-program nodes. Reads from the runtime overlay store, so the
+   *  same handler covers both the initial REST snapshot and incremental WS
+   *  updates. Edges persist until the user clears the canvas or switches
+   *  scenario; cleanup happens in clearGraph / scenario_switched. */
+  function paintCpiEdges() {
+    if (!solanaProgram) return;
+    const edges = getCpiEdges();
+    if (edges.length === 0) return;
+
+    const existing = new Set(getEdges().map((e) => e.id));
+    const liveNodes = new Set(getNodes().map((n) => n.id));
+    const usedExternals = new Set<string>();
+    const newNodes: any[] = [];
+    const newEdges: any[] = [];
+
+    for (const e of edges) {
+      const fromId = `ix:${e.from_ix}`;
+      if (!liveNodes.has(fromId)) continue;
+
+      const extId = externalNodeId(e.to_program);
+      const label = KNOWN_PROGRAMS[e.to_program] ?? e.to_program;
+
+      if (!liveNodes.has(extId) && !usedExternals.has(extId)) {
+        const parent = findNode(fromId);
+        const baseX = (parent?.position?.x ?? 0) + 220;
+        const baseY = (parent?.position?.y ?? 200) + 80;
+        newNodes.push({
+          id: extId,
+          type: 'function',
+          position: { x: baseX, y: baseY },
+          data: {
+            _type: 'function',
+            label,
+            is_external: true,
+          },
+        });
+        usedExternals.add(extId);
+      }
+
+      const edgeId = cpiEdgeId(e.from_ix, e.to_program);
+      if (existing.has(edgeId)) continue;
+      newEdges.push({
+        id: edgeId,
+        source: fromId,
+        sourceHandle: 'r',
+        target: extId,
+        targetHandle: 'l',
+        label: `cpi (${e.samples}x)`,
+        style: 'stroke-dasharray: 5 3; stroke: var(--color-warning);',
+        markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12, color: 'var(--color-warning)' },
+        labelBgStyle: { fill: 'var(--color-surface)', fillOpacity: 0.85 },
+        labelBgPadding: [3, 5] as [number, number],
+        labelStyle: 'font-size: 9px; fill: var(--color-warning);',
+        data: { _type: 'cpi-edge' },
+      });
+    }
+
+    if (newNodes.length > 0) addNodes(newNodes);
+    if (newEdges.length > 0) addEdges(newEdges);
+  }
+
+  /** Drop existing CPI placeholder nodes and edges. Used when switching
+   *  scenarios or reloading the overlay snapshot — the new overlay state
+   *  determines what gets repainted via paintCpiEdges. */
+  function clearCpiEdges() {
+    const ids = new Set<string>();
+    for (const n of getNodes()) {
+      if (n.id.startsWith('external:')) ids.add(n.id);
+    }
+    if (ids.size > 0) removeNodesById(ids);
+    const remainingEdges = getEdges().filter((e) => !e.id.startsWith('cpi:'));
+    if (remainingEdges.length !== getEdges().length) setEdges(remainingEdges);
+  }
+
+  function clearIxAccounts(ixName: string) {
+    const ids = new Set<string>();
+    for (const n of getNodes()) {
+      const data: any = n.data;
+      if (data?._type === 'account' && data.parentInstruction === ixName) ids.add(n.id);
+    }
+    if (ids.size > 0) removeNodesById(ids);
+  }
+
+  function handleSolanaIxExpand(ixName: string) {
+    if (!solanaProgram) return;
+    if (solanaExpandedIxs.has(ixName)) {
+      clearIxAccounts(ixName);
+      solanaExpandedIxs = new Set([...solanaExpandedIxs].filter((n) => n !== ixName));
+      return;
+    }
+    paintIxAccounts(ixName);
+    solanaExpandedIxs = new Set([...solanaExpandedIxs, ixName]);
+  }
+
+  function handleHideSystemToggle(next: boolean) {
+    if (hideSystem === next) return;
+    hideSystem = next;
+    if (kind !== 'solana' || !solanaProgram) return;
+    for (const ixName of solanaExpandedIxs) {
+      clearIxAccounts(ixName);
+      paintIxAccounts(ixName);
+    }
+  }
+
+  function handleSolanaRun(name: string) {
+    if (!solanaProgram) return;
+    const ix = solanaProgram.instructions.find((i) => i.name === name);
+    if (!ix) return;
+    selectedNode = { ...findNode(`ix:${ix.name}`)?.data, id: `ix:${ix.name}` } as any;
+    flowApi?.fitView({ nodes: [{ id: `ix:${ix.name}` }], padding: 0.5, duration: 400 });
+  }
+
+  async function handleSolanaSubmitFromInspector(
+    ix: any,
+    payload: { args: Record<string, any>; accounts: Record<string, string>; signers: string[] },
+  ) {
+    await handleSolanaSubmit(payload, ix);
+  }
+
+  onMount(() => {
+    const unsub = subscribeWs('solana_users_changed', () => {
+      if (solanaProgram) refreshSolanaUsers();
+    });
+    const unsubAdd = subscribeWs('session_add_node', (msg) => {
+      const runtime = (msg as any).runtime;
+      if (!runtime) return;
+      const key = `${msg.scenario}:${msg.step_index}`;
+      const logs: string[] = runtime.logs_excerpt ?? [];
+      const inferredError = logs.find((l: string) =>
+        l.includes('AnchorError') || l.includes('failed:') || l.includes('panicked')
+      );
+      const next = new Map(solanaRuntimeByStep);
+      next.set(key, {
+        computeUnits: runtime.compute_units ?? 0,
+        diffsCount: runtime.diffs_count ?? 0,
+        logsExcerpt: logs,
+        error: runtime.error ?? inferredError ?? null,
+      });
+      solanaRuntimeByStep = next;
+    });
+    const unsubOverlay = subscribeWs('session_overlay_update', (msg) => {
+      applyRuntimeOverlayUpdate(msg);
+      paintCpiEdges();
+    });
+    const unsubScenarioSwitch = subscribeWs('scenario_switched', async (msg) => {
+      if (solanaProgram) {
+        clearCpiEdges();
+        await loadRuntimeOverlay(solanaProgram.name, msg.to);
+        await loadUserLabels(msg.to);
+        paintCpiEdges();
+      }
+    });
+    return () => { unsub(); unsubAdd(); unsubOverlay(); unsubScenarioSwitch(); };
+  });
+
+  async function refreshSolanaUsers() {
+    if (!solanaProgram) return;
+    try {
+      const result = await postSolanaCommand('Users', solanaProgram.name);
+      if (result?.UserList?.users) {
+        solanaUsers = result.UserList.users;
+      }
+    } catch {}
+  }
+
+  async function handleSolanaSubmit(
+    payload: {
+      args: Record<string, any>;
+      accounts: Record<string, string>;
+      signers: string[];
+    },
+    targetIx?: any,
+  ) {
+    if (!solanaProgram) return;
+    const ix = targetIx;
+    if (!ix) return;
+    const ixName = ix.name;
+    const result = await postSolanaCommand(
+      {
+        Call: {
+          ix: ixName,
+          args: payload.args,
+          accounts: payload.accounts,
+          signers: payload.signers,
+        },
+      },
+      solanaProgram.name,
+    );
+    if (result?.Error) {
+      throw new Error(result.Error.message ?? 'Call failed');
+    }
+    if (result?.StepAdded) {
+      const sa = result.StepAdded;
+      const scenario = getActiveScenario() ?? 'main';
+      const runtimeKey = `${scenario}:${sa.step_index}`;
+      const next = new Map(solanaRuntimeByStep);
+      const explicitError: string | null = (sa.error as string | null | undefined) ?? null;
+      const logs: string[] = sa.logs_excerpt ?? [];
+      const inferredError = logs.find((l) =>
+        l.includes('AnchorError') || l.includes('failed:') || l.includes('panicked')
+      );
+      next.set(runtimeKey, {
+        computeUnits: sa.compute_units ?? 0,
+        diffsCount: sa.account_diffs_count ?? 0,
+        logsExcerpt: logs,
+        error: explicitError ?? inferredError ?? null,
+      });
+      solanaRuntimeByStep = next;
+    }
+    await refreshSolanaUsers();
+  }
+
+  let mountCancelled = $state(false);
+  onDestroy(() => {
+    mountCancelled = true;
+    clearRuntimeOverlay();
+    clearUserLabels();
+  });
+
   onMount(async () => {
     const contractName = page.params.name;
     if (!contractName) return;
-    // Graph store is global — stale nodes from a previous contract must be
-    // wiped or they'd pollute this contract's canvas (and leave the sidebar
-    // out of sync because local Sets re-init empty on re-mount).
+    const expected = contractName;
+    const stillFresh = () => !mountCancelled && page.params.name === expected;
     clearGraph();
     canvasFuncs = new Set();
     expandedFuncs = new Set();
     seqExpanded = new Map();
     selectedNode = null;
     selectedPath = null;
+    clearRuntimeOverlay();
+    clearUserLabels();
     setSearchContext(contractName);
     try {
-      contract = await getContract(contractName);
+      const pm = await getProjectMap();
+      if (!stillFresh()) return;
+      kind = pm.kind === 'solana' ? 'solana' : 'solidity';
+      if (kind === 'solana') {
+        try {
+          const prog = await getProgramView(contractName);
+          if (!stillFresh()) return;
+          solanaProgram = prog;
+        } catch {
+          if (stillFresh()) error = `Program "${contractName}" not found`;
+          return;
+        }
+        projectMap = [];
+        await refreshSolanaUsers();
+        const scenario = getActiveScenario();
+        await loadRuntimeOverlay(contractName, scenario);
+        if (scenario) await loadUserLabels(scenario);
+        paintCpiEdges();
+        return;
+      }
+      projectMap = pm.contracts ?? [];
+      const ctr = await getContract(contractName);
+      if (!stillFresh()) return;
+      contract = ctr;
       const callgraphData = await getCallGraph(contractName);
+      if (!stillFresh()) return;
       callgraphRaw = callgraphData;
-      try { seqTree = await getSequences(contractName); } catch {}
-      try { seqAnalysis = await getSequenceAnalysis(contractName); } catch {}
-      // Fire-and-forget — palette commands render fine without it, cross-
-      // contract nav just stays empty until the list lands.
       try {
-        const pm = await getProjectMap();
-        projectMap = pm.contracts;
-      } catch {}
+        const tree = await getSequences(contractName);
+        if (stillFresh()) seqTree = tree;
+      } catch (e) {
+        if (stillFresh() && kind !== 'solana') console.warn('getSequences failed:', e);
+      }
+      try {
+        const analysis = await getSequenceAnalysis(contractName);
+        if (stillFresh()) seqAnalysis = analysis;
+      } catch (e) {
+        if (stillFresh() && kind !== 'solana') console.warn('getSequenceAnalysis failed:', e);
+      }
     } catch (e) {
-      error = `Contract "${contractName}" not found`;
+      if (stillFresh()) error = `Contract "${contractName}" not found`;
     }
   });
 
-  // Listen for search result navigation. Only `getSearchNavigate()` is
-  // tracked — everything else is accessed via untrack so mutations inside
-  // the IIFE (canvasFuncs, funcPaths, expandedFuncs, edges via
-  // highlightPath) don't re-enter this effect and trigger an
-  // effect_update_depth_exceeded loop. The effect re-runs exactly when
-  // the palette publishes a new navigation target; subsequent state
-  // writes are handled inside the async task.
   $effect(() => {
     const nav = getSearchNavigate();
     if (!nav) return;
@@ -628,10 +1075,6 @@
     });
   });
 
-  // Sidebar click dispatcher. In Session mode, the sidebar is the entry
-  // point for building a scenario — clicking a function fires a Call
-  // command and the WS session_add_node event repaints the scenario tree.
-  // In CFG/Seq modes, clicking adds the function as an exploration node.
   function notifyFailure(label: string, e: unknown) {
     const reason = e instanceof Error ? e.message : String(e);
     console.warn(`${label} failed:`, e);
@@ -639,6 +1082,10 @@
   }
 
   async function handleSidebarAdd(funcName: string) {
+    if (kind === 'solana') {
+      handleSolanaIxAdd(funcName);
+      return;
+    }
     if (mode === 'session') {
       try {
         await postCommand({ Call: { func: funcName } }, contract?.name);
@@ -655,7 +1102,6 @@
     const nodeData = callgraphRaw.nodes.find(n => n.data.label === funcName);
     if (!nodeData) return;
 
-    // Look up enrichment data from ContractDetail
     const allFuncs = [...(contract?.functions ?? []), ...(contract?.inherited_functions ?? [])];
     const funcDetail = allFuncs.find((f: any) => f.name === funcName);
 
@@ -681,7 +1127,6 @@
       },
     } as Node<GraphNodeData>);
 
-    // Add call edges where BOTH source and target are on canvas
     for (const e of callgraphRaw.edges) {
       const srcOnCanvas = canvasFuncs.has(
         callgraphRaw.nodes.find(n => n.data.id === e.data.source)?.data.label ?? ''
@@ -738,18 +1183,15 @@
 
     const toRemove = new Set<string>([nodeId]);
 
-    // CFG children (blocks with _parentFunc === funcName)
     for (const n of getNodes()) {
       if ('_parentFunc' in n.data && n.data._parentFunc === funcName) {
         toRemove.add(n.id);
       }
     }
 
-    // Seq descendants (recursive via _seqParent)
     const seqDesc = findDescendants(nodeId);
     for (const id of seqDesc) toRemove.add(id);
 
-    // Also find seq nodes whose _seqParent starts with nodeId→
     for (const n of getNodes()) {
       if ('_seqParent' in n.data) {
         const sp = n.data._seqParent as string;
@@ -773,10 +1215,6 @@
     seqExpanded = new Map(seqExpanded);
   }
 
-  // Keyboard-driven delete from the canvas (Figma/Excalidraw pattern).
-  // Dispatches each selected node to the right existing helper so all the
-  // store bookkeeping (canvasFuncs, expandedFuncs, seqExpanded, dim state)
-  // stays in one place. Session mode is guarded at the canvas prop level.
   function handleNodesDelete(nodes: Node<GraphNodeData>[]) {
     if (mode === 'session') return;
     const funcsToRemove = new Set<string>();
@@ -797,14 +1235,12 @@
     selectedNode = null;
   }
 
-  // --- Event handlers ---
 
   async function handleNodeTap(node: Node<GraphNodeData>) {
     const data = node.data;
 
     if (!selectedNode || selectedNode.id !== node.id) {
       selectedPath = null;
-      // Reset CFG block highlighting when clicking a different node
       setNodes(getNodes().map(n => {
         if (n.data._type === 'block' && '_dimmed' in n.data && n.data._dimmed) {
           return { ...n, data: { ...n.data, _dimmed: false } as GraphNodeData };
@@ -836,9 +1272,6 @@
     resetAllDimmed();
   }
 
-  // Right-click "⎇ Fork scenario here": forks the active scenario, keeping
-  // steps [0..=stepIndex] (i.e. truncate at stepIndex + 1). Surfaces backend
-  // errors via console.warn — ScenarioStore enforces uniqueness of names.
   async function handleForkScenario(stepIndex: number) {
     contextMenu = null;
     const name = promptScenarioName();
@@ -850,8 +1283,15 @@
     );
   }
 
-  // Toolbar ↶: remove the last step of the active scenario.
   async function handleSessionBack() {
+    if (kind === 'solana' && solanaProgram) {
+      try {
+        await postSolanaCommand('Back', solanaProgram.name);
+      } catch (e) {
+        notifyFailure('session back', e);
+      }
+      return;
+    }
     try {
       await postCommand('Back', contract?.name);
     } catch (e) {
@@ -859,12 +1299,19 @@
     }
   }
 
-  // Toolbar 🗑: wipe every step of the active scenario (with confirm).
   async function handleSessionClear() {
     const active = getActiveScenario();
     const steps = getScenarios().get(active) ?? [];
     if (steps.length === 0) return;
     if (!confirm(`Clear all ${steps.length} step(s) from scenario "${active}"?`)) return;
+    if (kind === 'solana' && solanaProgram) {
+      try {
+        await postSolanaCommand('Clear', solanaProgram.name);
+      } catch (e) {
+        notifyFailure('session clear', e);
+      }
+      return;
+    }
     try {
       await postCommand('Clear', contract?.name);
     } catch (e) {
@@ -872,30 +1319,25 @@
     }
   }
 
-  // Right-click "{} View source": open the inline CodeMirror panel.
   function handleViewSource(funcName: string) {
     contextMenu = null;
     sourcePanel = { func: funcName };
   }
 
-  // Right-click "↗ Open in code": fetch the function's absolute path + line
-  // from the source endpoint and fire the `vscode://` deep link. If no IDE
-  // is registered the browser silently drops the request — no UI nag.
   async function handleOpenInIde(funcName: string) {
     contextMenu = null;
-    if (!contract) return;
+    const projectName = kind === 'solana' ? solanaProgram?.name : contract?.name;
+    if (!projectName) return;
     try {
-      const res = await getFunctionSource(contract.name, funcName);
+      const res = kind === 'solana'
+        ? await getInstructionSource(projectName, funcName)
+        : await getFunctionSource(projectName, funcName);
       openInIde(res.file_path, res.span.start_line, res.span.start_col);
     } catch (e) {
       notifyFailure('open in IDE', e);
     }
   }
 
-  // Right-click "✕ Remove from here": truncate the active scenario at
-  // `stepIndex` by firing N Back commands. N = current length - stepIndex.
-  // Using Back (which the backend already supports) avoids needing a new
-  // truncate command on the server.
   async function handleRemoveFromHere(stepIndex: number) {
     contextMenu = null;
     const active = getActiveScenario();
@@ -914,12 +1356,8 @@
 
   function handleContextMenu(event: MouseEvent, node: Node<GraphNodeData>) {
     const data = node.data;
-    // "Fork scenario here" is only meaningful when the active scenario's
-    // path passes through this node — either it owns the node or inherits
-    // it from an ancestor. `_scenariosPassingThrough` already encodes both
-    // cases so the check is a single Array.includes.
     let sessionStep: { stepIndex: number } | undefined;
-    if (data._type === 'function' && data._sessionStep === true) {
+    if ((data._type === 'function' || data._type === 'trace') && data._sessionStep === true) {
       const { _scenariosPassingThrough: scns, _activeScenario: active, stepIndex: idx } = data;
       if (typeof idx === 'number' && active && scns?.includes(active)) {
         sessionStep = { stepIndex: idx };
@@ -936,13 +1374,13 @@
   }
 
   async function handleNodeClick(node: Node<GraphNodeData>, event?: MouseEvent) {
-    // Selection first (sync), then expand/collapse (async)
     handleNodeTap(node);
-    // In Session mode the canvas is read-only for exploration — clicks only
-    // select. Expansion would add CFG blocks / seq-next children that we
-    // deliberately hide in this mode.
     if (mode === 'session') return;
     const d = node.data;
+    if (d._type === 'instruction' && mode === 'cfg') {
+      handleSolanaIxExpand(d.label as string);
+      return;
+    }
     if (d._type === 'function' && !d.is_external) {
       await handleFunctionTap(d.label, node.id);
     } else if (d._type === 'seq-next') {
@@ -959,10 +1397,6 @@
   }
 
   async function handleSeqNodeTap(funcName: string, nodeId: string, seqParent: string, event?: MouseEvent) {
-    // Plain click commits to one sibling path: collapse the auto-expanded
-    // sub-trees of all siblings at this level. Shift+click skips the
-    // collapse so the user can keep multiple branches open in parallel —
-    // matches the "Shift+click → add branch" hint shown in Legend.
     const keepSiblings = event?.shiftKey === true;
     if (seqParent && !keepSiblings) {
       const siblings = getNodes().filter(
@@ -988,7 +1422,6 @@
     const parentId = anchorNodeId || `${contract.name}::${funcName}`;
 
     if (expandedFuncs.has(funcName)) {
-      // --- COLLAPSE ---
       const toRemove = new Set<string>();
       for (const n of getNodes()) {
         if ('_parentFunc' in n.data && n.data._parentFunc === funcName) {
@@ -1003,14 +1436,12 @@
       return;
     }
 
-    // --- EXPAND ---
     if (!cfgCache[funcName]) {
       cfgCache[funcName] = await getCfg(contract.name, funcName);
     }
     const cfg = cfgCache[funcName];
     const parentPos = liveNodePosition(parentId) ?? { x: 300, y: 200 };
 
-    // 1. Build Svelte Flow nodes (initially at parent position for animation)
     const cfgNodes: Node<GraphNodeData>[] = cfg.nodes.map(n => ({
       id: `cfg:${funcName}:${n.data.id}`,
       type: 'block',
@@ -1024,7 +1455,6 @@
       },
     }));
 
-    // 2. Build edges with color-coded styles, arrows, and explicit handles
     const cfgEdges: Edge[] = cfg.edges.map((e, i) => {
       const es = cfgEdgeStyle(e.data.kind);
       return {
@@ -1048,7 +1478,6 @@
       };
     });
 
-    // 3. Link edge: function node → CFG entry block
     const entryNode = cfg.nodes.find(n => n.data.node_type === 'Entry');
     if (entryNode) {
       cfgEdges.push({
@@ -1064,12 +1493,10 @@
       });
     }
 
-    // 4. Run dagre on CFG subset to get positions
     const layoutNodes = runDagreLayout(cfgNodes, cfgEdges, {
       rankDir: 'TB', nodeSep: 40, rankSep: 60, nodeWidth: 180,
     });
 
-    // 5. Offset all positions below the parent function node
     let minX = Infinity, minY = Infinity, maxX = -Infinity;
     for (const n of layoutNodes) {
       if (n.position.x < minX) minX = n.position.x;
@@ -1085,7 +1512,6 @@
       finalPositions.set(n.id, { x: n.position.x + offsetX, y: n.position.y + offsetY });
     }
 
-    // Add nodes at their final dagre-computed positions (no animation, predictable)
     for (const n of cfgNodes) {
       const final = finalPositions.get(n.id);
       if (final) n.position = final;
@@ -1093,7 +1519,6 @@
     addNodes(cfgNodes);
     addEdges(cfgEdges);
 
-    // Dim function nodes + call edges
     dimFunctionLayer(parentId);
 
     expandedFuncs.add(funcName);
@@ -1101,40 +1526,27 @@
   }
 
   async function toggleSeqExpand(funcName: string, parentNodeId: string) {
-    // ── COLLAPSE ──
     if (seqExpanded.has(parentNodeId)) {
       collapseAllDescendants(parentNodeId);
       seqExpanded.delete(parentNodeId);
       seqExpanded = new Map(seqExpanded);
 
-      // If no seq-next nodes remain, un-dim everything
       const anySeq = getNodes().some(n => n.data._type === 'seq-next');
       if (!anySeq) resetAllDimmed();
       return;
     }
 
-    // ── EXPAND ──
     if (!seqTree || !seqTree.functions) return;
 
-    // Find the root function node for this seq subtree (walk up _seqParent chain)
     const rootFunc = findSeqRootFunction(parentNodeId);
     if (!rootFunc) return;
 
     const seqFunctions: Array<{ name: string; visibility: string; read_only: boolean; path_count: number }> = seqTree.functions;
 
-    // Show every contract function as a candidate next-step, matching the
-    // CLI `f` listing. The "interesting transition" signal (⚠ conditions
-    // badge + dashed border) is preserved automatically via the per-child
-    // `_transition` lookup below — no filtering needed here.
     const targets = seqFunctions;
 
-    // Reuse the same lookup the scenarios canvas uses to pull modifier/
-    // mutability info that isn't on `SequenceFunction`. `contract` already
-    // holds the full function detail.
     const allFuncs = [...(contract?.functions ?? []), ...(contract?.inherited_functions ?? [])];
 
-    // Build new seq-next children with placeholder positions — relayoutSeqTree
-    // will assign final positions from the shared BFS walk.
     const newNodes: Node<GraphNodeData>[] = [];
     const newEdges: Edge[] = [];
     for (const func of targets) {
@@ -1176,8 +1588,6 @@
       });
     }
 
-    // Commit new nodes/edges to the store first, then let the shared helper
-    // re-run BFS over the whole subtree (root + existing + new) coherently.
     addNodes(newNodes);
     addEdges(newEdges);
     relayoutSeqTree(rootFunc.id);
@@ -1189,7 +1599,19 @@
   }
 
   function switchMode(newMode: 'cfg' | 'sequences' | 'session') {
-    // Remove expanded nodes from graph store
+    if (kind === 'solana') {
+      const toRemove = new Set<string>();
+      for (const n of getNodes()) {
+        const isSessionNode = (n.data as any)?._sessionStep === true;
+        if (!isSessionNode) toRemove.add(n.id);
+      }
+      if (toRemove.size > 0) removeNodesById(toRemove);
+      solanaCanvasIxs = new Set();
+      solanaExpandedIxs = new Set();
+      selectedNode = null;
+      mode = newMode;
+      return;
+    }
     const toRemove = new Set<string>();
     for (const n of getNodes()) {
       if (n.data._type === 'block' || n.data._type === 'seq-next') {
@@ -1209,19 +1631,16 @@
   function highlightPath(funcName: string, path: any) {
     selectedPath = path;
 
-    // Build set of highlighted block IDs
     const highlightedIds = new Set<string>(
       path.nodes.map((n: any) => `cfg:${funcName}:b${n.block_id}`)
     );
 
-    // Build set of highlighted edge pairs (consecutive path nodes)
     const highlightedEdgePairs = new Set<string>();
     const blockIds = [...highlightedIds];
     for (let i = 0; i < blockIds.length - 1; i++) {
       highlightedEdgePairs.add(`${blockIds[i]}→${blockIds[i + 1]}`);
     }
 
-    // Update nodes: dim all CFG blocks except highlighted ones
     setNodes(getNodes().map(n => {
       if (n.data._type === 'block' && n.data._parentFunc === funcName) {
         const dimmed = !highlightedIds.has(n.id);
@@ -1230,7 +1649,6 @@
       return n;
     }));
 
-    // Update edges: dim all CFG edges except path edges
     setEdges(getEdges().map(e => {
       if (e.data?._parentFunc === funcName && e.data?._type === 'cfg-edge') {
         const key = `${e.source}→${e.target}`;
@@ -1241,12 +1659,60 @@
     }));
   }
 
-  // ── Cmd+K palette: publish context commands ──────────────────────────
-  // Rebuilds whenever any input state changes (contract, scenarios,
-  // active scenario, mode, canvas state, project map). The palette store
-  // is global, so on route unmount we clear the list to avoid leaking
-  // stale handlers back to the next page.
   $effect(() => {
+    if (kind === 'solana' && solanaProgram) {
+      const prog = solanaProgram;
+      const cmds: Command[] = [];
+      cmds.push(
+        { id: 'mode:cfg', label: 'Mode: Program', category: 'Mode', icon: '⊟', keywords: ['cfg', 'program', 'instructions'], run: () => switchMode('cfg') },
+        { id: 'mode:sequences', label: 'Mode: Sequences', category: 'Mode', icon: '⇵', keywords: ['seq', 'flow'], run: () => switchMode('sequences') },
+        { id: 'mode:session', label: 'Mode: Session', category: 'Mode', icon: '⎇', keywords: ['scenario', 'session', 'trace'], run: () => switchMode('session') },
+      );
+      cmds.push({
+        id: 'canvas:center',
+        label: 'Center canvas',
+        category: 'Action',
+        icon: '⊙',
+        keywords: ['fit', 'zoom', 'reset view'],
+        run: () => { flowApi?.fitView({ padding: 0.1 }); },
+      });
+      for (const ix of prog.instructions ?? []) {
+        cmds.push({
+          id: `solana-ix:${ix.name}`,
+          label: ix.name,
+          category: 'Function',
+          icon: 'ƒ',
+          detail: `${(ix.args ?? []).length} args · ${(ix.accounts ?? []).length} accounts`,
+          keywords: ['instruction', 'jump', 'canvas'],
+          run: () => handleSolanaIxAdd(ix.name),
+        });
+        cmds.push({
+          id: `solana-run:${ix.name}`,
+          label: `Execute ${ix.name}`,
+          category: 'Action',
+          icon: '▶',
+          keywords: ['call', 'execute', 'instruction', 'run'],
+          run: () => handleSolanaRun(ix.name),
+        });
+      }
+      for (const a of prog.accounts ?? []) {
+        cmds.push({
+          id: `solana-acc:${a.name}`,
+          label: a.name,
+          category: 'Contract',
+          icon: '◇',
+          detail: 'account type',
+          keywords: ['account', 'type'],
+          run: () => {
+            const node = findNode(`account:${a.name}`);
+            if (node && flowApi) flowApi.fitView({ nodes: [{ id: node.id }], padding: 0.5, duration: 400 });
+          },
+        });
+      }
+      setPaletteCommands(cmds);
+      return;
+    }
+
     if (!contract) {
       setPaletteCommands([]);
       return;
@@ -1254,14 +1720,12 @@
     const ctr = contract;
     const cmds: Command[] = [];
 
-    // Modes — always present. Icon hints the layout.
     cmds.push(
       { id: 'mode:cfg', label: 'Mode: CFG', category: 'Mode', icon: '⊟', keywords: ['cfg', 'control flow'], run: () => switchMode('cfg') },
       { id: 'mode:sequences', label: 'Mode: Sequences', category: 'Mode', icon: '⇵', keywords: ['seq', 'calls'], run: () => switchMode('sequences') },
       { id: 'mode:session', label: 'Mode: Session', category: 'Mode', icon: '⎇', keywords: ['scenario', 'session'], run: () => switchMode('session') },
     );
 
-    // Canvas / terminal actions.
     cmds.push(
       { id: 'canvas:center', label: 'Center canvas', category: 'Action', icon: '⊙', keywords: ['fit', 'zoom', 'reset view'], run: () => { flowApi?.fitView({ padding: 0.1 }); } },
       { id: 'canvas:clear', label: 'Clear canvas', category: 'Action', icon: '✕', keywords: ['reset', 'wipe'], run: () => {
@@ -1271,16 +1735,11 @@
       { id: 'terminal:toggle', label: 'Toggle terminal', category: 'Action', icon: '>_', keywords: ['console', 'repl', 'pty'], run: () => toggleTerminal() },
     );
 
-    // Session controls — only meaningful while there is an active scenario
-    // with at least one step. We still expose them otherwise so users can
-    // discover the shortcut; the handlers already guard empty scenarios.
     cmds.push(
       { id: 'session:back', label: 'Back — remove last step', category: 'Action', icon: '↶', keywords: ['undo', 'step'], run: () => handleSessionBack() },
       { id: 'session:clear', label: 'Clear scenario', category: 'Action', icon: '🗑', keywords: ['reset scenario'], run: () => handleSessionClear() },
     );
 
-    // Scenario lifecycle. "Switch to X" and "Delete X" per existing
-    // scenario; "New scenario" always available.
     cmds.push({
       id: 'scenario:new',
       label: 'New scenario',
@@ -1313,11 +1772,6 @@
       }
     }
 
-    // Functions — own + inherited. Jump = add to canvas (Session mode
-    // turns it into an add-step, which matches the sidebar click).
-    // Solidity allows overloading by signature so names may repeat; we
-    // include the index in the id to keep every row uniquely keyed even
-    // when two rows end up with the same label.
     const allFuncs = [
       ...(ctr.functions ?? []).map((f) => ({ name: f.name, source: 'own' as const })),
       ...(ctr.inherited_functions ?? []).map((f) => ({ name: f.name, source: 'inherited' as const })),
@@ -1334,9 +1788,6 @@
       });
     });
 
-    // Cross-contract navigation. Skip the current one and dedupe by name
-    // — ProjectMap may list the same interface twice (keyed each would
-    // throw on duplicate ids).
     const seenContracts = new Set<string>([ctr.name]);
     for (const c of projectMap) {
       if (seenContracts.has(c.name)) continue;
@@ -1355,9 +1806,6 @@
     setPaletteCommands(cmds);
   });
 
-  // Clear published commands on unmount so the palette doesn't render
-  // stale handlers if the user lands on a page that doesn't publish its
-  // own list.
   onDestroy(() => {
     clearPaletteCommands();
   });
@@ -1366,22 +1814,31 @@
 <div class="fixed inset-0 flex flex-col bg-dark">
   {#if error}
     <div class="p-6 text-danger">{error}</div>
-  {:else}
+  {:else if contract || (kind === 'solana' && solanaProgram)}
     <TopBar
-      contractName={contract?.name ?? '...'}
+      contractName={kind === 'solana' && solanaProgram ? solanaProgram.name : (contract?.name ?? '...')}
       {mode}
       {seqDirection}
+      {kind}
+      {hideSystem}
       onmodechange={switchMode}
       onsearch={togglePalette}
       oncenter={() => flowApi?.fitView({ padding: 0.1 })}
       onseqdirection={(dir) => { seqDirection = dir; reorientAllSeqSubtrees(); }}
       onsessionback={handleSessionBack}
       onsessionclear={handleSessionClear}
+      onhidesystem={handleHideSystemToggle}
     />
     <div class="flex-1 flex overflow-hidden h-full">
-      {#if contract}
-        <FunctionSidebar {contract} {canvasFuncs} {mode} onadd={handleSidebarAdd} onremove={removeFuncFromCanvas} />
-      {/if}
+      <FunctionSidebar
+        contract={kind === 'solana' ? null : contract}
+        program={kind === 'solana' ? solanaProgram : null}
+        {kind}
+        canvasFuncs={kind === 'solana' ? solanaCanvasIxs : canvasFuncs}
+        {mode}
+        onadd={handleSidebarAdd}
+        onremove={kind === 'solana' ? handleSolanaIxRemove : removeFuncFromCanvas}
+      />
 
       <GraphCanvasFlow
         bind:this={graphCanvas}
@@ -1394,32 +1851,48 @@
         onready={(api) => { flowApi = api; }}
       />
 
-      {#if contract}
-        <SessionSidebar
-          contract={contract.name}
-          {selectedNode}
-          {selectedPath}
-          {funcPaths}
-          {expandedFuncs}
-          {seqExpanded}
-          {mode}
-          {seqAnalysis}
-          contractDetail={{ name: contract.name, functions: contract.functions }}
-          lookupBlock={(blockId) => {
-            const node = findNode(blockId);
-            if (!node || node.data._type !== 'block') return null;
-            return { statements: (node.data as any).statements ?? [], node_type: (node.data as any).node_type };
-          }}
-          onpathselect={(funcName, path) => { selectedPath = path; highlightPath(funcName, path); }}
-          onexpandcfg={(funcName, nodeId) => toggleFuncExpand(funcName, nodeId)}
-        />
-      {/if}
+      <SessionSidebar
+        contract={kind === 'solana' && solanaProgram ? solanaProgram.name : (contract?.name ?? '')}
+        {kind}
+        program={kind === 'solana' ? solanaProgram : null}
+        {selectedNode}
+        {selectedPath}
+        {funcPaths}
+        {expandedFuncs}
+        {seqExpanded}
+        {mode}
+        {seqAnalysis}
+        contractDetail={kind === 'solana' && solanaProgram
+          ? { name: solanaProgram.name, functions: [] }
+          : (contract ? { name: contract.name, functions: contract.functions } : null)}
+        lookupBlock={(blockId) => {
+          const node = findNode(blockId);
+          if (!node || node.data._type !== 'block') return null;
+          return { statements: (node.data as any).statements ?? [], node_type: (node.data as any).node_type };
+        }}
+        onpathselect={(funcName, path) => { selectedPath = path; highlightPath(funcName, path); }}
+        onexpandcfg={(funcName, nodeId) => toggleFuncExpand(funcName, nodeId)}
+        solanaUsers={solanaUsers}
+        onsolanarun={handleSolanaRun}
+        onsolanasubmit={handleSolanaSubmitFromInspector}
+        onnewuser={async (name, lamports) => {
+          if (!solanaProgram) return;
+          const result = await postSolanaCommand({ UsersNew: { name, lamports } }, solanaProgram.name);
+          if (result?.Error) throw new Error(result.Error.message ?? 'create user failed');
+          await refreshSolanaUsers();
+        }}
+        onairdrop={async (name, lamports) => {
+          if (!solanaProgram) return;
+          await postSolanaCommand({ Airdrop: { user: name, lamports } }, solanaProgram.name);
+          await refreshSolanaUsers();
+        }}
+      />
     </div>
 
     <StatusBar
       {mode}
-      canvasCount={canvasFuncs.size}
-      expandedCount={expandedFuncs.size}
+      canvasCount={kind === 'solana' ? solanaCanvasIxs.size : canvasFuncs.size}
+      expandedCount={kind === 'solana' ? solanaTraceCount : expandedFuncs.size}
       activeScenario={getActiveScenario()}
       {selectionCount}
     />
@@ -1431,23 +1904,33 @@
       {mode}
       onexpandcfg={(func, nodeId) => { toggleFuncExpand(func, nodeId); contextMenu = null; }}
       onremovefunc={(func) => { removeFuncFromCanvas(func); contextMenu = null; selectedNode = null; }}
-      onremovenode={(nodeId) => { removeSeqNode(nodeId); contextMenu = null; selectedNode = null; }}
+      onremovenode={(nodeId) => {
+        if (nodeId.startsWith('ix:')) {
+          handleSolanaIxRemove(nodeId.slice(3));
+        } else {
+          removeSeqNode(nodeId);
+        }
+        contextMenu = null;
+        selectedNode = null;
+      }}
       onforkscenario={handleForkScenario}
       onremovefromhere={handleRemoveFromHere}
       onviewsource={handleViewSource}
       onopenide={handleOpenInIde}
+      onsolanarun={(name) => { handleSolanaRun(name); contextMenu = null; }}
       onclose={() => contextMenu = null}
     />
 
-    {#if sourcePanel && contract}
+    {#if sourcePanel && (contract || (kind === 'solana' && solanaProgram))}
       <FunctionSourcePanel
-        contract={contract.name}
+        contract={kind === 'solana' ? solanaProgram!.name : contract!.name}
         func={sourcePanel.func}
+        kind={kind}
         onclose={() => sourcePanel = null}
       />
     {/if}
 
-    <Legend {mode} />
+    <Legend {mode} {kind} />
   {/if}
 </div>
 

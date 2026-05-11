@@ -1,10 +1,11 @@
 [package]
 name = "ilold-core"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 description = "Core library for Ilold: smart contract execution path analysis engine"
 
 [dependencies]
+ilold-session-core = { path = "../ilold-session-core" }
 solar = { workspace = true }
 petgraph = { workspace = true }
 serde = { workspace = true }

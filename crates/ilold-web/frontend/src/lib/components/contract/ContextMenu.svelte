@@ -26,15 +26,17 @@
     /** Open the file in the user's IDE (VS Code / Cursor / fork) via the
      *  `vscode://` URL scheme. */
     onopenide: (funcName: string) => void;
+    /** Solana-only: trigger the Run panel for an instruction node. */
+    onsolanarun?: (instructionName: string) => void;
     onclose: () => void;
   }
 
-  let { menu, expandedFuncs, seqExpanded, mode, onexpandcfg, onremovefunc, onremovenode, onforkscenario, onremovefromhere, onviewsource, onopenide, onclose }: Props = $props();
+  let { menu, expandedFuncs, seqExpanded, mode, onexpandcfg, onremovefunc, onremovenode, onforkscenario, onremovefromhere, onviewsource, onopenide, onsolanarun, onclose }: Props = $props();
 
   // View source / Open in code are read-only operations meaningful for
   // any canvas node that identifies a function. Shown in every mode.
   const canViewSource = $derived(
-    menu != null && (menu.nodeType === 'function' || menu.nodeType === 'seq-next')
+    menu != null && (menu.nodeType === 'function' || menu.nodeType === 'seq-next' || menu.nodeType === 'instruction')
   );
 
   // Canvas-action buttons (Expand CFG, Remove from canvas, Collapse, Remove
@@ -95,6 +97,25 @@
       >
         ✕ Remove node
       </button>
+    {:else if menu.nodeType === 'instruction'}
+      {#if onsolanarun}
+        <button
+          class="block w-full px-3 py-1.5 bg-transparent border-none text-text text-xs cursor-pointer text-left font-[inherit] transition-colors duration-150 hover:text-accent-hover"
+          style="border-radius: 6px;"
+          onclick={() => onsolanarun?.(menu!.funcName)}
+        >▶ Execute instruction</button>
+      {/if}
+      <button
+        class="block w-full px-3 py-1.5 bg-transparent border-none text-text text-xs cursor-pointer text-left font-[inherit] transition-colors duration-150 hover:text-danger"
+        style="border-radius: 6px;"
+        onclick={() => onremovenode(menu!.nodeId)}
+      >✕ Remove from canvas</button>
+    {:else if menu.nodeType === 'account' || menu.nodeType === 'trace'}
+      <button
+        class="block w-full px-3 py-1.5 bg-transparent border-none text-text text-xs cursor-pointer text-left font-[inherit] transition-colors duration-150 hover:text-danger"
+        style="border-radius: 6px;"
+        onclick={() => onremovenode(menu!.nodeId)}
+      >✕ Remove from canvas</button>
     {:else if showCanvasActions && menu.nodeType === 'block'}
       <button
         class="block w-full px-3 py-1.5 bg-transparent border-none text-text text-xs cursor-pointer text-left font-[inherit] transition-colors duration-150 hover:text-accent-hover"

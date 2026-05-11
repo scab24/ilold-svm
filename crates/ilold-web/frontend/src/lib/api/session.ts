@@ -49,6 +49,37 @@ export async function postCommand(command: SessionCommand, contract?: string) {
   return res.json();
 }
 
+export type SolanaCommand =
+  | { Call: { ix: string; args: any; accounts: Record<string, string>; signers: string[] } }
+  | 'Back'
+  | 'Clear'
+  | 'Funcs'
+  | 'State'
+  | 'Session'
+  | 'Users'
+  | { UsersNew: { name: string; lamports: number } }
+  | { Airdrop: { user: string; lamports: number } }
+  | { TimeWarp: { delta_seconds: number } }
+  | { Pda: { instruction: string } }
+  | { Inspect: { pubkey: string } }
+  | { Note: { text: string } }
+  | { Scenario: { sub: ScenarioAction } };
+
+export async function postSolanaCommand(command: SolanaCommand, contract?: string) {
+  const body: { contract?: string; command: SolanaCommand } = { command };
+  if (contract) body.contract = contract;
+  const res = await fetch(`${BASE}/api/cmd`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Solana command failed: ${res.status}`);
+  }
+  return res.json();
+}
+
 // ── Session queries ─────────────────────────────────────────────────────────
 
 export async function getSessionState() {

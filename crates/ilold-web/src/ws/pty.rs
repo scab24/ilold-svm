@@ -15,7 +15,7 @@ pub async fn ws_pty_handler(
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
     let port = state.port;
-    let contract_path = state.contract_path.clone();
+    let contract_path = state.project_root.clone();
     ws.on_upgrade(move |socket| handle_pty_session(socket, port, contract_path))
 }
 
@@ -89,7 +89,6 @@ async fn handle_pty_session(mut socket: WebSocket, port: u16, contract_path: Pat
         }
     };
 
-    // PTY stdout -> mpsc channel (blocking read in dedicated thread)
     let (stdout_tx, mut stdout_rx) = mpsc::channel::<Vec<u8>>(64);
     tokio::task::spawn_blocking(move || {
         let mut reader = reader;
@@ -106,7 +105,6 @@ async fn handle_pty_session(mut socket: WebSocket, port: u16, contract_path: Pat
         }
     });
 
-    // PTY stdin writes happen in a blocking thread to avoid Send issues
     let (stdin_tx, stdin_rx) = mpsc::channel::<Vec<u8>>(64);
     tokio::task::spawn_blocking(move || {
         let mut writer = writer;
@@ -118,7 +116,6 @@ async fn handle_pty_session(mut socket: WebSocket, port: u16, contract_path: Pat
         }
     });
 
-    // Resize channel — master stays in a blocking thread for resize calls
     let (resize_tx, resize_rx) = mpsc::channel::<(u16, u16)>(4);
     tokio::task::spawn_blocking(move || {
         let master = pair.master;

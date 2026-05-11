@@ -1,6 +1,5 @@
 import type { Node, Edge } from '@xyflow/svelte';
-
-// ── Node data types ─────────────────────────────────────────
+import type { AccountKind, ArgView, FieldView } from '$lib/api/rest';
 
 export interface FunctionNodeData {
   [key: string]: unknown;
@@ -9,24 +8,22 @@ export interface FunctionNodeData {
   is_external: boolean;
   contractName?: string;
   _dimmed?: boolean;
-  // Enrichment fields (from ContractDetail.functions)
   visibility?: string;
   mutability?: string;
   path_count?: number;
   modifiers?: string[];
-  // Scenarios: composed session-step metadata
   _sessionStep?: true;
-  _scenario?: string;             // the scenario that owns this rendered node
-  _scenariosPassingThrough?: string[]; // full set of scenarios whose path includes this node (inherited + own)
-  _activeScenario?: string;       // current active scenario (for highlight/mute classes)
-  stepIndex?: number;             // session-step index, used by right-click "Fork scenario here"
+  _scenario?: string;
+  _scenariosPassingThrough?: string[];
+  _activeScenario?: string;
+  stepIndex?: number;
 }
 
 export interface BlockNodeData {
   [key: string]: unknown;
   _type: 'block';
   label: string;
-  node_type: string; // "Entry" | "Return" | "Revert" | "Block" | "LoopCondition"
+  node_type: string;
   _parentFunc: string;
   statements?: string[];
   _dimmed?: boolean;
@@ -40,29 +37,68 @@ export interface SequenceNodeData {
   _seqParent: string;
   pathCount?: number;
   readOnly?: boolean;
-  /** Solidity visibility (Public/External/Internal/Private) — drives the
-   *  ext/int/pub/priv badge on the seq-next card. */
   visibility?: string;
-  /** Function modifier names — presence of any drives the 🔒 access-control
-   *  badge. Same semantics as FunctionNode. */
   modifiers?: string[];
   _transition?: any;
   _chainTransitions?: any[];
   _dimmed?: boolean;
 }
 
-export type GraphNodeData = FunctionNodeData | BlockNodeData | SequenceNodeData;
+export interface InstructionNodeData {
+  [key: string]: unknown;
+  _type: 'instruction';
+  label: string;
+  programName: string;
+  programId: string;
+  args: ArgView[];
+  accountsCount: number;
+  hasPdas: boolean;
+  signers: string[];
+  adminGated: boolean;
+  discriminator_hex?: string;
+  _dimmed?: boolean;
+}
 
-// ── Reactive state ──────────────────────────────────────────
-// SvelteFlow uses $bindable nodes/edges — the wrapper component
-// binds directly to these arrays via getNodes()/getEdges() and
-// setNodes()/setEdges(). SvelteFlow mutates them internally for
-// drag, selection, etc.
+export interface AccountNodeData {
+  [key: string]: unknown;
+  _type: 'account';
+  label: string;
+  programName: string;
+  fields: FieldView[];
+  discriminator_hex?: string;
+  account_type?: string;
+  signer?: boolean;
+  writable?: boolean;
+  pda?: boolean;
+  kind?: AccountKind;
+  parentInstruction?: string;
+  _dimmed?: boolean;
+}
+
+export interface TraceNodeData {
+  [key: string]: unknown;
+  _type: 'trace';
+  label: string;
+  stepIndex: number;
+  instruction: string;
+  computeUnits: number;
+  diffsCount: number;
+  logsExcerpt: string[];
+  scenario: string;
+  error?: string | null;
+  _dimmed?: boolean;
+}
+
+export type GraphNodeData =
+  | FunctionNodeData
+  | BlockNodeData
+  | SequenceNodeData
+  | InstructionNodeData
+  | AccountNodeData
+  | TraceNodeData;
 
 let nodes = $state<Node<GraphNodeData>[]>([]);
 let edges = $state<Edge[]>([]);
-
-// ── Getters ─────────────────────────────────────────────────
 
 export function getNodes(): Node<GraphNodeData>[] {
   return nodes;
@@ -71,8 +107,6 @@ export function getNodes(): Node<GraphNodeData>[] {
 export function getEdges(): Edge[] {
   return edges;
 }
-
-// ── Mutations ───────────────────────────────────────────────
 
 export function setNodes(newNodes: Node<GraphNodeData>[]) {
   nodes = newNodes;
@@ -125,8 +159,6 @@ export function clearGraph() {
   nodes = [];
   edges = [];
 }
-
-// ── Queries ─────────────────────────────────────────────────
 
 export function findNode(id: string): Node<GraphNodeData> | undefined {
   return nodes.find((n) => n.id === id);

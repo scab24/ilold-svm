@@ -11,14 +11,50 @@ use reedline::{
 
 use ilold_core::classify::entry_points::AccessLevel;
 use ilold_core::exploration::commands::CommandResult;
+use ilold_solana_core::exploration::SolanaCommandResult;
+use ilold_solana_core::view::ProgramView;
 
 use crate::colors::*;
 use crate::fmt;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BackendKind {
+    Solidity,
+    Solana,
+    Attached,
+}
+
+fn detect_backend_kind(state: &Option<std::sync::Arc<ilold_web::state::AppState>>) -> BackendKind {
+    match state {
+        None => BackendKind::Attached,
+        Some(s) => {
+            if s.solana().is_some() {
+                BackendKind::Solana
+            } else {
+                BackendKind::Solidity
+            }
+        }
+    }
+}
+
 pub async fn run(paths: Vec<PathBuf>, port: u16, max_seq_depth: usize, attach: Option<String>) -> Result<()> {
-    // --attach mode: connect to a running server instead of starting one locally
     if let Some(url) = attach {
         let client = reqwest::Client::new();
+        let map_resp = client
+            .get(format!("{url}/api/project/map"))
+            .send()
+            .await
+            .map_err(|e| anyhow::anyhow!("Cannot reach server at {url}: {e}"))?;
+        if !map_resp.status().is_success() {
+            anyhow::bail!("Server at {url} returned {}", map_resp.status());
+        }
+        let project_map: serde_json::Value = map_resp.json().await?;
+        let kind = project_map["kind"].as_str().unwrap_or("solidity");
+
+        if kind == "solana" {
+            return run_solana_attach(url, client, project_map).await;
+        }
+
         let resp = client.get(format!("{url}/api/project"))
             .send().await
             .map_err(|e| anyhow::anyhow!("Cannot reach server at {url}: {e}"))?;
@@ -28,8 +64,6 @@ pub async fn run(paths: Vec<PathBuf>, port: u16, max_seq_depth: usize, attach: O
         let project_info: serde_json::Value = resp.json().await?;
 
         let contracts_arr = project_info["contracts"].as_array();
-        // Pick the LAST contract (not interface/library) — in Solidity the main
-        // contract is always at the end of the file, after imports and dependencies.
         let contract_name = contracts_arr
             .and_then(|arr| arr.iter().rev().find(|c| c["kind"].as_str() == Some("Contract")))
             .or_else(|| contracts_arr.and_then(|arr| arr.last()))
@@ -37,8 +71,6 @@ pub async fn run(paths: Vec<PathBuf>, port: u16, max_seq_depth: usize, attach: O
             .unwrap_or("unknown")
             .to_string();
 
-        // /api/project only has function counts, not names.
-        // Fetch /api/contract/{name} per contract to get function names for the completer.
         let mut functions_by_contract = HashMap::<String, Vec<String>>::new();
         let contract_names_raw: Vec<String> = contracts_arr
             .map(|arr| arr.iter().filter_map(|c| c["name"].as_str().map(String::from)).collect())
@@ -68,41 +100,154 @@ pub async fn run(paths: Vec<PathBuf>, port: u16, max_seq_depth: usize, attach: O
         let base_url = url;
         let handle = tokio::runtime::Handle::current();
         let repl_thread = std::thread::spawn(move || {
-            repl_loop(handle, contract_name, function_names, contract_names, None, base_url, Some(functions_by_contract));
+            repl_loop(
+                handle,
+                contract_name,
+                function_names,
+                contract_names,
+                None,
+                base_url,
+                Some(functions_by_contract),
+                BackendKind::Attached,
+            );
         });
         repl_thread.join().map_err(|_| anyhow::anyhow!("REPL thread panicked"))?;
         return Ok(());
     }
 
-    // Local mode: start server and connect
     println!("Analyzing {} file(s)...", paths.len());
     let (state, actual_port) = ilold_web::start_server(paths, port, max_seq_depth).await?;
+    run_with_state(state, actual_port).await
+}
 
-    let contract_name = state.project.find_contract(None)
-        .map(|c| c.name.clone())
-        .unwrap_or_else(|_| "unknown".into());
-
-    let function_names: Vec<String> = state.project.contracts.iter()
-        .find(|c| c.name == contract_name)
-        .map(|c| {
-            state.project
-                .accessible_functions(c)
-                .iter()
-                .map(|af| af.function.name.clone())
+async fn run_solana_attach(
+    url: String,
+    _client: reqwest::Client,
+    project_map: serde_json::Value,
+) -> Result<()> {
+    let programs_arr = project_map["programs"].as_array();
+    let program_name = programs_arr
+        .and_then(|arr| arr.first())
+        .and_then(|p| p["name"].as_str())
+        .unwrap_or("unknown")
+        .to_string();
+    let program_names: Vec<String> = programs_arr
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|p| p["name"].as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    let function_names: Vec<String> = programs_arr
+        .and_then(|arr| arr.iter().find(|p| p["name"].as_str() == Some(&program_name)))
+        .and_then(|p| p["instructions"].as_array())
+        .map(|ixs| {
+            ixs.iter()
+                .filter_map(|i| i["name"].as_str().map(String::from))
                 .collect()
         })
         .unwrap_or_default();
 
-    let contract_names: Vec<String> = state.project.contracts.iter()
-        .map(|c| c.name.clone())
-        .filter(|n| !n.is_empty())
-        .collect();
+    let banner = fmt::header_box(&[
+        &format!("ilold explore — {} (solana, attached)", program_name),
+        &format!("{} instructions | Type ? for help", function_names.len()),
+        &format!("Server: {}", url),
+    ]);
+    println!("{}\n", banner);
+
+    let handle = tokio::runtime::Handle::current();
+    let repl_thread = std::thread::spawn(move || {
+        repl_loop(
+            handle,
+            program_name,
+            function_names,
+            program_names,
+            None,
+            url,
+            None,
+            BackendKind::Solana,
+        );
+    });
+    repl_thread
+        .join()
+        .map_err(|_| anyhow::anyhow!("REPL thread panicked"))?;
+    Ok(())
+}
+
+pub async fn run_solana(
+    detected: ilold_solana_core::ingest::DetectedProject,
+    port: u16,
+) -> Result<()> {
+    println!("Analyzing {} IDL(s)...", detected.idl_paths.len());
+    let (state, actual_port) = ilold_web::start_solana_server(detected, port).await?;
+    run_with_state(state, actual_port).await
+}
+
+async fn run_with_state(
+    state: std::sync::Arc<ilold_web::state::AppState>,
+    actual_port: u16,
+) -> Result<()> {
+    let backend = detect_backend_kind(&Some(state.clone()));
+
+    let (contract_name, function_names, contract_names, header_label) = match backend {
+        BackendKind::Solana => {
+            let s = state.solana().expect("solana backend");
+            let program = s.project.programs.first();
+            let name = program
+                .map(|p| p.name.clone())
+                .unwrap_or_else(|| "unknown".into());
+            let ix_names: Vec<String> = program
+                .map(|p| p.instructions.iter().map(|i| i.name.clone()).collect())
+                .unwrap_or_default();
+            let program_names: Vec<String> = s
+                .project
+                .programs
+                .iter()
+                .map(|p| p.name.clone())
+                .collect();
+            let label = format!("ilold explore — {} (solana)", name);
+            (name, ix_names, program_names, label)
+        }
+        _ => {
+            let s = state.unwrap_solidity();
+            let name = s
+                .project
+                .find_contract(None)
+                .map(|c| c.name.clone())
+                .unwrap_or_else(|_| "unknown".into());
+            let function_names: Vec<String> = s
+                .project
+                .contracts
+                .iter()
+                .find(|c| c.name == name)
+                .map(|c| {
+                    s.project
+                        .accessible_functions(c)
+                        .iter()
+                        .map(|af| af.function.name.clone())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let contract_names: Vec<String> = s
+                .project
+                .contracts
+                .iter()
+                .map(|c| c.name.clone())
+                .filter(|n| !n.is_empty())
+                .collect();
+            let label = format!("ilold explore — {}", name);
+            (name, function_names, contract_names, label)
+        }
+    };
 
     let func_count = function_names.len();
-
+    let func_label = match backend {
+        BackendKind::Solana => "instructions",
+        _ => "functions",
+    };
     let banner = fmt::header_box(&[
-        &format!("ilold explore — {}", contract_name),
-        &format!("{} functions | Type ? for help", func_count),
+        &header_label,
+        &format!("{} {} | Type ? for help", func_count, func_label),
         &format!("Web UI: http://localhost:{}", actual_port),
     ]);
     println!("{}\n", banner);
@@ -111,13 +256,23 @@ pub async fn run(paths: Vec<PathBuf>, port: u16, max_seq_depth: usize, attach: O
     let state_for_thread = state.clone();
     let base_url = format!("http://127.0.0.1:{}", actual_port);
     let repl_thread = std::thread::spawn(move || {
-        repl_loop(handle, contract_name, function_names, contract_names, Some(state_for_thread), base_url, None);
+        repl_loop(
+            handle,
+            contract_name,
+            function_names,
+            contract_names,
+            Some(state_for_thread),
+            base_url,
+            None,
+            backend,
+        );
     });
 
     repl_thread.join().map_err(|_| anyhow::anyhow!("REPL thread panicked"))?;
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn repl_loop(
     handle: tokio::runtime::Handle,
     mut contract: String,
@@ -126,6 +281,7 @@ fn repl_loop(
     state: Option<std::sync::Arc<ilold_web::state::AppState>>,
     base_url: String,
     functions_by_contract: Option<HashMap<String, Vec<String>>>,
+    backend: BackendKind,
 ) {
     let history_path = dirs::home_dir()
         .map(|h| h.join(".ilold").join("history"))
@@ -162,21 +318,45 @@ fn repl_loop(
         scenario: scenario_name.clone(),
     };
 
-    // Initial prompt sync in --attach mode: pick up steps from other terminals
     if state.is_none() {
-        if let Some(server_steps) = sync_steps(&handle, &client, &base_url, &contract) {
+        if let Some(server_steps) = sync_steps(&handle, &client, &base_url, &contract, backend) {
             steps = server_steps;
             prompt.steps = steps.clone();
+        }
+        if backend == BackendKind::Solana {
+            if let Some(active) = sync_active_scenario(&handle, &client, &base_url, &contract) {
+                scenario_name = active;
+                prompt.scenario = scenario_name.clone();
+            }
+            if let Some(scns) = sync_scenarios(&handle, &client, &base_url, &contract) {
+                if let Ok(mut comp) = completer.lock() {
+                    comp.scenarios = scns;
+                }
+            }
         }
     }
 
     loop {
-        // Sync prompt from server in --attach mode (catches changes from other terminals)
         if state.is_none() {
-            if let Some(server_steps) = sync_steps(&handle, &client, &base_url, &contract) {
+            if let Some(server_steps) = sync_steps(&handle, &client, &base_url, &contract, backend) {
                 if server_steps != steps {
                     steps = server_steps;
                     prompt.steps = steps.clone();
+                }
+            }
+            if backend == BackendKind::Solana {
+                if let Some(active) = sync_active_scenario(&handle, &client, &base_url, &contract) {
+                    if active != scenario_name {
+                        scenario_name = active;
+                        prompt.scenario = scenario_name.clone();
+                    }
+                }
+                if let Some(scns) = sync_scenarios(&handle, &client, &base_url, &contract) {
+                    if let Ok(mut comp) = completer.lock() {
+                        if comp.scenarios != scns {
+                            comp.scenarios = scns;
+                        }
+                    }
                 }
             }
         }
@@ -188,7 +368,7 @@ fn repl_loop(
 
                 match handle_input(
                     line, &handle, &client, &base_url, &contract,
-                    &mut steps, &mut scenario_name, &completer, &state,
+                    &mut steps, &mut scenario_name, &completer, &state, backend,
                 ) {
                     InputResult::Continue => {}
                     InputResult::Quit => break,
@@ -200,20 +380,42 @@ fn repl_loop(
                         contract = new_name.clone();
                         steps.clear();
                         scenario_name = "main".into();
-                        if let Some(ref state) = state {
-                            // Local mode: use AppState directly
-                            if let Some(c) = state.project.contracts.iter().find(|c| c.name == new_name) {
-                                functions = state.project
-                                    .accessible_functions(c)
-                                    .iter()
-                                    .map(|af| af.function.name.clone())
-                                    .collect();
-                                if let Ok(mut comp) = completer.lock() {
-                                    comp.functions = functions.clone();
+                        if let Some(state) = state.as_ref() {
+                            match backend {
+                                BackendKind::Solana => {
+                                    if let Some(s) = state.solana() {
+                                        if let Some(p) =
+                                            s.project.programs.iter().find(|p| p.name == new_name)
+                                        {
+                                            functions = p
+                                                .instructions
+                                                .iter()
+                                                .map(|i| i.name.clone())
+                                                .collect();
+                                            if let Ok(mut comp) = completer.lock() {
+                                                comp.functions = functions.clone();
+                                            }
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    let s = state.unwrap_solidity();
+                                    if let Some(c) =
+                                        s.project.contracts.iter().find(|c| c.name == new_name)
+                                    {
+                                        functions = s
+                                            .project
+                                            .accessible_functions(c)
+                                            .iter()
+                                            .map(|af| af.function.name.clone())
+                                            .collect();
+                                        if let Ok(mut comp) = completer.lock() {
+                                            comp.functions = functions.clone();
+                                        }
+                                    }
                                 }
                             }
-                        } else if let Some(ref fbc) = functions_by_contract {
-                            // --attach mode: use cached per-contract function map
+                        } else if let Some(fbc) = functions_by_contract.as_ref() {
                             if let Some(funcs) = fbc.get(&new_name) {
                                 functions = funcs.clone();
                                 if let Ok(mut comp) = completer.lock() {
@@ -254,6 +456,7 @@ impl Completer for CompleterWrapper {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_input(
     line: &str,
     handle: &tokio::runtime::Handle,
@@ -264,14 +467,25 @@ fn handle_input(
     scenario_name: &mut String,
     completer: &std::sync::Arc<std::sync::Mutex<IloldCompleter>>,
     state: &Option<std::sync::Arc<ilold_web::state::AppState>>,
+    backend: BackendKind,
 ) -> InputResult {
-    // Allow shortcuts like `st0`, `st1`, `step2` without requiring a space.
+    if backend == BackendKind::Solana {
+        return handle_solana_input(
+            line,
+            handle,
+            client,
+            base_url,
+            contract,
+            steps,
+            scenario_name,
+            completer,
+        );
+    }
     let normalized = split_numeric_suffix(line);
     let parts: Vec<&str> = normalized.splitn(2, ' ').collect();
     let cmd = parts[0].to_lowercase();
     let arg = parts.get(1).map(|s| s.trim()).unwrap_or("");
 
-    // Inline help: appending ? to any command prints a one-line usage.
     if cmd.ends_with('?') && cmd.len() > 1 {
         let base = &cmd[..cmd.len() - 1];
         print_inline_help(base);
@@ -293,8 +507,6 @@ fn handle_input(
 
             use ilold_core::exploration::commands::ScenarioAction;
 
-            // Parse `fork <name>` or `fork <name> at <N>`. Returns Err with a
-            // user-facing message on parse failure.
             let parse_fork = |raw: &str| -> Result<ScenarioAction, String> {
                 let parts: Vec<&str> = raw.split_whitespace().collect();
                 match parts.as_slice() {
@@ -341,7 +553,6 @@ fn handle_input(
             });
             match send_command(handle, client, base_url, &body) {
                 Ok(result) => {
-                    // Update local trackers before printing.
                     let mut did_update_scenario = false;
                     match &result {
                         CommandResult::ScenarioCreated { name } => {
@@ -384,11 +595,13 @@ fn handle_input(
             InputResult::Continue
         }
 
-        "ct" | "contracts" => {
-            if let Some(ref state) = state {
-                print_contracts(state, contract);
+        "ct" | "contracts" | "programs" | "progs" => {
+            if let Some(state) = state {
+                match backend {
+                    BackendKind::Solana => print_programs(state, contract),
+                    _ => print_contracts(state, contract),
+                }
             } else {
-                // --attach mode: fetch contract list from server
                 match handle.block_on(async {
                     let resp = client.get(format!("{base_url}/api/project")).send().await?;
                     resp.json::<serde_json::Value>().await
@@ -414,28 +627,64 @@ fn handle_input(
                 println!("  Usage: use <contract>");
                 return InputResult::Continue;
             }
-            if let Some(ref state) = state {
-                // Local mode
-                match state.project.find_contract(Some(arg)) {
-                    Ok(c) => {
-                        let name = c.name.clone();
-                        if name == contract {
-                            println!("  Already using {}", c_accent(&name));
-                            return InputResult::Continue;
+            if let Some(state) = state {
+                match backend {
+                    BackendKind::Solana => {
+                        let s = state.solana().expect("solana backend");
+                        match s.project.find_program(arg) {
+                            Some(p) => {
+                                let name = p.name.clone();
+                                if name == contract {
+                                    println!("  Already using {}", c_accent(&name));
+                                    return InputResult::Continue;
+                                }
+                                println!("  {} Now using: {}", c_ok("✓"), c_accent(&name));
+                                if !steps.is_empty() {
+                                    println!(
+                                        "  {}",
+                                        c_muted(&format!(
+                                            "Cleared {} step(s) from previous program",
+                                            steps.len()
+                                        ))
+                                    );
+                                }
+                                InputResult::SwitchContract(name)
+                            }
+                            None => {
+                                eprintln!("  {}", c_danger(&format!("program '{arg}' not found")));
+                                InputResult::Continue
+                            }
                         }
-                        println!("  {} Now using: {}", c_ok("✓"), c_accent(&name));
-                        if !steps.is_empty() {
-                            println!("  {}", c_muted(&format!("Cleared {} step(s) from previous contract", steps.len())));
-                        }
-                        InputResult::SwitchContract(name)
                     }
-                    Err(e) => {
-                        eprintln!("  {}", c_danger(&e));
-                        InputResult::Continue
+                    _ => {
+                        let s = state.unwrap_solidity();
+                        match s.project.find_contract(Some(arg)) {
+                            Ok(c) => {
+                                let name = c.name.clone();
+                                if name == contract {
+                                    println!("  Already using {}", c_accent(&name));
+                                    return InputResult::Continue;
+                                }
+                                println!("  {} Now using: {}", c_ok("✓"), c_accent(&name));
+                                if !steps.is_empty() {
+                                    println!(
+                                        "  {}",
+                                        c_muted(&format!(
+                                            "Cleared {} step(s) from previous contract",
+                                            steps.len()
+                                        ))
+                                    );
+                                }
+                                InputResult::SwitchContract(name)
+                            }
+                            Err(e) => {
+                                eprintln!("  {}", c_danger(&e));
+                                InputResult::Continue
+                            }
+                        }
                     }
                 }
             } else {
-                // --attach mode: switch directly, let the server validate commands
                 let name = arg.to_string();
                 if name == contract {
                     println!("  Already using {}", c_accent(&name));
@@ -556,7 +805,6 @@ fn handle_input(
             if arg.is_empty() {
                 handle_finding_interactive(handle, client, base_url, contract, steps);
             } else {
-                // Parse: fi <severity> <title> [description]
                 let finding_parts: Vec<&str> = arg.splitn(2, ' ').collect();
                 if finding_parts.len() < 2 {
                     println!("  Usage: fi <severity> <title>");
@@ -666,9 +914,6 @@ fn handle_input(
                 TraceTarget::Function(func_name) => {
                     let mut url = format!("{base_url}/api/session/trace/{contract}/{func_name}");
                     let mut sep = '?';
-                    // Interactive mode needs more context to be useful, so
-                    // bump the default depth to 4 when `-i` is set and the
-                    // user didn't pass an explicit `--depth`.
                     let effective_depth = parsed.depth
                         .or(if parsed.interactive { Some(4) } else { None });
                     if let Some(d) = effective_depth {
@@ -689,7 +934,6 @@ fn handle_input(
                     url
                 }
                 TraceTarget::SessionStep(idx) => {
-                    // Persisted tree — depth/reverts/expand flags ignored.
                     format!("{base_url}/api/session/step/{idx}/trace")
                 }
             };
@@ -733,9 +977,6 @@ fn handle_input(
         }
         "sl" | "slice" => {
             let parts: Vec<&str> = arg.split_whitespace().collect();
-            // Separate flags from positional args so order doesn't matter:
-            // `sl deposit totalStaked --backward` and `sl --backward deposit totalStaked`
-            // both parse correctly.
             let mut positionals: Vec<&str> = Vec::new();
             let mut direction: Option<&str> = None;
             for part in &parts {
@@ -856,8 +1097,863 @@ fn handle_input(
     }
 }
 
-/// Fetch current session steps from the server (for --attach prompt sync).
-fn sync_steps(
+fn inline_help_target(cmd: &str, arg: &str) -> Option<String> {
+    if cmd == "?" || cmd == "help" || cmd == "h" {
+        return None;
+    }
+    if cmd.ends_with('?') && cmd.len() > 1 {
+        return Some(cmd[..cmd.len() - 1].to_string());
+    }
+    if arg.trim() == "?" {
+        return Some(cmd.to_string());
+    }
+    None
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_solana_input(
+    line: &str,
+    handle: &tokio::runtime::Handle,
+    client: &reqwest::Client,
+    base_url: &str,
+    contract: &str,
+    steps: &mut Vec<String>,
+    scenario_name: &mut String,
+    completer: &std::sync::Arc<std::sync::Mutex<IloldCompleter>>,
+) -> InputResult {
+    let parts: Vec<&str> = line.splitn(2, ' ').collect();
+    let cmd = parts[0].to_lowercase();
+    let arg = parts.get(1).map(|s| s.trim()).unwrap_or("");
+
+    if let Some(base) = inline_help_target(&cmd, arg) {
+        match crate::help::render_solana_help_block(&base) {
+            Some(text) => print!("{text}"),
+            None => println!(
+                "  {} no help registered for {}",
+                c_danger("✗"),
+                c_accent(&base)
+            ),
+        }
+        return InputResult::Continue;
+    }
+
+    match cmd.as_str() {
+        "?" | "help" | "h" => {
+            print_solana_help();
+            InputResult::Continue
+        }
+        "quit" | "q" | "exit" => InputResult::Quit,
+        "funcs" | "functions" | "f" => {
+            dispatch_solana(
+                handle,
+                client,
+                base_url,
+                contract,
+                serde_json::json!("Funcs"),
+                steps,
+            )
+        }
+        "funcs-all" | "fa" => dispatch_solana(
+            handle,
+            client,
+            base_url,
+            contract,
+            serde_json::json!("Funcs"),
+            steps,
+        ),
+        "info" | "i" => {
+            if arg.is_empty() {
+                println!("  Usage: info <instruction>");
+                return InputResult::Continue;
+            }
+            let body = serde_json::json!({"Info": {"ix": arg}});
+            dispatch_solana(handle, client, base_url, contract, body, steps)
+        }
+        "vars" | "v" | "vars-all" | "va" => dispatch_solana(
+            handle,
+            client,
+            base_url,
+            contract,
+            serde_json::json!("Vars"),
+            steps,
+        ),
+        "coupling" | "cp" => dispatch_solana(
+            handle,
+            client,
+            base_url,
+            contract,
+            serde_json::json!("Coupling"),
+            steps,
+        ),
+        "coverage" | "cov" => dispatch_solana(
+            handle,
+            client,
+            base_url,
+            contract,
+            serde_json::json!("Coverage"),
+            steps,
+        ),
+        "state" => dispatch_solana(
+            handle,
+            client,
+            base_url,
+            contract,
+            serde_json::json!("State"),
+            steps,
+        ),
+        "session" | "s" => {
+            let r = dispatch_solana(
+                handle,
+                client,
+                base_url,
+                contract,
+                serde_json::json!("Session"),
+                steps,
+            );
+            *scenario_name = sync_active_scenario(handle, client, base_url, contract)
+                .unwrap_or_else(|| scenario_name.clone());
+            r
+        }
+        "back" => dispatch_solana(
+            handle,
+            client,
+            base_url,
+            contract,
+            serde_json::json!("Back"),
+            steps,
+        ),
+        "clear" => dispatch_solana(
+            handle,
+            client,
+            base_url,
+            contract,
+            serde_json::json!("Clear"),
+            steps,
+        ),
+        "users" => {
+            if arg.starts_with("new") {
+                let rest = arg.trim_start_matches("new").trim();
+                if rest.is_empty() {
+                    println!("  Usage: users new <name> [<lamports>]");
+                    return InputResult::Continue;
+                }
+                let parts: Vec<&str> = rest.split_whitespace().collect();
+                let name = parts[0].to_string();
+                let lamports: u64 = parts
+                    .get(1)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(10_000_000_000);
+                let body = serde_json::json!({"UsersNew": {"name": name, "lamports": lamports}});
+                dispatch_solana(handle, client, base_url, contract, body, steps)
+            } else {
+                dispatch_solana(
+                    handle,
+                    client,
+                    base_url,
+                    contract,
+                    serde_json::json!("Users"),
+                    steps,
+                )
+            }
+        }
+        "airdrop" | "air" => {
+            let parts: Vec<&str> = arg.split_whitespace().collect();
+            if parts.len() != 2 {
+                println!("  Usage: airdrop <name> <lamports>");
+                return InputResult::Continue;
+            }
+            let lamports: u64 = match parts[1].parse() {
+                Ok(v) => v,
+                Err(_) => {
+                    println!("  Lamports must be an integer");
+                    return InputResult::Continue;
+                }
+            };
+            let body =
+                serde_json::json!({"Airdrop": {"user": parts[0], "lamports": lamports}});
+            dispatch_solana(handle, client, base_url, contract, body, steps)
+        }
+        "time-warp" | "tw" => {
+            let delta: i64 = match arg.parse() {
+                Ok(v) => v,
+                Err(_) => {
+                    println!("  Usage: time-warp <delta_seconds>");
+                    return InputResult::Continue;
+                }
+            };
+            let body = serde_json::json!({"TimeWarp": {"delta_seconds": delta}});
+            dispatch_solana(handle, client, base_url, contract, body, steps)
+        }
+        "pda" => {
+            if arg.is_empty() {
+                println!("  Usage: pda <instruction>");
+                return InputResult::Continue;
+            }
+            let body = serde_json::json!({"Pda": {"instruction": arg}});
+            dispatch_solana(handle, client, base_url, contract, body, steps)
+        }
+        "inspect" | "acc" => {
+            if arg.is_empty() {
+                println!("  Usage: inspect <pubkey>");
+                return InputResult::Continue;
+            }
+            let body = serde_json::json!({"Inspect": {"pubkey": arg}});
+            dispatch_solana(handle, client, base_url, contract, body, steps)
+        }
+        "call" | "c" => {
+            let parts: Vec<&str> = arg.splitn(2, ' ').collect();
+            if parts.is_empty() || parts[0].is_empty() {
+                println!(
+                    "  Usage: call <ix> [arg=val ...] [account=user_or_pubkey ...]"
+                );
+                println!("         or: call <ix> {{json}} for full control");
+                return InputResult::Continue;
+            }
+            let ix = parts[0].to_string();
+            let payload_raw = parts.get(1).copied().unwrap_or("").trim();
+            let body = if payload_raw.starts_with('{') {
+                let parsed: serde_json::Value = match serde_json::from_str(payload_raw) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        println!("  Invalid JSON: {e}");
+                        return InputResult::Continue;
+                    }
+                };
+                serde_json::json!({
+                    "Call": {
+                        "ix": ix,
+                        "args": parsed.get("args").cloned().unwrap_or(serde_json::json!({})),
+                        "accounts": parsed.get("accounts").cloned().unwrap_or(serde_json::json!({})),
+                        "signers": parsed.get("signers").cloned().unwrap_or(serde_json::json!([])),
+                    }
+                })
+            } else {
+                let program = match fetch_program_detail(handle, client, base_url, contract) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        eprintln!("  {}", c_danger(&format!("fetch program: {e}")));
+                        return InputResult::Continue;
+                    }
+                };
+                match build_call_from_kv(&program, &ix, payload_raw) {
+                    Ok(body) => body,
+                    Err(e) => {
+                        eprintln!("  {}", c_danger(&e));
+                        return InputResult::Continue;
+                    }
+                }
+            };
+            dispatch_solana(handle, client, base_url, contract, body, steps)
+        }
+        "ct" | "contracts" | "programs" | "progs" => {
+            match handle.block_on(async {
+                client
+                    .get(format!("{base_url}/api/project/map"))
+                    .send()
+                    .await?
+                    .json::<serde_json::Value>()
+                    .await
+            }) {
+                Ok(map) => print_remote_programs(&map, contract),
+                Err(e) => {
+                    eprintln!("  {}", c_danger(&format!("Failed to fetch programs: {e}")))
+                }
+            }
+            InputResult::Continue
+        }
+        "sc" | "scenario" => {
+            let parts: Vec<&str> = arg.split_whitespace().collect();
+            let sub = parts.first().copied().unwrap_or("");
+            let name_arg = parts.get(1).copied().unwrap_or("");
+            let action: Option<serde_json::Value> = match sub {
+                "new" if !name_arg.is_empty() => {
+                    Some(serde_json::json!({"New": {"name": name_arg}}))
+                }
+                "list" | "ls" | "" => Some(serde_json::json!("List")),
+                "switch" if !name_arg.is_empty() => {
+                    Some(serde_json::json!({"Switch": {"name": name_arg}}))
+                }
+                "fork" if !name_arg.is_empty() => {
+                    let at_step: Option<usize> = parts.get(2).and_then(|s| s.parse().ok());
+                    Some(serde_json::json!({"Fork": {"name": name_arg, "at_step": at_step}}))
+                }
+                "delete" | "rm" if !name_arg.is_empty() => {
+                    Some(serde_json::json!({"Delete": {"name": name_arg}}))
+                }
+                _ => None,
+            };
+            let action = match action {
+                Some(a) => a,
+                None => {
+                    println!(
+                        "  Usage: scenario new|list|switch|fork|delete <name> [step]"
+                    );
+                    return InputResult::Continue;
+                }
+            };
+            let body = serde_json::json!({"Scenario": {"sub": action}});
+            let outcome = dispatch_solana(handle, client, base_url, contract, body, steps);
+            *scenario_name = sync_active_scenario(handle, client, base_url, contract)
+                .unwrap_or_else(|| scenario_name.clone());
+            if let Ok(mut comp) = completer.lock() {
+                if let Some(items) = sync_scenarios(handle, client, base_url, contract) {
+                    comp.scenarios = items;
+                }
+            }
+            outcome
+        }
+        "note" | "n" => {
+            if arg.is_empty() {
+                println!("  Usage: note <text>");
+                return InputResult::Continue;
+            }
+            let body = serde_json::json!({"Note": {"text": arg}});
+            dispatch_solana(handle, client, base_url, contract, body, steps)
+        }
+        "fi" | "finding" => {
+            if arg.is_empty() {
+                println!("  Usage: finding <severity> <title> [--rec=\"...\"]");
+                println!("  Severity: critical | high | medium | low | info");
+                return InputResult::Continue;
+            }
+            let (rest, rec): (&str, Option<String>) = match arg.find("--rec=") {
+                Some(idx) => {
+                    let head = arg[..idx].trim_end();
+                    let tail = &arg[idx + "--rec=".len()..];
+                    (head, Some(strip_quotes(tail).to_string()))
+                }
+                None => (arg, None),
+            };
+            let parts: Vec<&str> = rest.splitn(2, ' ').collect();
+            if parts.len() < 2 {
+                println!("  Usage: finding <severity> <title> [--rec=\"...\"]");
+                return InputResult::Continue;
+            }
+            let severity = match normalize_severity(parts[0]) {
+                Some(s) => s,
+                None => {
+                    println!(
+                        "  {}",
+                        c_danger("Invalid severity. Valid: critical, high, medium, low, info")
+                    );
+                    return InputResult::Continue;
+                }
+            };
+            let body = serde_json::json!({
+                "Finding": {
+                    "severity": severity,
+                    "title": parts[1],
+                    "description": "",
+                    "recommendation": rec,
+                }
+            });
+            dispatch_solana(handle, client, base_url, contract, body, steps)
+        }
+        "seq" | "sequence" => {
+            dispatch_solana(
+                handle,
+                client,
+                base_url,
+                contract,
+                serde_json::json!("Session"),
+                steps,
+            )
+        }
+        "browser" => {
+            println!(
+                "  {} Web UI not yet available in explore mode.",
+                c_muted("·")
+            );
+            println!("  {} API running at {}/api/", c_muted("·"), base_url);
+            InputResult::Continue
+        }
+        "step" | "st" => {
+            let idx: usize = match arg.trim().parse() {
+                Ok(n) => n,
+                Err(_) => {
+                    println!("  Usage: step <index>");
+                    return InputResult::Continue;
+                }
+            };
+            let body = serde_json::json!({"Step": {"index": idx}});
+            dispatch_solana(handle, client, base_url, contract, body, steps)
+        }
+        "save" => {
+            if arg.is_empty() {
+                println!("  Usage: save <name> [--with-keypairs]");
+                return InputResult::Continue;
+            }
+            let mut with_keypairs = false;
+            let mut name: Option<&str> = None;
+            for tok in arg.split_whitespace() {
+                if tok == "--with-keypairs" {
+                    with_keypairs = true;
+                } else if tok.starts_with("--") {
+                    println!(
+                        "  Unknown flag: {tok}. Use --with-keypairs (or no flags)."
+                    );
+                    return InputResult::Continue;
+                } else if name.is_none() {
+                    name = Some(tok);
+                } else {
+                    println!("  Usage: save <name> [--with-keypairs]");
+                    return InputResult::Continue;
+                }
+            }
+            let name = match name {
+                Some(n) => n,
+                None => {
+                    println!("  Usage: save <name> [--with-keypairs]");
+                    return InputResult::Continue;
+                }
+            };
+            let body = serde_json::json!({
+                "contract": contract,
+                "command": {"SaveSession": {"with_keypairs": with_keypairs}},
+            });
+            match send_solana_command(handle, client, base_url, &body) {
+                Ok(SolanaCommandResult::SessionSaved { json }) => {
+                    let dir = dirs::home_dir()
+                        .map(|h| h.join(".ilold").join("sessions"))
+                        .unwrap_or_else(|| std::path::PathBuf::from(".ilold/sessions"));
+                    std::fs::create_dir_all(&dir).ok();
+                    let path = dir.join(format!("{}.json", name));
+                    match std::fs::write(&path, &json) {
+                        Ok(_) => {
+                            println!(
+                                "  {} Saved to {}",
+                                c_ok("✓"),
+                                c_accent(&path.display().to_string())
+                            );
+                            if with_keypairs {
+                                eprintln!(
+                                    "  {} bundle includes plaintext test keypairs — do NOT commit it",
+                                    c_warn("⚠ "),
+                                );
+                            }
+                        }
+                        Err(e) => eprintln!("  {} Write failed: {}", c_danger("✗"), e),
+                    }
+                }
+                Ok(other) => print_solana_result(&other),
+                Err(e) => eprintln!("  {}", c_danger(&e)),
+            }
+            InputResult::Continue
+        }
+        "load" => {
+            if arg.is_empty() {
+                println!("  Usage: load <name>");
+                return InputResult::Continue;
+            }
+            let dir = dirs::home_dir()
+                .map(|h| h.join(".ilold").join("sessions"))
+                .unwrap_or_else(|| std::path::PathBuf::from(".ilold/sessions"));
+            let path = dir.join(format!("{}.json", arg));
+            let json = match std::fs::read_to_string(&path) {
+                Ok(j) => j,
+                Err(e) => {
+                    eprintln!(
+                        "  {} File not found: {} ({})",
+                        c_danger("✗"),
+                        path.display(),
+                        e
+                    );
+                    return InputResult::Continue;
+                }
+            };
+            if json.contains("\"keypairs_present\": true")
+                || json.contains("\"keypairs_present\":true")
+            {
+                eprintln!(
+                    "  {} bundle contains plaintext test keypairs — do NOT commit *.json files like this",
+                    c_warn("⚠ "),
+                );
+            }
+            let body = serde_json::json!({
+                "contract": contract,
+                "command": {"LoadSession": {"json": json}}
+            });
+            match send_solana_command(handle, client, base_url, &body) {
+                Ok(SolanaCommandResult::SessionLoaded { steps: loaded, .. }) => {
+                    *steps = loaded;
+                    println!("  {} Session loaded ({} steps)", c_ok("✓"), steps.len());
+                    return InputResult::UpdatePrompt;
+                }
+                Ok(other) => print_solana_result(&other),
+                Err(e) => eprintln!("  {}", c_danger(&e)),
+            }
+            InputResult::Continue
+        }
+        "findings" | "fl" => dispatch_solana(
+            handle,
+            client,
+            base_url,
+            contract,
+            serde_json::json!("Findings"),
+            steps,
+        ),
+        "export" | "ex" => {
+            let mut auditor: Option<String> = None;
+            let mut version: Option<String> = None;
+            let mut date: Option<String> = None;
+            for tok in arg.split_whitespace() {
+                if let Some(v) = tok.strip_prefix("--auditor=") { auditor = Some(strip_quotes(v).to_string()); }
+                else if let Some(v) = tok.strip_prefix("--version=") { version = Some(strip_quotes(v).to_string()); }
+                else if let Some(v) = tok.strip_prefix("--date=") { date = Some(strip_quotes(v).to_string()); }
+                else {
+                    println!("  Unknown flag: {tok}. Use --auditor= / --version= / --date= (or no flags)");
+                    return InputResult::Continue;
+                }
+            }
+            let metadata = if auditor.is_some() || version.is_some() || date.is_some() {
+                Some(serde_json::json!({
+                    "auditor": auditor,
+                    "project_version": version,
+                    "audit_date": date,
+                }))
+            } else {
+                None
+            };
+            let body = serde_json::json!({"Export": {"metadata": metadata}});
+            dispatch_solana(handle, client, base_url, contract, body, steps)
+        }
+        "who" => {
+            if arg.is_empty() {
+                println!("  Usage: who <account_type>  (e.g. who Pool)");
+                return InputResult::Continue;
+            }
+            let body = serde_json::json!({"Who": {"account_type": arg}});
+            dispatch_solana(handle, client, base_url, contract, body, steps)
+        }
+        "timeline" | "tl" => {
+            if arg.is_empty() {
+                println!("  Usage: timeline <pubkey>");
+                return InputResult::Continue;
+            }
+            let body = serde_json::json!({"Timeline": {"pubkey": arg}});
+            dispatch_solana(handle, client, base_url, contract, body, steps)
+        }
+        "status" => {
+            let parts: Vec<&str> = arg.split_whitespace().collect();
+            if parts.len() != 2 {
+                println!("  Usage: status <ix> <open|reviewed|finding>");
+                return InputResult::Continue;
+            }
+            let st = match parts[1].to_lowercase().as_str() {
+                "open" => "Open",
+                "reviewed" => "Reviewed",
+                "finding" | "found" => "Finding",
+                other => {
+                    println!("  Unknown status '{other}'. Use open|reviewed|finding");
+                    return InputResult::Continue;
+                }
+            };
+            let body =
+                serde_json::json!({"Status": {"ix": parts[0], "status": st}});
+            dispatch_solana(handle, client, base_url, contract, body, steps)
+        }
+        _ => {
+            println!(
+                "  Unknown command: {}. Type {} for help.",
+                c_danger(&cmd),
+                c_accent("?")
+            );
+            InputResult::Continue
+        }
+    }
+}
+
+fn dispatch_solana(
+    handle: &tokio::runtime::Handle,
+    client: &reqwest::Client,
+    base_url: &str,
+    contract: &str,
+    command: serde_json::Value,
+    steps: &mut Vec<String>,
+) -> InputResult {
+    let body = serde_json::json!({"contract": contract, "command": command});
+    match send_solana_command(handle, client, base_url, &body) {
+        Ok(result) => {
+            apply_solana_result_to_steps(&result, steps);
+            print_solana_result(&result);
+            InputResult::UpdatePrompt
+        }
+        Err(e) => {
+            eprintln!("  {}", c_danger(&e));
+            InputResult::Continue
+        }
+    }
+}
+
+fn fetch_program_detail(
+    handle: &tokio::runtime::Handle,
+    client: &reqwest::Client,
+    base_url: &str,
+    name: &str,
+) -> Result<ProgramView, String> {
+    handle.block_on(async {
+        let resp = client
+            .get(format!("{base_url}/api/program/{name}/view"))
+            .send()
+            .await
+            .map_err(|e| format!("request: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("status {}", resp.status()));
+        }
+        resp.json::<ProgramView>()
+            .await
+            .map_err(|e| format!("parse: {e}"))
+    })
+}
+
+fn build_call_from_kv(
+    program: &ProgramView,
+    ix_name: &str,
+    rest: &str,
+) -> Result<serde_json::Value, String> {
+    let ix = program
+        .instructions
+        .iter()
+        .find(|i| i.name == ix_name)
+        .ok_or_else(|| format!("instruction '{ix_name}' not found in program"))?;
+
+    let mut args = serde_json::Map::new();
+    let mut accounts = serde_json::Map::new();
+    let mut signer_overrides: Option<Vec<String>> = None;
+    let mut signer_negatives: Vec<String> = Vec::new();
+
+    for token in rest.split_whitespace() {
+        if let Some(name_csv) = token.strip_prefix("--no-signer=") {
+            for n in name_csv.split(',').map(|s| s.trim()) {
+                if !n.is_empty() {
+                    signer_negatives.push(n.to_string());
+                }
+            }
+            continue;
+        }
+        if let Some(name_csv) = token.strip_prefix("--signer=") {
+            let mut acc = signer_overrides.unwrap_or_default();
+            for n in name_csv.split(',').map(|s| s.trim()) {
+                if !n.is_empty() {
+                    acc.push(n.to_string());
+                }
+            }
+            signer_overrides = Some(acc);
+            continue;
+        }
+        let (key, value) = match token.split_once('=') {
+            Some(kv) => kv,
+            None => return Err(format!("expected key=value, got '{token}'")),
+        };
+        if let Some(arg) = ix.args.iter().find(|a| a.name == key) {
+            args.insert(key.to_string(), coerce_kv(value, &arg.ty));
+        } else if ix.accounts.iter().any(|a| a.name == key) {
+            accounts.insert(key.to_string(), serde_json::Value::String(value.to_string()));
+        } else {
+            let arg_list: Vec<String> = ix.args.iter().map(|a| a.name.clone()).collect();
+            let acc_list: Vec<String> = ix.accounts.iter().map(|a| a.name.clone()).collect();
+            return Err(format!(
+                "unknown key '{key}'; expected one of args [{}] or accounts [{}]",
+                arg_list.join(","),
+                acc_list.join(",")
+            ));
+        }
+    }
+
+    let signers = match signer_overrides {
+        Some(list) => list
+            .into_iter()
+            .filter(|n| !signer_negatives.contains(n))
+            .collect(),
+        None => ix
+            .accounts
+            .iter()
+            .filter(|a| a.signer)
+            .filter_map(|a| accounts.get(&a.name).and_then(|v| v.as_str()).map(String::from))
+            .filter(|n| !signer_negatives.contains(n))
+            .collect::<Vec<String>>(),
+    };
+
+    Ok(serde_json::json!({
+        "Call": {
+            "ix": ix_name,
+            "args": serde_json::Value::Object(args),
+            "accounts": serde_json::Value::Object(accounts),
+            "signers": signers,
+        }
+    }))
+}
+
+fn coerce_kv(raw: &str, ty: &str) -> serde_json::Value {
+    match ty {
+        "bool" => return serde_json::Value::Bool(raw == "true" || raw == "1"),
+        "u8" | "u16" | "u32" | "u64" | "i8" | "i16" | "i32" | "i64" | "f32" | "f64" => {
+            if let Ok(n) = raw.parse::<u64>() {
+                return serde_json::Value::Number(n.into());
+            }
+            if let Ok(n) = raw.parse::<i64>() {
+                return serde_json::Value::Number(n.into());
+            }
+            if let Ok(f) = raw.parse::<f64>() {
+                if let Some(n) = serde_json::Number::from_f64(f) {
+                    return serde_json::Value::Number(n);
+                }
+            }
+        }
+        _ => {}
+    }
+    serde_json::Value::String(raw.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ilold_solana_core::idl::parse_idl;
+    use ilold_solana_core::model::ProgramDef;
+
+    const STAKING_IDL: &str = include_str!(
+        "../../../tests/fixtures/solana/staking/idls/staking.json"
+    );
+
+    fn staking_view() -> ProgramView {
+        ProgramDef::from_idl(parse_idl(STAKING_IDL).expect("parse staking idl"))
+            .expect("build staking ProgramDef")
+            .compute_view()
+    }
+
+    #[test]
+    fn kv_parser_distributes_args_and_accounts() {
+        let program = staking_view();
+        let body = build_call_from_kv(
+            &program,
+            "initialize_pool",
+            "reward_rate=10 pool=pool admin=admin",
+        )
+        .expect("kv parse");
+        assert_eq!(body["Call"]["ix"], "initialize_pool");
+        assert_eq!(body["Call"]["args"]["reward_rate"], 10);
+        assert_eq!(body["Call"]["accounts"]["pool"], "pool");
+        assert_eq!(body["Call"]["accounts"]["admin"], "admin");
+        let signers: Vec<_> = body["Call"]["signers"].as_array().unwrap().iter().collect();
+        assert!(signers.iter().any(|v| v.as_str() == Some("pool")));
+        assert!(signers.iter().any(|v| v.as_str() == Some("admin")));
+    }
+
+    #[test]
+    fn kv_parser_supports_no_signer_override() {
+        let program = staking_view();
+        let body = build_call_from_kv(
+            &program,
+            "initialize_pool",
+            "reward_rate=10 pool=pool admin=admin --no-signer=admin",
+        )
+        .expect("kv parse");
+        let signers: Vec<&str> = body["Call"]["signers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(signers.contains(&"pool"));
+        assert!(!signers.contains(&"admin"));
+    }
+
+    #[test]
+    fn kv_parser_rejects_unknown_key() {
+        let program = staking_view();
+        let err = build_call_from_kv(
+            &program,
+            "initialize_pool",
+            "reward_rate=10 ghost=foo",
+        )
+        .unwrap_err();
+        assert!(err.contains("ghost"), "got: {err}");
+    }
+
+    #[test]
+    fn kv_parser_omits_constant_accounts_from_form() {
+        let program = staking_view();
+        let body = build_call_from_kv(
+            &program,
+            "initialize_pool",
+            "reward_rate=10 pool=pool admin=admin",
+        )
+        .expect("kv parse");
+        assert!(body["Call"]["accounts"].get("system_program").is_none());
+    }
+}
+
+fn send_solana_command(
+    handle: &tokio::runtime::Handle,
+    client: &reqwest::Client,
+    base_url: &str,
+    body: &serde_json::Value,
+) -> Result<SolanaCommandResult, String> {
+    handle.block_on(async {
+        let resp = client
+            .post(format!("{base_url}/api/cmd"))
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {e}"))?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(format!("Server error {status}: {text}"));
+        }
+        resp.json::<SolanaCommandResult>()
+            .await
+            .map_err(|e| format!("Parse failed: {e}"))
+    })
+}
+
+fn apply_solana_result_to_steps(result: &SolanaCommandResult, steps: &mut Vec<String>) {
+    match result {
+        SolanaCommandResult::StepAdded { instruction, .. } => steps.push(instruction.clone()),
+        SolanaCommandResult::StepRemoved { .. } => {
+            steps.pop();
+        }
+        SolanaCommandResult::Cleared => steps.clear(),
+        SolanaCommandResult::SessionView { steps: server_steps, .. } => {
+            *steps = server_steps.clone();
+        }
+        SolanaCommandResult::SessionLoaded { steps: server_steps, .. } => {
+            *steps = server_steps.clone();
+        }
+        _ => {}
+    }
+}
+
+fn print_solana_result(result: &SolanaCommandResult) {
+    println!();
+    if let SolanaCommandResult::Error { message } = result {
+        eprintln!("  {} {}", c_danger("✗"), message);
+        println!();
+        return;
+    }
+    print!("{}", ilold_render::render_solana_result(result));
+    println!();
+}
+
+fn sync_active_scenario(
+    handle: &tokio::runtime::Handle,
+    client: &reqwest::Client,
+    base_url: &str,
+    contract: &str,
+) -> Option<String> {
+    let body = serde_json::json!({
+        "contract": contract,
+        "command": {"Scenario": {"sub": "List"}}
+    });
+    let res = send_solana_command(handle, client, base_url, &body).ok()?;
+    if let SolanaCommandResult::ScenarioList { items } = res {
+        items.into_iter().find(|i| i.active).map(|i| i.name)
+    } else {
+        None
+    }
+}
+
+fn sync_scenarios(
     handle: &tokio::runtime::Handle,
     client: &reqwest::Client,
     base_url: &str,
@@ -865,11 +1961,37 @@ fn sync_steps(
 ) -> Option<Vec<String>> {
     let body = serde_json::json!({
         "contract": contract,
+        "command": {"Scenario": {"sub": "List"}}
+    });
+    let res = send_solana_command(handle, client, base_url, &body).ok()?;
+    if let SolanaCommandResult::ScenarioList { items } = res {
+        Some(items.into_iter().map(|i| i.name).collect())
+    } else {
+        None
+    }
+}
+
+fn sync_steps(
+    handle: &tokio::runtime::Handle,
+    client: &reqwest::Client,
+    base_url: &str,
+    contract: &str,
+    backend: BackendKind,
+) -> Option<Vec<String>> {
+    let body = serde_json::json!({
+        "contract": contract,
         "command": "Session"
     });
-    match send_command(handle, client, base_url, &body) {
-        Ok(CommandResult::SessionView { steps, .. }) => Some(steps),
-        _ => None,
+    if backend == BackendKind::Solana {
+        match send_solana_command(handle, client, base_url, &body) {
+            Ok(SolanaCommandResult::SessionView { steps, .. }) => Some(steps),
+            _ => None,
+        }
+    } else {
+        match send_command(handle, client, base_url, &body) {
+            Ok(CommandResult::SessionView { steps, .. }) => Some(steps),
+            _ => None,
+        }
     }
 }
 
@@ -988,7 +2110,6 @@ fn parse_trace_args(arg: &str) -> TraceArgs {
             interactive = true;
             i += 1;
         } else if let Some(rest) = t.strip_prefix('+') {
-            // `+N` — force-inline the call at canonical step_id N.
             if let Ok(id) = rest.parse::<usize>() {
                 expand.push(id);
             }
@@ -997,9 +2118,6 @@ fn parse_trace_args(arg: &str) -> TraceArgs {
             && target.is_none()
             && tokens.get(i + 1).and_then(|s| s.parse::<usize>().ok()).is_some()
         {
-            // `tr step <N>` — re-render a persisted session step.
-            // Only treated as a keyword when the next token parses as usize;
-            // otherwise `step` falls through to be treated as a function name.
             let idx = tokens[i + 1].parse::<usize>().unwrap();
             target = Some(TraceTarget::SessionStep(idx));
             i += 2;
@@ -1011,6 +2129,17 @@ fn parse_trace_args(arg: &str) -> TraceArgs {
         }
     }
     TraceArgs { target, depth, reverts, expand, interactive }
+}
+
+fn strip_quotes(s: &str) -> &str {
+    let s = s.trim();
+    if (s.starts_with('"') && s.ends_with('"') && s.len() >= 2)
+        || (s.starts_with('\'') && s.ends_with('\'') && s.len() >= 2)
+    {
+        &s[1..s.len() - 1]
+    } else {
+        s
+    }
 }
 
 fn normalize_severity(input: &str) -> Option<&'static str> {
@@ -1092,15 +2221,84 @@ fn handle_finding_interactive(
     }
 }
 
+fn print_remote_programs(map: &serde_json::Value, current: &str) {
+    let arr = match map.get("programs").and_then(|v| v.as_array()) {
+        Some(a) => a,
+        None => {
+            println!("  {}", c_muted("No programs in /api/project/map"));
+            return;
+        }
+    };
+    println!();
+    if arr.is_empty() {
+        println!("  {}", c_muted("No programs detected"));
+        println!();
+        return;
+    }
+    for p in arr {
+        let name = p.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+        let pid = p.get("program_id").and_then(|v| v.as_str()).unwrap_or("");
+        let ix_count = p
+            .get("instructions")
+            .and_then(|v| v.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0);
+        let marker = if name == current {
+            c_ok(" ← current").to_string()
+        } else {
+            String::new()
+        };
+        println!(
+            "  {} {} {} {}{}",
+            c_accent("[P]"),
+            name,
+            c_muted(&format!("({} ix)", ix_count)),
+            c_muted(pid),
+            marker
+        );
+    }
+    println!();
+}
+
+fn print_programs(state: &std::sync::Arc<ilold_web::state::AppState>, current: &str) {
+    let s = match state.solana() {
+        Some(s) => s,
+        None => return,
+    };
+    println!();
+    if s.project.programs.is_empty() {
+        println!("  {}", c_muted("No programs detected"));
+        println!();
+        return;
+    }
+    for p in &s.project.programs {
+        let marker = if p.name == current {
+            c_ok(" ← current").to_string()
+        } else {
+            String::new()
+        };
+        println!(
+            "  {} {} {} {}{}",
+            c_accent("[P]"),
+            p.name,
+            c_muted(&format!("({} ix)", p.instructions.len())),
+            c_muted(&p.program_id.to_string()),
+            marker
+        );
+    }
+    println!();
+}
+
 fn print_contracts(state: &std::sync::Arc<ilold_web::state::AppState>, current: &str) {
     use ilold_core::model::contract::ContractKind;
+    let s = state.unwrap_solidity();
     println!();
-    let max_name = state.project.contracts.iter()
+    let max_name = s.project.contracts.iter()
         .filter(|c| !c.name.is_empty())
         .map(|c| c.name.chars().count())
         .max().unwrap_or(0);
 
-    for c in &state.project.contracts {
+    for c in &s.project.contracts {
         if c.name.is_empty() { continue; }
         let badge = match c.kind {
             ContractKind::Contract => c_accent("[C]"),
@@ -1147,8 +2345,6 @@ fn print_findings_list(
         _ => println!("  Could not retrieve findings."),
     }
 }
-
-// ─── Output formatting ─────────────────────────────────────────────────────
 
 fn print_result(result: &CommandResult, steps: &[String]) {
     match result {
@@ -1432,8 +2628,6 @@ fn print_narrative(val: &serde_json::Value) {
         println!("  {} [{}]{}", c_bright(name), c_accent(access), mod_str);
     }
 
-    // Build the list of sections that will be shown so we know which is last
-    // (for picking the trailing branch character).
     #[derive(Default)]
     struct TransitiveGroup {
         writes: Vec<String>,
@@ -1495,7 +2689,6 @@ fn print_narrative(val: &serde_json::Value) {
         sections.push(Section::StringList { label: "Events", label_color: SectionColor::Accent, items: events });
     }
 
-    // Transitive effects (grouped by chain)
     let collect_transitive = |key: &str| -> Vec<(Vec<String>, String)> {
         val.get(key)
             .and_then(|v| v.as_array())
@@ -1664,7 +2857,66 @@ fn print_sequence_narrative(val: &serde_json::Value) {
 }
 
 fn print_help() {
-    let groups: &[(&str, &[(&str, &str, &str)])] = &[
+    print_help_for(BackendKind::Solidity);
+}
+
+fn print_solana_help() {
+    print_help_for(BackendKind::Solana);
+}
+
+fn print_help_for(backend: BackendKind) {
+    let groups: &[(&str, &[(&str, &str, &str)])] = match backend {
+        BackendKind::Solana => &[
+            ("Session", &[
+                ("c",  "call <ix> arg=val acc=user", "Concise: keys auto-distributed; signers auto from IDL"),
+                ("",   "call <ix> {json}",  "Full control with explicit args/accounts/signers"),
+                ("",   "  --signer=a,b",    "Add signers (override IDL defaults)"),
+                ("",   "  --no-signer=a",   "Remove a signer (simulate negative cases)"),
+                ("b",  "back",              "Remove last step from active scenario"),
+                ("cl", "clear",             "Reset active scenario steps"),
+                ("",   "state",             "Decoded view of accounts mutated this session"),
+                ("s",  "session",           "Active scenario summary (steps + findings)"),
+            ]),
+            ("Programs", &[
+                ("ct", "programs (alias contracts)", "List programs in workspace"),
+                ("",   "use <program>",     "Switch active program"),
+                ("f",  "funcs (alias functions)", "List instructions of active program"),
+                ("fa", "funcs-all",         "Instructions with arg/account/signer/pda counts"),
+                ("i",  "info <ix>",         "Detail an instruction: args (typed), accounts (flags), discriminator"),
+                ("v",  "vars",              "List declared account types with discriminators"),
+                ("va", "vars-all",          "Account types with their decoded field layout"),
+            ]),
+            ("Solana runtime", &[
+                ("",   "users",             "List keypairs in active scenario"),
+                ("",   "users new <name> [lamports]", "Create keypair + airdrop (default 10 SOL)"),
+                ("",   "airdrop <user> <lamports>", "Top up an existing keypair"),
+                ("tw", "time-warp <secs>",  "Advance Clock unix_timestamp + slot"),
+                ("",   "pda <ix>",          "List PDAs declared by an instruction (symbolic)"),
+                ("",   "inspect <pubkey>",  "Read VM account, decode by Anchor discriminator"),
+            ]),
+            ("Analysis", &[
+                ("st", "step <index>",      "Re-inspect a step: CU, logs, diffs"),
+                ("",   "who <query>",        "Resolve query: AccountType | Instruction | Field"),
+                ("tl", "timeline <pubkey>",  "Cross-step mutation history of an account, decoded"),
+                ("cp", "coupling",           "List ix pairs that share writable accounts"),
+                ("cov","coverage",           "Aggregated runtime metrics for the active scenario"),
+            ]),
+            ("Findings", &[
+                ("fi", "finding <sev> <title>", "Record a security finding"),
+                ("fl", "findings",          "List recorded findings"),
+                ("n",  "note <text>",       "Add annotation to active sequence"),
+                ("",   "status <ix> <s>",   "Set review status: open|reviewed|finding"),
+                ("ex", "export",            "Markdown report: sequence + findings + program info"),
+            ]),
+            ("Workspace", &[
+                ("sc", "scenario <sub>",    "new|list|switch|fork|delete <name> [step]"),
+                ("",   "save <name>",       "Save active scenario JSON to disk"),
+                ("",   "load <name>",       "Load scenario JSON from disk"),
+                ("?",  "help",              "Print this help (append ? to any cmd for full reference)"),
+                ("q",  "quit/exit",         "Exit"),
+            ]),
+        ],
+        _ => &[
         ("Session", &[
             ("c",      "call <func>",      "Add function to sequence"),
             ("b",      "back",             "Remove last step"),
@@ -1705,7 +2957,8 @@ fn print_help() {
             ("",       "browser",          "Open web UI"),
             ("q",      "quit/exit",        "Exit"),
         ]),
-    ];
+        ],
+    };
 
     println!();
     println!("  {}  {}", c_bright("ilold explore"), c_muted("— append ? to any command for inline help (e.g. sl?)"));
@@ -1753,6 +3006,12 @@ fn print_inline_help(cmd: &str) {
         (&["save"],           "save <name>",                     "Save session to disk. Example: save my-audit"),
         (&["load"],           "load <name>",                     "Load session from disk. Example: load my-audit"),
         (&["browser"],        "browser",                         "Open the web UI in a browser."),
+        (&["users"],          "users [new <name> [<lamports>]]", "List or create keypairs in active scenario."),
+        (&["airdrop", "air"], "airdrop <name> <lamports>",       "Top up a user's SOL balance."),
+        (&["tw", "time-warp"],"time-warp <delta_seconds>",       "Warp the Clock sysvar (positive forward, negative back)."),
+        (&["pda"],            "pda <instruction>",               "List declared PDAs of an instruction (Anchor IDL)."),
+        (&["inspect", "acc"], "inspect <pubkey>",                "Decode an account by Anchor discriminator."),
+        (&["programs", "progs"], "programs",                     "List programs in the workspace (Solana)."),
     ];
 
     for (aliases, usage, desc) in entries {
@@ -1763,8 +3022,6 @@ fn print_inline_help(cmd: &str) {
     }
     println!("  {} unknown command: {}", c_danger("✗"), cmd);
 }
-
-// ─── Reedline: Prompt ──────────────────────────────────────────────────────
 
 struct IloldPrompt {
     contract: String,
@@ -1812,8 +3069,6 @@ impl Prompt for IloldPrompt {
         }
     }
 }
-
-// ─── Reedline: Completer ───────────────────────────────────────────────────
 
 struct IloldCompleter {
     functions: Vec<String>,

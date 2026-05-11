@@ -1,11 +1,7 @@
 <script lang="ts">
-  // F4 — the floating NodeDetailPanel used to pop up on top of the canvas
-  // whenever a node was selected. Now it's a tab inside SessionSidebar, so
-  // this component renders plain content (no DraggablePanel wrapper, no
-  // close button — "closing" means clicking the pane or switching tabs).
-  //
-  // Empty state is the default: if nothing is selected we show a hint.
   import Collapsible from '$lib/Collapsible.svelte';
+  import SolanaRunForm from './SolanaRunForm.svelte';
+  import type { ProgramView, IxView } from '$lib/api/rest';
 
   interface Props {
     selectedNode: any;
@@ -19,6 +15,13 @@
     lookupBlock: (blockId: string) => { statements: string[]; node_type: string } | null;
     onpathselect: (funcName: string, path: any) => void;
     onexpandcfg: (funcName: string, nodeId?: string) => void;
+    onsolanarun?: (instructionName: string) => void;
+    program?: ProgramView | null;
+    solanaUsers?: { name: string; pubkey: string }[];
+    onsolanasubmit?: (
+      ix: IxView,
+      payload: { args: Record<string, any>; accounts: Record<string, string>; signers: string[] },
+    ) => Promise<void>;
   }
 
   let {
@@ -33,7 +36,16 @@
     lookupBlock,
     onpathselect,
     onexpandcfg,
+    onsolanarun,
+    program = null,
+    solanaUsers = [],
+    onsolanasubmit,
   }: Props = $props();
+
+  const inspectedIx = $derived.by<IxView | null>(() => {
+    if (!program || !selectedNode || selectedNode._type !== 'instruction') return null;
+    return program.instructions.find((i) => i.name === selectedNode.label) ?? null;
+  });
 
   function termColor(t: string): string {
     return t === 'Return' ? 'var(--color-success)' : t === 'Revert' ? 'var(--color-danger)' : 'var(--color-text-muted)';
@@ -338,12 +350,126 @@
         {:else}
           <div class="d-hint">Click a path above to see the execution flow</div>
         {/if}
+
+      {:else if selectedNode._type === 'instruction'}
+        <div class="d-row"><span class="d-label">Program</span><span>{selectedNode.programName}</span></div>
+        <div class="d-row"><span class="d-label">Args</span><span>{(selectedNode.args ?? []).length}</span></div>
+        <div class="d-row"><span class="d-label">Accounts</span><span>{selectedNode.accountsCount}</span></div>
+        {#if selectedNode.adminGated}
+          <div class="d-row"><span class="d-label">Admin</span><span class="text-danger">admin-gated (heuristic)</span></div>
+        {/if}
+        {#if selectedNode.hasPdas}
+          <div class="d-row"><span class="d-label">PDAs</span><span class="text-warning">declares PDAs</span></div>
+        {/if}
+        {#if selectedNode.signers && selectedNode.signers.length > 0}
+          <div class="d-row"><span class="d-label">Signers</span><span>{selectedNode.signers.join(', ')}</span></div>
+        {/if}
+        {#if selectedNode.discriminator_hex}
+          <div class="d-row"><span class="d-label">Disc</span><span class="font-mono">{selectedNode.discriminator_hex}</span></div>
+        {/if}
+        {#if program && inspectedIx && onsolanasubmit}
+          <SolanaRunForm
+            {program}
+            ix={inspectedIx}
+            users={solanaUsers}
+            onsubmit={(payload) => onsolanasubmit!(inspectedIx, payload)}
+          />
+        {:else if onsolanarun}
+          <div class="d-actions">
+            <button class="d-action-btn" onclick={() => onsolanarun?.(selectedNode.label)}>
+              ▶ Execute instruction
+            </button>
+          </div>
+        {/if}
+
+      {:else if selectedNode._type === 'account'}
+        <div class="d-row"><span class="d-label">Program</span><span>{selectedNode.programName}</span></div>
+        {#if selectedNode.account_type}
+          <div class="d-row"><span class="d-label">Type</span><span class="font-mono">{selectedNode.account_type}</span></div>
+        {/if}
+        {#if selectedNode.discriminator_hex}
+          <div class="d-row"><span class="d-label">Disc</span><span class="font-mono">{selectedNode.discriminator_hex}</span></div>
+        {/if}
+        {#if selectedNode.fields && selectedNode.fields.length > 0}
+          <div class="d-section-label">Fields</div>
+          {#each selectedNode.fields as f}
+            <div class="d-row"><span class="d-label">{f.name}</span><span class="font-mono">{f.ty}</span></div>
+          {/each}
+        {:else}
+          <div class="d-hint">Layout fields not declared in this IDL</div>
+        {/if}
+        {#if selectedNode.signer || selectedNode.writable || selectedNode.pda}
+          <div class="d-section-label">IX flags</div>
+          <div class="d-row">
+            <span class="d-label">Flags</span>
+            <span>
+              {selectedNode.signer ? 'signer ' : ''}{selectedNode.writable ? 'writable ' : ''}{selectedNode.pda ? 'pda' : ''}
+            </span>
+          </div>
+        {/if}
+
+      {:else if selectedNode._type === 'trace'}
+        {#if selectedNode.error}
+          <div class="trace-failed-banner">
+            <strong>FAILED</strong>
+            <span class="trace-failed-msg">{selectedNode.error}</span>
+          </div>
+        {/if}
+        <div class="d-row"><span class="d-label">Step</span><span>#{selectedNode.stepIndex}</span></div>
+        <div class="d-row"><span class="d-label">Instruction</span><span>{selectedNode.instruction}</span></div>
+        <div class="d-row"><span class="d-label">Status</span>
+          {#if selectedNode.error}
+            <span class="text-danger">FAILED — VM rejected the call (step kept as audit trail; use back to drop it)</span>
+          {:else}
+            <span style="color: var(--color-success)">ok</span>
+          {/if}
+        </div>
+        <div class="d-row"><span class="d-label">Compute units</span><span>{selectedNode.computeUnits}</span></div>
+        <div class="d-row"><span class="d-label">Account diffs</span><span>{selectedNode.diffsCount}</span></div>
+        <div class="d-row"><span class="d-label">Scenario</span><span>{selectedNode.scenario}</span></div>
+        {#if selectedNode.logsExcerpt && selectedNode.logsExcerpt.length > 0}
+          <div class="d-section-label">Logs</div>
+          <pre class="trace-logs">{selectedNode.logsExcerpt.join('\n')}</pre>
+        {/if}
       {/if}
     </div>
   </div>
 {/if}
 
 <style>
+  .trace-failed-banner {
+    border: 1px solid var(--color-danger);
+    background: rgba(220, 80, 80, 0.08);
+    border-radius: 6px;
+    padding: 8px 12px;
+    margin-bottom: 8px;
+    color: var(--color-danger);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .trace-failed-msg {
+    font-size: 11px;
+    font-family: var(--font-mono, monospace);
+    word-break: break-word;
+    color: var(--color-text);
+    opacity: 0.85;
+  }
+  .trace-logs {
+    background: var(--color-hover);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: 4px;
+    padding: 8px;
+    font-family: var(--font-mono, monospace);
+    font-size: 10px;
+    color: var(--color-text-muted);
+    white-space: pre-wrap;
+    max-height: 280px;
+    overflow-y: auto;
+    margin-top: 6px;
+  }
+  .text-danger { color: var(--color-danger); }
+  .text-warning { color: var(--color-warning); }
   .empty-state {
     display: flex;
     flex-direction: column;

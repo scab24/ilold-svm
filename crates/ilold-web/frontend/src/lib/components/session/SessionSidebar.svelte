@@ -7,12 +7,10 @@
   import { getScenarios, getActiveScenario } from '$lib/stores/session.svelte';
   import { promptScenarioName } from '$lib/scenarios/name';
   import { dispatchScenarioAction } from '$lib/scenarios/dispatch';
+  import { getNodes } from '$lib/stores/graph.svelte';
+  import type { ProgramView } from '$lib/api/rest';
+  import type { TraceNodeData } from '$lib/stores/graph.svelte';
 
-  // Inspector props are optional so existing callers don't break, but
-  // +page.svelte passes them all as part of F4 to replace the floating
-  // NodeDetailPanel. When `selectedNode` is null the Inspector shows an
-  // empty state in-place instead of the panel disappearing — the tab
-  // itself stays available.
   let {
     contract,
     selectedNode = null,
@@ -26,6 +24,13 @@
     lookupBlock = () => null,
     onpathselect = () => {},
     onexpandcfg = () => {},
+    kind = 'solidity',
+    program = null,
+    solanaUsers = [],
+    onsolanarun = () => {},
+    onnewuser = async () => {},
+    onairdrop = async () => {},
+    onsolanasubmit,
   }: {
     contract: string;
     selectedNode?: any;
@@ -39,27 +44,82 @@
     lookupBlock?: (blockId: string) => { statements: string[]; node_type: string } | null;
     onpathselect?: (funcName: string, path: any) => void;
     onexpandcfg?: (funcName: string, nodeId?: string) => void;
+    kind?: 'solidity' | 'solana';
+    program?: ProgramView | null;
+    solanaUsers?: { name: string; pubkey: string; lamports: number }[];
+    onsolanarun?: (instruction: string) => void;
+    onnewuser?: (name: string, lamports: number) => Promise<void>;
+    onairdrop?: (name: string, lamports: number) => Promise<void>;
+    onsolanasubmit?: (
+      ix: any,
+      payload: { args: Record<string, any>; accounts: Record<string, string>; signers: string[] },
+    ) => Promise<void>;
   } = $props();
+
+  let newUserName = $state('');
+  let newUserLamports = $state(10_000_000_000);
+  let pendingUser = $state(false);
+  let userError = $state<string | null>(null);
+
+  const traceSteps = $derived.by<TraceNodeData[]>(() => {
+    if (kind !== 'solana') return [];
+    return getNodes()
+      .filter((n) => (n.data as any)?._type === 'trace')
+      .map((n) => n.data as TraceNodeData)
+      .sort((a, b) => {
+        if (a.scenario !== b.scenario) return a.scenario.localeCompare(b.scenario);
+        return a.stepIndex - b.stepIndex;
+      });
+  });
+
+  async function handleCreateUser(e: SubmitEvent) {
+    e.preventDefault();
+    userError = null;
+    if (!newUserName.trim()) {
+      userError = 'name required';
+      return;
+    }
+    pendingUser = true;
+    try {
+      await onnewuser(newUserName.trim(), newUserLamports);
+      newUserName = '';
+    } catch (e) {
+      userError = e instanceof Error ? e.message : String(e);
+    } finally {
+      pendingUser = false;
+    }
+  }
+
+  async function topUp(name: string) {
+    try {
+      await onairdrop(name, 1_000_000_000);
+    } catch (e) {
+      alert(`airdrop failed:\n\n${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
 
   let open = $state(true);
   let activeTab: 'timeline' | 'state' | 'inspector' = $state('timeline');
+  // Once the user picks a tab manually we stop auto-switching: otherwise
+  // selecting a node after a fork yanks the user back to Inspector even
+  // though they explicitly clicked Timeline/State.
+  let userPickedTab = $state(false);
 
-  // Auto-switch to the Inspector tab the moment the user selects a node
-  // on the canvas. Mirrors Figma / VSCode — selection should reveal the
-  // details without the user having to hunt for a tab. We only switch on
-  // the null → non-null transition so re-selecting a different node
-  // doesn't keep yanking the user back to this tab mid-navigation.
   let prevSelectedId = $state<string | null>(null);
   $effect(() => {
     const currentId = selectedNode?.id ?? null;
-    // Read the tracker via untrack so writing it at the end doesn't
-    // re-trigger this effect — only selectedNode changes should flow in.
     const prev = untrack(() => prevSelectedId);
-    if (currentId && !prev) {
+    const manual = untrack(() => userPickedTab);
+    if (currentId && !prev && !manual) {
       activeTab = 'inspector';
     }
     prevSelectedId = currentId;
   });
+
+  function pickTab(tab: 'timeline' | 'state' | 'inspector') {
+    activeTab = tab;
+    userPickedTab = true;
+  }
 
   // Reactive view of scenarios (ordered map + active name, both from session store)
   const scenarioEntries = $derived(Array.from(getScenarios().entries()));
@@ -214,21 +274,21 @@
       <button
         class="flex-1 py-2 bg-transparent border-none text-[10px] font-semibold uppercase tracking-wider cursor-pointer transition-colors duration-150 {activeTab === 'timeline' ? 'text-accent' : 'text-text-muted hover:text-text'}"
         style="border-bottom: 2px solid {activeTab === 'timeline' ? 'var(--color-accent)' : 'transparent'};"
-        onclick={() => activeTab = 'timeline'}
+        onclick={() => pickTab('timeline')}
       >
         Timeline
       </button>
       <button
         class="flex-1 py-2 bg-transparent border-none text-[10px] font-semibold uppercase tracking-wider cursor-pointer transition-colors duration-150 {activeTab === 'state' ? 'text-accent' : 'text-text-muted hover:text-text'}"
         style="border-bottom: 2px solid {activeTab === 'state' ? 'var(--color-accent)' : 'transparent'};"
-        onclick={() => activeTab = 'state'}
+        onclick={() => pickTab('state')}
       >
         State
       </button>
       <button
         class="flex-1 py-2 bg-transparent border-none text-[10px] font-semibold uppercase tracking-wider cursor-pointer transition-colors duration-150 {activeTab === 'inspector' ? 'text-accent' : 'text-text-muted hover:text-text'}"
         style="border-bottom: 2px solid {activeTab === 'inspector' ? 'var(--color-accent)' : 'transparent'};"
-        onclick={() => activeTab = 'inspector'}
+        onclick={() => pickTab('inspector')}
         title={selectedNode ? `Inspect: ${selectedNode._funcName || selectedNode.label}` : 'Inspector — select a node to populate'}
       >
         Inspector{#if selectedNode}<span class="ml-1 text-accent-light">●</span>{/if}
@@ -237,9 +297,79 @@
 
     <div class="flex-1 overflow-y-auto min-h-0 px-1">
       {#if activeTab === 'timeline'}
-        <SessionTimeline {contract} />
+        {#if kind === 'solana'}
+          {#if traceSteps.length === 0}
+            <div class="solana-empty">
+              <div class="solana-empty-title">No steps yet</div>
+              <div class="solana-empty-hint">Click an instruction in the sidebar and press Execute, or run <code>call &lt;ix&gt; &lt;json&gt;</code> in the terminal.</div>
+            </div>
+          {/if}
+          {#each traceSteps as step (`${step.scenario}:${step.stepIndex}`)}
+            <div class="trace-step">
+              <div class="trace-step-head">
+                <span class="trace-step-idx">#{step.stepIndex}</span>
+                <span class="trace-step-name">{step.instruction}</span>
+                {#if step.error}<span class="trace-step-err">err</span>{/if}
+              </div>
+              <div class="trace-step-meta">
+                <span>{step.computeUnits} CU</span>
+                <span>{step.diffsCount} diffs</span>
+                <span class="trace-step-scn">{step.scenario}</span>
+              </div>
+              {#if step.logsExcerpt && step.logsExcerpt.length > 0}
+                <pre class="trace-step-logs">{step.logsExcerpt.slice(0, 5).join('\n')}</pre>
+              {/if}
+            </div>
+          {/each}
+        {:else}
+          <SessionTimeline {contract} />
+        {/if}
       {:else if activeTab === 'state'}
-        <StatePanel {contract} />
+        {#if kind === 'solana' && program}
+          <form class="user-form" onsubmit={handleCreateUser}>
+            <div class="user-form-row">
+              <input
+                class="user-input"
+                type="text"
+                bind:value={newUserName}
+                placeholder="user name (e.g. admin)"
+                disabled={pendingUser}
+              />
+              <input
+                class="user-input lamports"
+                type="number"
+                bind:value={newUserLamports}
+                placeholder="lamports"
+                disabled={pendingUser}
+              />
+              <button class="user-add" type="submit" disabled={pendingUser}>
+                {pendingUser ? '…' : '+'}
+              </button>
+            </div>
+            {#if userError}
+              <div class="user-error">{userError}</div>
+            {/if}
+          </form>
+
+          {#if solanaUsers.length === 0}
+            <div class="solana-empty">
+              <div class="solana-empty-title">No users yet</div>
+              <div class="solana-empty-hint">Create one above or run <code>users new &lt;name&gt;</code> in the terminal.</div>
+            </div>
+          {/if}
+          {#each solanaUsers as u (u.name)}
+            <div class="user-row">
+              <div class="user-head">
+                <span class="user-name">{u.name}</span>
+                <span class="user-balance">{u.lamports.toLocaleString()} lamports</span>
+              </div>
+              <div class="user-pk">{u.pubkey}</div>
+              <button class="user-air" onclick={() => topUp(u.name)} title="Airdrop +1 SOL">+1 SOL</button>
+            </div>
+          {/each}
+        {:else}
+          <StatePanel {contract} />
+        {/if}
       {:else if contractDetail}
         <NodeInspector
           {selectedNode}
@@ -252,7 +382,11 @@
           contract={contractDetail}
           {lookupBlock}
           {onpathselect}
+          {onsolanarun}
           {onexpandcfg}
+          {program}
+          {solanaUsers}
+          {onsolanasubmit}
         />
       {/if}
     </div>
@@ -261,3 +395,164 @@
   <!-- Floating terminal (positions itself fixed, outside sidebar flow) -->
   <EmbeddedTerminal />
 </div>
+
+<style>
+  .solana-empty {
+    text-align: center;
+    padding: 24px 12px;
+  }
+  .solana-empty-title {
+    font-weight: 700;
+    color: var(--color-text-muted);
+    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+  }
+  .solana-empty-hint {
+    margin-top: 6px;
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--color-text-dim);
+  }
+  .solana-empty-hint code {
+    background: var(--color-dark);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+  .trace-step {
+    background: var(--color-dark);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: 6px;
+    padding: 8px;
+    margin: 6px 4px;
+  }
+  .trace-step-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .trace-step-idx {
+    font-size: 10px;
+    color: var(--color-text-dim);
+    font-family: var(--font-mono, monospace);
+  }
+  .trace-step-name {
+    font-family: var(--font-mono, monospace);
+    font-weight: 700;
+    color: var(--color-text);
+  }
+  .trace-step-err {
+    font-size: 9px;
+    padding: 1px 4px;
+    border-radius: 4px;
+    background: rgba(220, 80, 80, 0.15);
+    color: var(--color-danger);
+  }
+  .trace-step-meta {
+    display: flex;
+    gap: 10px;
+    font-size: 10px;
+    color: var(--color-text-dim);
+    margin-top: 4px;
+  }
+  .trace-step-scn {
+    margin-left: auto;
+    color: var(--color-accent-hover);
+  }
+  .trace-step-logs {
+    margin-top: 6px;
+    font-size: 10px;
+    color: var(--color-text-muted);
+    background: var(--color-hover);
+    border-radius: 4px;
+    padding: 6px;
+    max-height: 80px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+  }
+  .user-form {
+    margin: 6px 4px 12px;
+  }
+  .user-form-row {
+    display: flex;
+    gap: 4px;
+  }
+  .user-input {
+    flex: 1;
+    background: var(--color-dark);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: 4px;
+    padding: 5px 8px;
+    font-size: 11px;
+    color: var(--color-text);
+    font-family: var(--font-mono, monospace);
+  }
+  .user-input.lamports {
+    flex: 0 0 110px;
+  }
+  .user-add {
+    width: 28px;
+    background: var(--color-accent);
+    border: none;
+    border-radius: 4px;
+    color: var(--color-dark);
+    cursor: pointer;
+    font-weight: 700;
+  }
+  .user-add:disabled,
+  .user-input:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .user-error {
+    margin-top: 6px;
+    color: var(--color-danger);
+    font-size: 11px;
+  }
+  .user-row {
+    background: var(--color-dark);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: 6px;
+    padding: 8px;
+    margin: 6px 4px;
+    position: relative;
+  }
+  .user-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .user-name {
+    font-weight: 700;
+    font-family: var(--font-mono, monospace);
+    color: var(--color-text);
+  }
+  .user-balance {
+    margin-left: auto;
+    font-size: 10px;
+    color: var(--color-text-muted);
+  }
+  .user-pk {
+    margin-top: 4px;
+    font-size: 10px;
+    color: var(--color-text-dim);
+    font-family: var(--font-mono, monospace);
+    word-break: break-all;
+  }
+  .user-air {
+    position: absolute;
+    bottom: 6px;
+    right: 6px;
+    background: var(--color-hover);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-size: 10px;
+    color: var(--color-text-muted);
+    cursor: pointer;
+  }
+  .user-air:hover {
+    color: var(--color-accent);
+    border-color: var(--color-accent);
+  }
+</style>

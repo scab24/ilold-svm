@@ -2,12 +2,14 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::Parser;
+use ilold_solana_core::ingest::{detect, ProjectKind};
 
 mod analyze;
 mod colors;
 mod context;
 mod explore;
 mod fmt;
+mod help;
 mod interactive;
 
 #[derive(Parser)]
@@ -60,6 +62,18 @@ enum Commands {
         #[arg(long)]
         attach: Option<String>,
     },
+    /// Run the MCP server (stdio transport) exposing Solana REPL commands as tools
+    Mcp {
+        /// Base URL of a running `ilold serve` instance (defaults to http://127.0.0.1:8080)
+        #[arg(long, env = "ILOLD_SERVER_URL", default_value = "http://127.0.0.1:8080")]
+        server_url: String,
+        /// Optional initial active program (LLM can switch later via ilold_use).
+        #[arg(long, env = "ILOLD_CONTRACT")]
+        contract: Option<String>,
+        /// Emit MCP progress notifications describing each tool-call intent.
+        #[arg(long, env = "ILOLD_NARRATION")]
+        narration: bool,
+    },
 }
 
 #[tokio::main]
@@ -74,25 +88,42 @@ async fn main() -> Result<()> {
             context::run(&path, contract.as_deref(), function.as_deref(), sequence.as_deref(), list)
         }
         Commands::Serve { path, port, max_seq_depth } => {
-            let paths = collect_sol_files(&path)?;
-            if paths.is_empty() {
-                anyhow::bail!("No .sol files found at {}", path.display());
+            let detected = detect(&path)?;
+            match detected.kind {
+                ProjectKind::Solidity => serve_solidity(&path, port, max_seq_depth).await,
+                ProjectKind::Solana => ilold_web::serve_solana(detected, port).await,
             }
-            ilold_web::serve(paths, port, max_seq_depth).await
         }
         Commands::Explore { path, port, max_seq_depth, attach } => {
             if attach.is_some() {
-                // --attach mode: no local analysis needed, connect to remote server
-                explore::run(Vec::new(), port, max_seq_depth, attach).await
-            } else {
-                let paths = collect_sol_files(&path)?;
-                if paths.is_empty() {
-                    anyhow::bail!("No .sol files found at {}", path.display());
-                }
-                explore::run(paths, port, max_seq_depth, attach).await
+                return explore::run(Vec::new(), port, max_seq_depth, attach).await;
+            }
+            let detected = detect(&path)?;
+            match detected.kind {
+                ProjectKind::Solidity => explore_solidity(&path, port, max_seq_depth, attach).await,
+                ProjectKind::Solana => explore::run_solana(detected, port).await,
             }
         }
+        Commands::Mcp { server_url, contract, narration } => {
+            ilold_mcp::run(ilold_mcp::Config { server_url, contract, narration }).await
+        }
     }
+}
+
+async fn serve_solidity(path: &PathBuf, port: u16, max_seq_depth: usize) -> Result<()> {
+    let paths = collect_sol_files(path)?;
+    if paths.is_empty() {
+        anyhow::bail!("No .sol files found at {}", path.display());
+    }
+    ilold_web::serve(paths, port, max_seq_depth).await
+}
+
+async fn explore_solidity(path: &PathBuf, port: u16, max_seq_depth: usize, attach: Option<String>) -> Result<()> {
+    let paths = collect_sol_files(path)?;
+    if paths.is_empty() {
+        anyhow::bail!("No .sol files found at {}", path.display());
+    }
+    explore::run(paths, port, max_seq_depth, attach).await
 }
 
 pub fn collect_sol_files(path: &PathBuf) -> Result<Vec<PathBuf>> {

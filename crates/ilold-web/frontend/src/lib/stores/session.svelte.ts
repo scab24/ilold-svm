@@ -15,18 +15,9 @@ import type {
   ForkOrigin,
 } from '$lib/api/types';
 
-// ── Reactive state (Svelte 5 $state runes) ──────────────────────────────────
-//
-// Svelte 5 Maps: mutations (set/delete) do NOT trigger reactivity. We reassign
-// with `new Map(scenarios)` after each mutation so downstream $derived/$effect
-// recomputes. `activeScenario` and `highlightedFunction` are plain scalars.
-
 let scenarios = $state<Map<string, SessionStep[]>>(new Map([['main', []]]));
 let activeScenario = $state<string>('main');
 let highlightedFunction = $state<string | null>(null);
-// Fork origin per scenario (backend-authoritative, populated by resync).
-// Main has no entry — only forked scenarios appear here. Used by the canvas
-// to render forks as branches emerging from their origin node.
 let forkOrigins = $state<Map<string, ForkOrigin>>(new Map());
 
 function resetState() {
@@ -35,12 +26,6 @@ function resetState() {
   highlightedFunction = null;
   forkOrigins = new Map();
 }
-
-// ── WebSocket subscriptions (created once on module import) ─────────────────
-
-// session_* events carry a `scenario` field (design §4.1). We route each
-// mutation to the matching map entry; if the scenario is unknown we create
-// it on the fly — resync() will reconcile on reconnect.
 
 subscribe('session_add_node', (msg: SessionAddNode) => {
   const next = new Map(scenarios);
@@ -61,18 +46,14 @@ subscribe('session_remove_node', (msg: SessionRemoveNode) => {
 });
 
 subscribe('session_clear', (msg: SessionClear) => {
-  // Scoped clear (design §10.2) — only the target scenario is emptied.
   const next = new Map(scenarios);
   next.set(msg.scenario, []);
   scenarios = next;
 });
 
 subscribe('session_highlight', (msg: SessionHighlight) => {
-  // highlightedFunction is global in frontend v1; scenario field is ignored.
   highlightedFunction = msg.function;
 });
-
-// ── Scenario lifecycle events ───────────────────────────────────────────────
 
 subscribe('scenario_created', (msg: ScenarioCreated) => {
   const next = new Map(scenarios);
@@ -88,9 +69,6 @@ subscribe('scenario_deleted', (msg: ScenarioDeleted) => {
   const next = new Map(scenarios);
   next.delete(msg.name);
   scenarios = next;
-  // Drop the fork-origin entry for the deleted scenario. Forks that pointed
-  // TO this scenario keep their origin; the canvas renders them as standalone
-  // when the referenced origin no longer exists.
   if (forkOrigins.has(msg.name)) {
     const nextOrigins = new Map(forkOrigins);
     nextOrigins.delete(msg.name);
@@ -99,15 +77,10 @@ subscribe('scenario_deleted', (msg: ScenarioDeleted) => {
 });
 
 subscribe('scenario_forked', (_msg: ScenarioForked) => {
-  // Computing the fork locally would require deep-cloning the source steps
-  // at at_step; cheaper and safer to resync from backend.
   resync();
 });
 
 subscribe('scenario_store_reloaded', (_msg: ScenarioStoreReloaded) => {
-  // LoadSession replaced the entire backend store. Pull the new snapshot
-  // (scenarios + forkOrigins + active) instead of reconstructing from the
-  // event payload — same rationale as scenario_forked.
   resync();
 });
 
@@ -117,21 +90,17 @@ subscribe('connection', (event: ConnectionEvent) => {
   }
 });
 
-// ── REST re-sync ────────────────────────────────────────────────────────────
-
 let resyncGen = 0;
 
 async function resync(): Promise<void> {
   const gen = ++resyncGen;
   try {
     const response = await getAllScenarios();
-    if (gen !== resyncGen) return; // stale — a newer resync superseded this
+    if (gen !== resyncGen) return;
 
     const newMap = new Map<string, SessionStep[]>();
     const newOrigins = new Map<string, ForkOrigin>();
     for (const snapshot of response.scenarios) {
-      // SessionStepView has identical shape to SessionStep — copy fields
-      // explicitly so TS infers the narrowed type and future drift breaks here.
       newMap.set(
         snapshot.name,
         snapshot.steps.map((s) => ({
@@ -147,9 +116,6 @@ async function resync(): Promise<void> {
         });
       }
     }
-    // Guarantee 'main' is always present — the store invariant on backend
-    // (ScenarioStore::DEFAULT) is "main exists"; if the response is somehow
-    // empty, reseed so UI never renders a blank scenario list.
     if (newMap.size === 0) newMap.set('main', []);
 
     scenarios = newMap;
@@ -160,8 +126,6 @@ async function resync(): Promise<void> {
     if (gen === resyncGen) console.warn('Session re-sync failed:', e);
   }
 }
-
-// ── Public API ──────────────────────────────────────────────────────────────
 
 export function getScenarios(): Map<string, SessionStep[]> {
   return scenarios;
@@ -179,8 +143,6 @@ export function getScenarioSteps(name: string): SessionStep[] {
   return scenarios.get(name) ?? [];
 }
 
-// Back-compat: returns active scenario's steps. Existing consumers
-// (SessionTimeline, StatePanel, contract page) keep working unchanged.
 export function getSteps(): SessionStep[] {
   return getScenarioSteps(activeScenario);
 }

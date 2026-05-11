@@ -1,5 +1,11 @@
 <script lang="ts">
-  let { mode }: { mode: 'cfg' | 'sequences' | 'session' } = $props();
+  let {
+    mode,
+    kind = 'solidity',
+  }: {
+    mode: 'cfg' | 'sequences' | 'session';
+    kind?: 'solidity' | 'solana';
+  } = $props();
 </script>
 
 <div
@@ -15,7 +21,18 @@
       0 0 0 1px rgba(91, 155, 213, 0.04);
   "
 >
-  {#if mode === 'cfg'}
+  {#if kind === 'solana' && mode === 'cfg'}
+    <span><span class="inline-block w-2 h-2 align-middle mr-1" style="border-radius: 4px; background: var(--color-accent); box-shadow: 0 0 6px color-mix(in srgb, var(--color-accent) 40%, transparent);"></span>Instruction</span>
+    <span><span class="inline-block w-2 h-2 align-middle mr-1" style="border-radius: 4px; border: 1px solid var(--color-success);"></span>Account type</span>
+    <span><span class="inline-block w-2 h-2 align-middle mr-1" style="border-radius: 4px; background: var(--color-warning); box-shadow: 0 0 6px color-mix(in srgb, var(--color-warning) 40%, transparent);"></span>PDA / signer</span>
+    <span class="text-text-dim">Click an instruction → add to canvas</span>
+  {:else if kind === 'solana' && mode === 'session'}
+    <span><span class="inline-block w-2 h-2 align-middle mr-1" style="border-radius: 4px; background: var(--color-accent); box-shadow: 0 0 6px color-mix(in srgb, var(--color-accent) 40%, transparent);"></span>Trace step</span>
+    <span><span class="inline-block w-2 h-2 align-middle mr-1" style="border-radius: 4px; background: var(--color-danger); box-shadow: 0 0 6px color-mix(in srgb, var(--color-danger) 40%, transparent);"></span>Failed</span>
+    <span class="text-text-dim">Right-click → fork scenario · ⌘K → Execute</span>
+  {:else if kind === 'solana'}
+    <span class="text-text-dim">Sequences view is not implemented for Solana yet — switch to Program or Session</span>
+  {:else if mode === 'cfg'}
     <span><span class="inline-block w-2 h-2 align-middle mr-1" style="border-radius: 4px; background: var(--color-accent); box-shadow: 0 0 6px color-mix(in srgb, var(--color-accent) 40%, transparent);"></span>Function</span>
     <span><span class="inline-block w-2 h-2 align-middle mr-1" style="border-radius: 4px; background: var(--color-accent-dark); box-shadow: 0 0 6px color-mix(in srgb, var(--color-accent-dark) 40%, transparent);"></span>Entry block</span>
     <span><span class="inline-block w-2 h-2 align-middle mr-1" style="border-radius: 4px; background: var(--color-success); box-shadow: 0 0 6px color-mix(in srgb, var(--color-success) 40%, transparent);"></span>Return</span>

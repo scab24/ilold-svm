@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::state::AppState;
+use crate::state::SolidityState;
 
 #[derive(Debug, Deserialize)]
 pub struct SearchQuery {
@@ -30,15 +30,15 @@ pub struct SearchComplete {
     pub total: usize,
 }
 
-pub fn search_paths(state: &AppState, query: &SearchQuery) -> Vec<SearchResult> {
+pub fn search_paths(state: &SolidityState, query: &SearchQuery) -> Vec<SearchResult> {
     let q = query.query.to_lowercase();
     let mut results = Vec::new();
 
     for ((contract, function), path_tree) in &state.path_trees {
-        if let Some(ref filter_contract) = query.contract {
+        if let Some(filter_contract) = query.contract.as_ref() {
             if contract != filter_contract { continue; }
         }
-        if let Some(ref filter_function) = query.function {
+        if let Some(filter_function) = query.function.as_ref() {
             if function != filter_function { continue; }
         }
 
@@ -104,7 +104,6 @@ pub fn search_paths(state: &AppState, query: &SearchQuery) -> Vec<SearchResult> 
                 });
             }
 
-            // Match on terminal type
             let terminal_str = format!("{:?}", path.terminal);
             if terminal_str.to_lowercase().contains(&q) {
                 matches.push(SearchMatch {
@@ -113,7 +112,6 @@ pub fn search_paths(state: &AppState, query: &SearchQuery) -> Vec<SearchResult> 
                 });
             }
 
-            // Match on function name
             if function.to_lowercase().contains(&q) {
                 matches.push(SearchMatch {
                     field: "function".into(),

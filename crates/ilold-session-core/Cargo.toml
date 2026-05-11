@@ -1,0 +1,10 @@
+[package]
+name = "ilold-session-core"
+version.workspace = true
+edition.workspace = true
+description = "Language-agnostic session and audit-journal types shared by ilold-core (Solidity) and ilold-solana-core."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }

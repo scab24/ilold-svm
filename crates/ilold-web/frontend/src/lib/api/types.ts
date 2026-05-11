@@ -16,6 +16,15 @@ export interface SessionAddNode {
   function: string;
   access: AccessLevel;
   step_index: number;
+  /** Solana-only: runtime metadata so other CLIs/browsers see CU/diffs/logs
+   *  without having to re-fetch. None for Solidity (no VM). */
+  runtime?: {
+    compute_units: number;
+    diffs_count: number;
+    logs_excerpt: string[];
+    error?: string | null;
+    trace?: unknown;
+  };
 }
 
 export interface SessionRemoveNode {
@@ -136,9 +145,29 @@ export type ServerMessage =
   | ScenarioDeleted
   | ScenarioForked
   | ScenarioStoreReloaded
+  | SolanaUsersChanged
+  | SessionOverlayUpdate
   | SearchResult
   | SearchComplete
   | SearchError;
+
+export interface SolanaUsersChanged {
+  type: 'solana_users_changed';
+  scenario: string;
+}
+
+/** Incremental runtime-overlay delta. Backend emits this right after
+ *  each StepAdded / CallFailed so the badges (called Nx, ~CU avg,
+ *  rejected Nx) stay live without re-fetching /overlay. */
+export interface SessionOverlayUpdate {
+  type: 'session_overlay_update';
+  scenario: string;
+  ix_name: string;
+  calls_added: number;
+  failed_added: number;
+  cu?: number;
+  cpi_targets_added: string[];
+}
 
 // ── Connection events (synthetic, frontend-only) ────────────────────────────
 
@@ -154,10 +183,12 @@ export interface TopicMap {
   search_result: SearchResult;
   search_complete: SearchComplete;
   error: SearchError;
+  solana_users_changed: SolanaUsersChanged;
   session_add_node: SessionAddNode;
   session_remove_node: SessionRemoveNode;
   session_clear: SessionClear;
   session_highlight: SessionHighlight;
+  session_overlay_update: SessionOverlayUpdate;
   scenario_created: ScenarioCreated;
   scenario_switched: ScenarioSwitched;
   scenario_deleted: ScenarioDeleted;

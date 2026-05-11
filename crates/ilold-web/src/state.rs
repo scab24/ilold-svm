@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::RwLock;
 
+use axum::http::StatusCode;
 use tokio::sync::broadcast;
 
 use ilold_core::callgraph::builder::build_call_graph;
@@ -20,15 +21,15 @@ use ilold_core::pathtree::walker::build_path_tree;
 use ilold_core::sequence::analysis::{analyze_project, analyze_sequences, SequenceAnalysis};
 use ilold_core::sequence::builder::build_sequence_tree;
 use ilold_core::sequence::types::SequenceTree;
+use ilold_solana_core::execute::VmHost;
+use ilold_solana_core::model::SolanaProject;
+use solana_address::Address;
+use solana_keypair::Keypair;
 
 use serde::{Deserialize, Serialize};
 
-/// The default scenario name, auto-created for every fresh session.
 pub const DEFAULT_SCENARIO: &str = "main";
 
-/// Holds all scenarios for a contract. One is "active" at any time; commands
-/// without explicit scenario targeting operate on it. Insertion order is
-/// preserved via `order` for deterministic `names()` output.
 pub struct ScenarioStore {
     pub version: u32,
     pub contract: String,
@@ -113,39 +114,61 @@ impl ScenarioStore {
         Ok(())
     }
 
-    /// Serialize the entire store as v2 JSON (`{ version: 2, contract, active,
-    /// scenarios, order }`). All scenarios + their `forked_from` chains travel
-    /// together so a load reconstructs the full state.
-    pub fn save_to_json(&self) -> Result<String, String> {
+    pub fn save_to_json(&self, opts: SaveOpts<'_>) -> Result<String, String> {
+        let (keypairs_present, keypairs) = match opts.keypairs {
+            Some(map) => {
+                let serialised: HashMap<String, HashMap<String, Vec<u8>>> = map
+                    .iter()
+                    .map(|(scn, users)| {
+                        let inner: HashMap<String, Vec<u8>> = users
+                            .iter()
+                            .map(|(name, kp)| (name.clone(), kp.to_bytes().to_vec()))
+                            .collect();
+                        (scn.clone(), inner)
+                    })
+                    .collect();
+                (true, Some(serialised))
+            }
+            None => (false, None),
+        };
         let file = ScenarioStoreFile {
             version: 2,
             contract: self.contract.clone(),
             active: self.active.clone(),
             scenarios: self.sessions.clone(),
             order: self.order.clone(),
+            keypairs_present,
+            keypairs,
         };
         serde_json::to_string_pretty(&file).map_err(|e| format!("Serialize failed: {e}"))
     }
 
-    /// Parse a save file. Tries v2 (`ScenarioStoreFile`) first; on failure
-    /// falls back to v1 (bare `ExplorationSession`) and wraps it as a single
-    /// `main` scenario. Any structural anomaly (active not in scenarios,
-    /// empty order) is repaired so the returned store is always valid.
-    pub fn load_from_json(json: &str) -> Result<Self, String> {
+    pub fn load_from_json(json: &str) -> Result<(Self, Option<KeypairBundle>), String> {
         match serde_json::from_str::<ScenarioStoreFile>(json) {
-            Ok(file) => Self::from_file(file),
+            Ok(file) => {
+                let raw_kps = file.keypairs.clone();
+                let store = Self::from_file(file)?;
+                let bundle = match raw_kps {
+                    Some(map) => Some(decode_keypair_bundle(map)?),
+                    None => None,
+                };
+                Ok((store, bundle))
+            }
             Err(_) => match serde_json::from_str::<ExplorationSession>(json) {
                 Ok(legacy) => {
                     let contract = legacy.contract.clone();
                     let mut sessions = HashMap::new();
                     sessions.insert(DEFAULT_SCENARIO.to_string(), legacy);
-                    Ok(Self {
-                        version: 2,
-                        contract,
-                        active: DEFAULT_SCENARIO.to_string(),
-                        sessions,
-                        order: vec![DEFAULT_SCENARIO.to_string()],
-                    })
+                    Ok((
+                        Self {
+                            version: 2,
+                            contract,
+                            active: DEFAULT_SCENARIO.to_string(),
+                            sessions,
+                            order: vec![DEFAULT_SCENARIO.to_string()],
+                        },
+                        None,
+                    ))
                 }
                 Err(e) => Err(format!("Deserialize failed: {e}")),
             },
@@ -156,7 +179,6 @@ impl ScenarioStore {
         if file.scenarios.is_empty() {
             return Err("Save file has no scenarios".into());
         }
-        // Repair `order`: if missing names or empty, rebuild from scenarios.
         let mut order = file.order;
         order.retain(|n| file.scenarios.contains_key(n));
         for name in file.scenarios.keys() {
@@ -164,8 +186,6 @@ impl ScenarioStore {
                 order.push(name.clone());
             }
         }
-        // Repair `active`: fall back to first ordered name if the recorded
-        // active was deleted out-of-band before the save.
         let active = if file.scenarios.contains_key(&file.active) {
             file.active
         } else {
@@ -184,10 +204,6 @@ impl ScenarioStore {
     }
 }
 
-/// On-disk wire format for `ScenarioStore`. Decoupled from the in-memory
-/// type to keep private fields private and allow the wire format to evolve
-/// independently. v1 saves are bare `ExplorationSession` JSON — they're
-/// detected by the failed parse + retry in `ScenarioStore::load_from_json`.
 #[derive(Serialize, Deserialize)]
 struct ScenarioStoreFile {
     version: u32,
@@ -195,9 +211,48 @@ struct ScenarioStoreFile {
     active: String,
     scenarios: HashMap<String, ExplorationSession>,
     order: Vec<String>,
+    #[serde(default)]
+    keypairs_present: bool,
+    #[serde(default)]
+    keypairs: Option<HashMap<String, HashMap<String, Vec<u8>>>>,
 }
 
-pub struct AppState {
+pub type KeypairBundle = HashMap<String, HashMap<String, Keypair>>;
+
+pub struct SaveOpts<'a> {
+    pub keypairs: Option<&'a HashMap<String, HashMap<String, Keypair>>>,
+}
+
+impl<'a> SaveOpts<'a> {
+    pub fn none() -> Self {
+        Self { keypairs: None }
+    }
+}
+
+fn decode_keypair_bundle(
+    raw: HashMap<String, HashMap<String, Vec<u8>>>,
+) -> Result<KeypairBundle, String> {
+    let mut out: KeypairBundle = HashMap::new();
+    for (scn, users) in raw {
+        let mut inner: HashMap<String, Keypair> = HashMap::new();
+        for (name, bytes) in users {
+            if bytes.len() != 64 {
+                return Err(format!(
+                    "keypair for {scn}/{name} must be 64 bytes, got {}",
+                    bytes.len()
+                ));
+            }
+            let kp = Keypair::try_from(bytes.as_slice()).map_err(|_| {
+                format!("invalid keypair bytes for {scn}/{name} (ed25519 decode failed)")
+            })?;
+            inner.insert(name, kp);
+        }
+        out.insert(scn, inner);
+    }
+    Ok(out)
+}
+
+pub struct SolidityState {
     pub project: Project,
     pub cfgs: HashMap<(String, String), CfgGraph>,
     pub path_trees: HashMap<(String, String), PathTree>,
@@ -205,11 +260,60 @@ pub struct AppState {
     pub sequence_trees: HashMap<String, SequenceTree>,
     pub sequence_analyses: HashMap<String, SequenceAnalysis>,
     pub classifications: HashMap<String, Vec<(String, AccessLevel)>>,
+}
+
+pub struct SolanaState {
+    pub project: SolanaProject,
+    pub program_artifacts: Vec<(Address, Vec<u8>)>,
+    pub vms: RwLock<HashMap<String, VmHost>>,
+    pub users: RwLock<HashMap<String, HashMap<String, Keypair>>>,
+    pub step_snapshots: RwLock<HashMap<String, Vec<ilold_solana_core::execute::StateSnapshot>>>,
+}
+
+pub enum Backend {
+    Solidity(SolidityState),
+    Solana(SolanaState),
+}
+
+pub struct AppState {
+    pub backend: Backend,
     pub annotations: RwLock<Vec<Annotation>>,
     pub scenarios: RwLock<ScenarioStore>,
     pub session_tx: broadcast::Sender<CanvasPatch>,
     pub port: u16,
-    pub contract_path: PathBuf,
+    pub project_root: PathBuf,
+}
+
+impl AppState {
+    pub fn solidity(&self) -> Option<&SolidityState> {
+        match &self.backend {
+            Backend::Solidity(s) => Some(s),
+            Backend::Solana(_) => None,
+        }
+    }
+
+    pub fn solana(&self) -> Option<&SolanaState> {
+        match &self.backend {
+            Backend::Solana(s) => Some(s),
+            Backend::Solidity(_) => None,
+        }
+    }
+}
+
+impl AppState {
+    pub fn unwrap_solidity(&self) -> &SolidityState {
+        self.solidity().expect("Solidity backend required")
+    }
+}
+
+pub fn require_solidity(state: &AppState) -> Result<&SolidityState, StatusCode> {
+    state.solidity().ok_or(StatusCode::BAD_REQUEST)
+}
+
+pub fn require_solidity_msg(state: &AppState) -> Result<&SolidityState, (StatusCode, String)> {
+    state
+        .solidity()
+        .ok_or_else(|| (StatusCode::BAD_REQUEST, "endpoint is Solidity-only".to_string()))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -243,7 +347,48 @@ pub enum AnnotationStatus {
 }
 
 impl AppState {
-    pub fn from_paths(paths: &[PathBuf], max_seq_depth: usize, port: u16, contract_path: PathBuf) -> anyhow::Result<Self> {
+    pub fn from_solana(
+        project: SolanaProject,
+        program_artifacts: Vec<(Address, Vec<u8>)>,
+        port: u16,
+        project_root: PathBuf,
+    ) -> anyhow::Result<Self> {
+        let (session_tx, _) = broadcast::channel(64);
+        let default_program = project
+            .programs
+            .first()
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| "unknown".to_string());
+
+        let mut vms = HashMap::new();
+        let main_vm = VmHost::boot(program_artifacts.clone())
+            .map_err(|e| anyhow::anyhow!("boot main VM: {e:?}"))?;
+        vms.insert(DEFAULT_SCENARIO.to_string(), main_vm);
+
+        let mut users: HashMap<String, HashMap<String, Keypair>> = HashMap::new();
+        users.insert(DEFAULT_SCENARIO.to_string(), HashMap::new());
+
+        let mut step_snapshots: HashMap<String, Vec<ilold_solana_core::execute::StateSnapshot>> =
+            HashMap::new();
+        step_snapshots.insert(DEFAULT_SCENARIO.to_string(), Vec::new());
+
+        Ok(Self {
+            backend: Backend::Solana(SolanaState {
+                project,
+                program_artifacts,
+                vms: RwLock::new(vms),
+                users: RwLock::new(users),
+                step_snapshots: RwLock::new(step_snapshots),
+            }),
+            annotations: RwLock::new(Vec::new()),
+            scenarios: RwLock::new(ScenarioStore::new_for_contract(default_program)),
+            session_tx,
+            port,
+            project_root,
+        })
+    }
+
+    pub fn from_paths(paths: &[PathBuf], max_seq_depth: usize, port: u16, project_root: PathBuf) -> anyhow::Result<Self> {
         let parser = SolarParser;
         let mut project = parser.parse(paths)?;
         project.rebuild_index();
@@ -293,7 +438,6 @@ impl AppState {
             classifications.insert(contract.name.clone(), classify_all(contract));
         }
 
-        // Compute transitive effects across contracts (inheritance-aware).
         analyze_project(&project, &mut sequence_analyses);
 
         let (session_tx, _) = broadcast::channel(64);
@@ -304,18 +448,20 @@ impl AppState {
             .unwrap_or_else(|| "unknown".to_string());
 
         Ok(Self {
-            project,
-            cfgs,
-            path_trees,
-            call_graphs,
-            sequence_trees,
-            sequence_analyses,
-            classifications,
+            backend: Backend::Solidity(SolidityState {
+                project,
+                cfgs,
+                path_trees,
+                call_graphs,
+                sequence_trees,
+                sequence_analyses,
+                classifications,
+            }),
             annotations: RwLock::new(Vec::new()),
             scenarios: RwLock::new(ScenarioStore::new_for_contract(default_contract)),
             session_tx,
             port,
-            contract_path,
+            project_root,
         })
     }
 }

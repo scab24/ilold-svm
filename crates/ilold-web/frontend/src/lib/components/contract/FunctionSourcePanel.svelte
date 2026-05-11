@@ -4,14 +4,16 @@
   import { oneDark } from '@codemirror/theme-one-dark';
   import { EditorView } from '@codemirror/view';
   import DraggablePanel from '$lib/DraggablePanel.svelte';
-  import { getFunctionSource, type FunctionSourceResponse } from '$lib/api/rest';
+  import { getFunctionSource, getInstructionSource, type FunctionSourceResponse } from '$lib/api/rest';
 
-  // Modern Solidity source viewer. Styled after VSCode's peek view + GitHub
-  // blob view. Uses the CodeMirror `oneDark` theme and the JS grammar as a
-  // Solidity fallback.
-  let { contract, func, onclose }: {
+  // Modern source viewer. Styled after VSCode's peek view + GitHub blob view.
+  // Uses the CodeMirror `oneDark` theme and the JS grammar as a Solidity/Rust
+  // fallback so it stays close enough for highlighting without pulling extra
+  // language bundles.
+  let { contract, func, kind = 'solidity', onclose }: {
     contract: string;
     func: string;
+    kind?: 'solidity' | 'solana';
     onclose: () => void;
   } = $props();
 
@@ -55,7 +57,8 @@
     loading = true;
     error = null;
     source = '';
-    getFunctionSource(currentContract, currentFunc)
+    const fetcher = kind === 'solana' ? getInstructionSource : getFunctionSource;
+    fetcher(currentContract, currentFunc)
       .then((res: FunctionSourceResponse) => {
         if (currentFunc !== func || currentContract !== contract) return;
         source = res.source;

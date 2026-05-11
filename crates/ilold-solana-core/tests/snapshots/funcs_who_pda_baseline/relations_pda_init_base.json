@@ -1,0 +1,14 @@
+{
+  "PdaList": {
+    "instruction": "init_base",
+    "pdas": [
+      {
+        "account_name": "account",
+        "seeds": [
+          "const:'seed'"
+        ],
+        "program": "Re1ationsDerivation111111111111111111111111"
+      }
+    ]
+  }
+}

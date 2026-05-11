@@ -7,6 +7,9 @@
   import FunctionNode from './nodes/FunctionNode.svelte';
   import BlockNode from './nodes/BlockNode.svelte';
   import SequenceNode from './nodes/SequenceNode.svelte';
+  import InstructionNode from './nodes/InstructionNode.svelte';
+  import AccountNode from './nodes/AccountNode.svelte';
+  import TraceNode from './nodes/TraceNode.svelte';
   import {
     getNodes,
     getEdges,
@@ -45,6 +48,9 @@
     function: FunctionNode,
     block: BlockNode,
     sequence: SequenceNode,
+    instruction: InstructionNode,
+    account: AccountNode,
+    trace: TraceNode,
   } as unknown as NodeTypes;
 
   // ── Reactive bridge: graph store → SvelteFlow ──────────────

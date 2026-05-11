@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
-  import { getProjectMap, type ProjectMap, type MapContract } from '$lib/api/rest';
+  import { getProjectMap, type ProjectMap } from '$lib/api/rest';
   import { setSearchContext } from '$lib/stores/search.svelte';
   import { togglePalette, setPaletteCommands, clearPaletteCommands } from '$lib/stores/palette.svelte';
   import type { Command } from '$lib/commands/registry';
@@ -31,18 +31,34 @@
     }
     const seen = new Set<string>();
     const cmds: Command[] = [];
-    for (const c of projectMap.contracts) {
-      if (seen.has(c.name)) continue;
-      seen.add(c.name);
-      cmds.push({
-        id: `contract:${c.name}`,
-        label: c.name,
-        category: 'Contract' as const,
-        icon: '◈',
-        detail: c.kind,
-        keywords: ['contract', 'open', 'navigate'],
-        run: () => goto(`/contract/${encodeURIComponent(c.name)}`),
-      });
+    if (projectMap.kind === 'solana') {
+      for (const p of projectMap.programs ?? []) {
+        if (seen.has(p.name)) continue;
+        seen.add(p.name);
+        cmds.push({
+          id: `program:${p.name}`,
+          label: p.name,
+          category: 'Contract' as const,
+          icon: '◊',
+          detail: `${p.instructions.length} ix · ${p.account_types.length} account types`,
+          keywords: ['program', 'open', 'navigate', 'solana'],
+          run: () => goto(`/contract/${encodeURIComponent(p.name)}`),
+        });
+      }
+    } else {
+      for (const c of projectMap.contracts ?? []) {
+        if (seen.has(c.name)) continue;
+        seen.add(c.name);
+        cmds.push({
+          id: `contract:${c.name}`,
+          label: c.name,
+          category: 'Contract' as const,
+          icon: '◈',
+          detail: c.kind,
+          keywords: ['contract', 'open', 'navigate'],
+          run: () => goto(`/contract/${encodeURIComponent(c.name)}`),
+        });
+      }
     }
     setPaletteCommands(cmds);
   });
@@ -51,11 +67,21 @@
 
   let contracts: any[] = $state([]);
   let interfaces: any[] = $state([]);
+  let programs: any[] = $state([]);
+  let kind = $state<'solidity' | 'solana'>('solidity');
 
   $effect(() => {
     if (projectMap) {
-      contracts = projectMap.contracts.filter(c => c.kind !== 'Interface');
-      interfaces = projectMap.contracts.filter(c => c.kind === 'Interface');
+      kind = projectMap.kind === 'solana' ? 'solana' : 'solidity';
+      if (kind === 'solana') {
+        programs = projectMap.programs ?? [];
+        contracts = [];
+        interfaces = [];
+      } else {
+        contracts = (projectMap.contracts ?? []).filter(c => c.kind !== 'Interface');
+        interfaces = (projectMap.contracts ?? []).filter(c => c.kind === 'Interface');
+        programs = [];
+      }
     }
   });
 
@@ -70,7 +96,11 @@
     <span class="text-lg font-bold text-text">ilold</span>
     <span class="text-xs text-text-dim">execution path analyzer</span>
     {#if projectMap}
-      <span class="text-xs text-text-muted">{projectMap.contracts.length} contracts · {projectMap.relationships.length} cross-contract calls</span>
+      {#if kind === 'solana'}
+        <span class="text-xs text-text-muted">{programs.length} programs · solana</span>
+      {:else}
+        <span class="text-xs text-text-muted">{contracts.length + interfaces.length} contracts · {projectMap.relationships.length} cross-contract calls</span>
+      {/if}
     {/if}
     <div class="ml-auto flex gap-1">
       <button class="bg-hover border border-border-subtle text-accent-hover px-3 py-1 rounded-sm cursor-pointer text-xs hover:border-accent" onclick={togglePalette}>⌘K Search</button>
@@ -81,6 +111,43 @@
     <div class="p-6 text-danger">{error}</div>
   {:else if !projectMap}
     <div class="p-6 text-text-muted">Analyzing...</div>
+  {:else if kind === 'solana'}
+    <div class="flex-1 overflow-y-auto p-6">
+      <div class="grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] gap-4">
+        {#each programs as program}
+          <div class="bg-hover border border-border-subtle rounded-[10px] overflow-hidden">
+            <div class="px-3.5 pt-3 pb-2 border-b border-border-subtle">
+              <span class="text-[10px] text-text-muted uppercase tracking-wide">solana program</span>
+              <h2 class="text-lg mt-0.5 mb-0"><a class="text-text no-underline hover:text-accent-hover" href="/contract/{program.name}">{program.name}</a></h2>
+              <div class="text-[10px] text-text-dim mt-0.5 font-mono truncate">{program.program_id}</div>
+            </div>
+            <div class="card-section">
+              <div class="text-[9px] text-text-muted uppercase tracking-wide mb-1 font-semibold">Instructions</div>
+              {#each program.instructions as ix}
+                <a href="/contract/{program.name}/{ix.name}" class="flex items-center gap-1.5 px-1 py-1 rounded-sm text-xs text-inherit no-underline hover:bg-border">
+                  <span class="size-1.5 rounded-full shrink-0 bg-accent-hover"></span>
+                  <span class="text-text font-semibold font-mono flex-1">{ix.name}</span>
+                  <span class="text-[10px] text-text-muted">{ix.args_count}a {ix.accounts_count}acc</span>
+                  {#if ix.has_pdas}
+                    <span class="text-[9px] px-1 py-px rounded-md bg-warning/10 text-warning">pda</span>
+                  {/if}
+                </a>
+              {/each}
+            </div>
+            {#if program.account_types.length > 0}
+              <div class="card-section">
+                <div class="text-[9px] text-text-muted uppercase tracking-wide mb-1 font-semibold">Account types</div>
+                {#each program.account_types as a}
+                  <div class="flex justify-between px-1 py-0.5 text-[11px] font-mono">
+                    <span class="text-text">{a.name}</span>
+                  </div>
+                {/each}
+              </div>
+            {/if}
+          </div>
+        {/each}
+      </div>
+    </div>
   {:else}
     <div class="flex-1 overflow-y-auto p-6">
       <div class="grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] gap-4">

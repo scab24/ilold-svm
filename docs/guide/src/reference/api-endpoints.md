@@ -163,17 +163,29 @@ Returns the sequence analysis for a contract: per-function behavior summaries (s
 
 Returns search suggestions for the contract: function names, state variable names, event names, external call targets, and predefined categories (revert, return, assembly).
 
+## Solana-specific endpoints
+
+Solana shares `/api/cmd`, `/api/project`, `/api/project/map`, `/ws`, and most session endpoints with the Solidity backend. The following routes are Solana-only:
+
+| Endpoint | Description |
+| --- | --- |
+| `GET /api/program/{name}/view` | Full `ProgramView` for the named program: instructions (with args, accounts, signers, PDAs, admin-gated flag, coupling hints), account types, discriminators. |
+| `GET /api/program/{name}/overlay` | Runtime overlay aggregated over the active scenario: calls-per-instruction, failures, CU stats, CPI edges. |
+| `GET /api/users/{scenario}/labels` | Returns the keypair labels for a given scenario (used by the web canvas to render `users new <name>` aliases). |
+| `GET /api/scenarios` | Scenario list for the active program (active marker, step counts). |
+| `GET /api/scenarios/all` | Scenario list across every program in the workspace. |
+
+`POST /api/cmd` carries a `SolanaCommand` payload (`Call`, `Users`, `UsersNew`, `Airdrop`, `TimeWarp`, `Pda`, `Inspect`, `Scenario`, `SaveSession`, `LoadSession`, …; see `crates/ilold-solana-core/src/exploration/commands.rs`). The response is a `SolanaCommandResult` variant (`StepAdded`, `CallFailed`, `StateView`, `Timeline`, `Coverage`, etc.).
+
 ## WebSocket
 
-### GET /ws
+`GET /ws` upgrades to a WebSocket connection. See [WebSocket events](./websocket.md) for the full event vocabulary and payload shapes.
 
-Upgrades to a WebSocket connection. The server pushes `CanvasPatch` messages when session state changes:
-
-- `AddNode`: a step was added (function, access level, step index)
-- `RemoveLastNode`: the last step was removed
-- `ClearAll`: all steps were cleared
+A second WebSocket route `GET /ws/pty` provides a PTY bridge used by the embedded REPL in the web canvas.
 
 ## Related pages
 
-- [Session commands](../commands/session.md)
+- [WebSocket events](./websocket.md)
+- [Solidity REPL: Session](../solidity/repl/session.md)
+- [Solana REPL: Session](../solana/repl/session.md)
 - [Known Limitations](./limitations.md)

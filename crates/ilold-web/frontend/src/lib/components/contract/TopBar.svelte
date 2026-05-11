@@ -9,24 +9,28 @@
     contractName,
     mode,
     seqDirection,
+    kind = 'solidity',
+    hideSystem = false,
     onmodechange,
     onsearch,
     oncenter,
     onseqdirection,
     onsessionback,
     onsessionclear,
+    onhidesystem,
   }: {
     contractName: string;
     mode: 'cfg' | 'sequences' | 'session';
     seqDirection: 'TB' | 'LR';
+    kind?: 'solidity' | 'solana';
+    hideSystem?: boolean;
     onmodechange: (mode: 'cfg' | 'sequences' | 'session') => void;
     onsearch: () => void;
     oncenter: () => void;
     onseqdirection: (dir: 'TB' | 'LR') => void;
-    /** Remove the last step of the active scenario (REPL `b`). */
     onsessionback: () => void;
-    /** Clear every step of the active scenario (REPL `cl`). */
     onsessionclear: () => void;
+    onhidesystem?: (next: boolean) => void;
   } = $props();
 
   // Detect Mac to show ⌘ vs Ctrl on the search shortcut chip. Safe on SSR
@@ -61,13 +65,13 @@
       class="seg-btn"
       class:active={mode === 'cfg'}
       onclick={() => onmodechange('cfg')}
-      title="Control-flow graph view"
+      title={kind === 'solana' ? 'Click an instruction to add it; expand to see its accounts' : 'Control-flow graph view'}
     >CFG</button>
     <button
       class="seg-btn"
       class:active={mode === 'sequences'}
       onclick={() => onmodechange('sequences')}
-      title="Function sequence view"
+      title={kind === 'solana' ? 'Sequence view — instructions linked by shared accounts' : 'Function sequence view'}
     >Seq</button>
     <button
       class="seg-btn"
@@ -127,6 +131,15 @@
       title="Center all nodes in view"
       aria-label="Center canvas"
     >Center</button>
+    {#if kind === 'solana' && onhidesystem}
+      <button
+        class="tool-btn"
+        class:active={hideSystem}
+        onclick={() => onhidesystem(!hideSystem)}
+        title={hideSystem ? 'Show system_program / sysvars / token_program' : 'Hide system_program / sysvars / token_program'}
+        aria-pressed={hideSystem}
+      >{hideSystem ? 'Show system' : 'Hide system'}</button>
+    {/if}
     <span class="divider"></span>
     <button
       class="tool-btn mono"

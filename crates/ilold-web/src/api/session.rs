@@ -4,6 +4,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use ilold_core::classify::entry_points::AccessLevel;
 use ilold_core::exploration::commands::{
@@ -17,39 +18,50 @@ use ilold_core::exploration::timeline::{build_variable_timeline, VariableTimelin
 use ilold_core::narrative::trace::FlowTree;
 use ilold_core::narrative::types::{FunctionNarrative, SequenceNarrative};
 use ilold_core::slicing::{build_slice_result, SliceDirection, SliceResult};
+use ilold_session_core::exploration::scenario::ScenarioAction as SharedScenarioAction;
+use ilold_solana_core::exploration::{
+    canvas_patches_from_solana, execute_airdrop, execute_back, execute_call, execute_clear,
+    execute_coupling, execute_coverage, execute_export, execute_findings_list, execute_info,
+    execute_step, execute_timeline, execute_vars, execute_who, execute_finding,
+    execute_funcs, execute_inspect, execute_note, execute_pda, execute_session,
+    execute_state, execute_status, execute_time_warp, execute_users, execute_users_new,
+    SolanaCommand, SolanaCommandResult,
+};
+use solana_keypair::Keypair;
 
-use crate::state::{AppState, ScenarioStore};
+use crate::state::{require_solidity_msg, AppState, Backend, ScenarioStore};
 
 #[derive(Deserialize)]
 pub struct CommandRequest {
     pub contract: Option<String>,
-    pub command: SessionCommand,
+    pub command: Value,
 }
 
 fn build_analysis_data<'a>(
     state: &'a AppState,
     contract_name: &str,
 ) -> Result<AnalysisData<'a>, (StatusCode, String)> {
-    let contract = state.project.contracts.iter()
+    let s = require_solidity_msg(state)?;
+    let contract = s.project.contracts.iter()
         .find(|c| c.name == contract_name)
         .ok_or((StatusCode::NOT_FOUND, format!("Contract '{}' not found", contract_name)))?;
 
-    let seq_analysis = state.sequence_analyses.get(contract_name)
+    let seq_analysis = s.sequence_analyses.get(contract_name)
         .ok_or((StatusCode::NOT_FOUND, "No analysis for contract".into()))?;
 
-    let classifs = state.classifications.get(contract_name)
+    let classifs = s.classifications.get(contract_name)
         .ok_or((StatusCode::NOT_FOUND, "No classifications for contract".into()))?;
 
     Ok(AnalysisData {
-        project: &state.project,
+        project: &s.project,
         contract,
-        cfgs: &state.cfgs,
-        path_trees: &state.path_trees,
+        cfgs: &s.cfgs,
+        path_trees: &s.path_trees,
         behaviors: &seq_analysis.functions,
         transitions: &seq_analysis.transitions,
         classifications: classifs,
-        all_sequence_analyses: &state.sequence_analyses,
-        all_classifications: &state.classifications,
+        all_sequence_analyses: &s.sequence_analyses,
+        all_classifications: &s.classifications,
     })
 }
 
@@ -65,7 +77,8 @@ fn resolve_contract(state: &AppState, explicit: Option<&str>) -> Result<String, 
     }
     drop(scenarios_guard);
 
-    state.project.find_contract(None)
+    let s = require_solidity_msg(state)?;
+    s.project.find_contract(None)
         .map(|c| c.name.clone())
         .map_err(|e| (StatusCode::BAD_REQUEST, e))
 }
@@ -77,9 +90,6 @@ fn timestamp_now() -> String {
         .unwrap_or_default()
 }
 
-/// Validate a scenario name and check it is not already taken in the store.
-/// Shared guard for both `ScenarioAction::New` and `ScenarioAction::Fork`.
-/// Returns `Err(CommandResult::Error)` ready to be propagated.
 fn reserve_name(store: &ScenarioStore, name: &str) -> Result<(), CommandResult> {
     if let Err(e) = validate_scenario_name(name) {
         return Err(CommandResult::Error { message: e });
@@ -92,9 +102,6 @@ fn reserve_name(store: &ScenarioStore, name: &str) -> Result<(), CommandResult> 
     Ok(())
 }
 
-/// Execute scenario lifecycle commands against the `ScenarioStore`. Lives
-/// in the web crate because it needs `&mut ScenarioStore` (crate boundary);
-/// `commands.rs` only defines the data types.
 fn execute_scenario(
     store: &mut ScenarioStore,
     action: ScenarioAction,
@@ -126,8 +133,6 @@ fn execute_scenario(
         ScenarioAction::Switch { name } => {
             let from = store.active().to_string();
             if name == from {
-                // idempotent no-op per spec S3.4; caller is responsible for
-                // suppressing WS broadcast when from == to.
                 return CommandResult::ScenarioSwitched { from, to: name };
             }
             match store.set_active(name.clone()) {
@@ -169,11 +174,8 @@ fn fork_scenario(
     }
     let from = store.active().to_string();
     let mut cloned = store.active_session().clone();
+    cloned.reset_scenario_local_observations();
 
-    // Resolve effective step count. None (legacy) → keep all steps.
-    // Some(N) → truncate to first N; error if N > current length.
-    // Mutations live inside each ExplorationStep, so truncating `steps`
-    // drops their owning step's mutations as well.
     let len = cloned.steps.len();
     let effective = match at_step {
         None => len,
@@ -191,16 +193,10 @@ fn fork_scenario(
         }
     };
 
-    // Record the fork origin on the cloned session itself. The frontend
-    // reads this (via /api/scenarios/all) to render the scenario as a
-    // branch from its source instead of a parallel timeline.
     cloned.forked_from = Some(ForkOrigin {
         scenario: from.clone(),
         at_step: effective,
     });
-    // The `BranchCreated` variant's field names (`from_function`/`branch_function`)
-    // are reused here as scenario names per design §2.4 — intentionally not
-    // renamed to preserve save-file compatibility.
     cloned.journal.record(JournalEntry::BranchCreated {
         from_function: from.clone(),
         branch_function: new_name.clone(),
@@ -217,24 +213,25 @@ fn fork_scenario(
 pub async fn handle_command(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CommandRequest>,
-) -> Result<Json<CommandResult>, (StatusCode, String)> {
+) -> Result<Json<Value>, (StatusCode, String)> {
+    if matches!(state.backend, Backend::Solana(_)) {
+        return handle_solana_command(state, req).await;
+    }
     let contract_name = resolve_contract(&state, req.contract.as_deref())?;
     let data = build_analysis_data(&state, &contract_name)?;
     let timestamp = timestamp_now();
+    let solidity_command: SessionCommand = serde_json::from_value(req.command).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("invalid Solidity command: {e}"),
+        )
+    })?;
 
     let mut scenarios_guard = state.scenarios.write().unwrap();
-    // SaveSession/LoadSession bypass the contract-switch reset: Save doesn't
-    // care about the request's contract field, and Load carries its own
-    // contract inside the JSON. Without the bypass, loading a file from a
-    // different contract would clear the store before the load runs.
     let is_persistence = matches!(
-        req.command,
+        solidity_command,
         SessionCommand::SaveSession | SessionCommand::LoadSession { .. }
     );
-    // Contract switch: only reset if the active session has actual steps.
-    // An empty session with a mismatched contract means the auto-seed picked
-    // a default contract that didn't match the first real request — just
-    // swap it transparently (no ClearAll, nothing was ever on the canvas).
     let needs_reset = !is_persistence
         && scenarios_guard.active_session().contract != contract_name;
     if needs_reset {
@@ -247,37 +244,29 @@ pub async fn handle_command(
             }).ok();
         }
     }
-    // Scenario / Save / Load commands operate on the store itself; all
-    // other commands are delegated to the active session. Dispatch happens
-    // here (before `active_session_mut`) to avoid partial-move errors on
-    // `req.command`.
-    match req.command {
+    let result: CommandResult = match solidity_command {
         SessionCommand::Scenario { sub } => {
-            // Capture the active scenario BEFORE executing the scenario
-            // command. Switch/Delete mutate `active` or remove scenarios; the
-            // lifecycle patch embeds the pre-call name for consistent
-            // routing on the frontend.
             let active_before = scenarios_guard.active().to_string();
             let result = execute_scenario(&mut scenarios_guard, sub, &timestamp, &contract_name);
             if let Some(patch) = canvas_patch_from(&result, &active_before) {
                 state.session_tx.send(patch).ok();
             }
-            Ok(Json(result))
+            result
         }
         SessionCommand::SaveSession => {
             let active_before = scenarios_guard.active().to_string();
-            let result = match scenarios_guard.save_to_json() {
+            let result = match scenarios_guard.save_to_json(crate::state::SaveOpts::none()) {
                 Ok(json) => CommandResult::SessionSaved { json },
                 Err(message) => CommandResult::Error { message },
             };
             if let Some(patch) = canvas_patch_from(&result, &active_before) {
                 state.session_tx.send(patch).ok();
             }
-            Ok(Json(result))
+            result
         }
         SessionCommand::LoadSession { json } => {
             let result = match ScenarioStore::load_from_json(&json) {
-                Ok(loaded) => {
+                Ok((loaded, _kp_bundle)) => {
                     let contract = loaded.contract.clone();
                     let step_names: Vec<String> = loaded
                         .active_session()
@@ -290,26 +279,536 @@ pub async fn handle_command(
                 }
                 Err(message) => CommandResult::Error { message },
             };
-            // Use the post-load active so the WS Reloaded event names the
-            // scenario the frontend should switch to.
             let active_after = scenarios_guard.active().to_string();
             if let Some(patch) = canvas_patch_from(&result, &active_after) {
                 state.session_tx.send(patch).ok();
             }
-            Ok(Json(result))
+            result
         }
         other => {
-            // Capture the active scenario name BEFORE delegating — the
-            // session mutation below doesn't change `active`, but grabbing
-            // it here keeps the pattern symmetric with the scenario branch
-            // and avoids a second borrow after `active_session_mut`.
             let active_name = scenarios_guard.active().to_string();
             let session = scenarios_guard.active_session_mut();
             let result = execute_command(other, session, &data, &timestamp);
             if let Some(patch) = canvas_patch_from(&result, &active_name) {
                 state.session_tx.send(patch).ok();
             }
-            Ok(Json(result))
+            result
+        }
+    };
+    Ok(Json(serde_json::to_value(result).unwrap_or(Value::Null)))
+}
+
+async fn handle_solana_command(
+    state: Arc<AppState>,
+    req: CommandRequest,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let solana = state
+        .solana()
+        .ok_or((StatusCode::INTERNAL_SERVER_ERROR, "solana state missing".into()))?;
+
+    let command: SolanaCommand = serde_json::from_value(req.command)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid Solana command: {e}")))?;
+
+    let timestamp = timestamp_now();
+
+    let program = match req.contract.as_deref() {
+        Some(name) => solana
+            .project
+            .find_program(name)
+            .ok_or((
+                StatusCode::NOT_FOUND,
+                format!("program '{name}' not found"),
+            ))?
+            .clone(),
+        None => solana
+            .project
+            .programs
+            .first()
+            .ok_or((StatusCode::INTERNAL_SERVER_ERROR, "no programs available".into()))?
+            .clone(),
+    };
+
+    if let SolanaCommand::Scenario { sub } = command {
+        let mut scenarios = state.scenarios.write().unwrap();
+        let active_before = scenarios.active().to_string();
+        let result = solana_scenario_action(
+            &mut scenarios,
+            solana,
+            sub,
+            &active_before,
+            &timestamp,
+            &program.name,
+        );
+        for patch in canvas_patches_from_solana(&result, &active_before, &[]) {
+            state.session_tx.send(patch).ok();
+        }
+        return Ok(Json(serde_json::to_value(result).unwrap_or(Value::Null)));
+    }
+
+    if let SolanaCommand::SaveSession { with_keypairs } = &command {
+        let scenarios = state.scenarios.read().unwrap();
+        let users_snapshot = if *with_keypairs {
+            let users_lock = solana.users.read().unwrap();
+            let cloned: std::collections::HashMap<
+                String,
+                std::collections::HashMap<String, Keypair>,
+            > = users_lock
+                .iter()
+                .map(|(scn, map)| {
+                    let inner: std::collections::HashMap<String, Keypair> = map
+                        .iter()
+                        .map(|(name, kp)| (name.clone(), kp.insecure_clone()))
+                        .collect();
+                    (scn.clone(), inner)
+                })
+                .collect();
+            Some(cloned)
+        } else {
+            None
+        };
+        let opts = crate::state::SaveOpts {
+            keypairs: users_snapshot.as_ref(),
+        };
+        let result = match scenarios.save_to_json(opts) {
+            Ok(json) => SolanaCommandResult::SessionSaved { json },
+            Err(message) => SolanaCommandResult::Error { message },
+        };
+        return Ok(Json(serde_json::to_value(result).unwrap_or(Value::Null)));
+    }
+    if let SolanaCommand::LoadSession { json } = command {
+        let mut scenarios = state.scenarios.write().unwrap();
+        let mut vms = solana.vms.write().unwrap();
+        let mut users_lock = solana.users.write().unwrap();
+        let mut snapshots = solana.step_snapshots.write().unwrap();
+        let result = match ScenarioStore::load_from_json(&json) {
+            Ok((loaded, kp_bundle)) => {
+                let prog = loaded.contract.clone();
+                let step_names: Vec<String> = loaded
+                    .active_session()
+                    .steps
+                    .iter()
+                    .map(|s| s.function.clone())
+                    .collect();
+                *scenarios = loaded;
+
+                vms.clear();
+                snapshots.clear();
+
+                if let Some(bundle) = kp_bundle {
+                    users_lock.clear();
+                    for (scn, kps) in bundle {
+                        users_lock.insert(scn, kps);
+                    }
+                }
+
+                let mut replay_errors: Vec<String> = Vec::new();
+                let scenario_names: Vec<String> = scenarios.names().to_vec();
+                for scn_name in &scenario_names {
+                    let mut vm = match ilold_solana_core::execute::VmHost::boot(
+                        solana.program_artifacts.clone(),
+                    ) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            replay_errors.push(format!("boot {scn_name}: {e:?}"));
+                            continue;
+                        }
+                    };
+                    let scn_users = users_lock
+                        .entry(scn_name.clone())
+                        .or_insert_with(std::collections::HashMap::new);
+                    const REPLAY_LAMPORTS: u64 = 10_000_000_000;
+                    for kp in scn_users.values() {
+                        use solana_keypair::Signer;
+                        let _ = vm.airdrop(kp.pubkey(), REPLAY_LAMPORTS);
+                    }
+                    let mut stack: Vec<ilold_solana_core::execute::StateSnapshot> = Vec::new();
+                    let session = match scenarios.get_mut(scn_name) {
+                        Some(s) => s,
+                        None => continue,
+                    };
+                    let steps_clone = session.steps.clone();
+                    for (idx, step) in steps_clone.iter().enumerate() {
+                        let payload = match &step.call_payload {
+                            Some(p) => p,
+                            None => continue,
+                        };
+                        let ix_name = payload.get("ix").and_then(|v| v.as_str()).unwrap_or("");
+                        let args = payload.get("args").cloned().unwrap_or(Value::Null);
+                        let accounts: std::collections::HashMap<String, String> = payload
+                            .get("accounts")
+                            .and_then(|v| v.as_object())
+                            .map(|m| {
+                                m.iter()
+                                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        let signers: Vec<String> = payload
+                            .get("signers")
+                            .and_then(|v| v.as_array())
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(|v| v.as_str().map(String::from))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        let pre = vm.snapshot_state();
+                        let res = ilold_solana_core::exploration::execute::execute_call(
+                            &program,
+                            ix_name,
+                            args,
+                            accounts,
+                            signers,
+                            scn_users,
+                            session,
+                            &mut vm,
+                            "load-replay",
+                        );
+                        if matches!(res, ilold_solana_core::exploration::SolanaCommandResult::StepAdded { .. }) {
+                            stack.push(pre);
+                            session.steps.pop();
+                        } else if let ilold_solana_core::exploration::SolanaCommandResult::Error { message } = res {
+                            replay_errors.push(format!("{scn_name}#{idx}: {message}"));
+                        }
+                    }
+                    vms.insert(scn_name.clone(), vm);
+                    snapshots.insert(scn_name.clone(), stack);
+                }
+
+                if replay_errors.is_empty() {
+                    SolanaCommandResult::SessionLoaded {
+                        program: prog,
+                        steps: step_names,
+                    }
+                } else {
+                    SolanaCommandResult::Error {
+                        message: format!(
+                            "loaded session but {} step(s) failed to replay: {}",
+                            replay_errors.len(),
+                            replay_errors.join("; ")
+                        ),
+                    }
+                }
+            }
+            Err(message) => SolanaCommandResult::Error { message },
+        };
+        let active_after = scenarios.active().to_string();
+        for patch in canvas_patches_from_solana(&result, &active_after, &[]) {
+            state.session_tx.send(patch).ok();
+        }
+        return Ok(Json(serde_json::to_value(result).unwrap_or(Value::Null)));
+    }
+
+    let mut scenarios = state.scenarios.write().unwrap();
+    let mut vms = solana.vms.write().unwrap();
+    let mut users = solana.users.write().unwrap();
+    let mut snapshots = solana.step_snapshots.write().unwrap();
+    let active_scenario = scenarios.active().to_string();
+
+    let vm = vms.get_mut(&active_scenario).ok_or((
+        StatusCode::INTERNAL_SERVER_ERROR,
+        format!("VM for scenario '{active_scenario}' missing"),
+    ))?;
+    let scenario_users = users.get_mut(&active_scenario).ok_or((
+        StatusCode::INTERNAL_SERVER_ERROR,
+        format!("users registry for scenario '{active_scenario}' missing"),
+    ))?;
+    let stack = snapshots
+        .entry(active_scenario.clone())
+        .or_insert_with(Vec::new);
+    let session = scenarios.active_session_mut();
+
+    let pre_call_snapshot = match &command {
+        SolanaCommand::Call { .. } => Some(vm.snapshot_state()),
+        _ => None,
+    };
+
+    let result = match command {
+        SolanaCommand::Funcs => execute_funcs(&program),
+        SolanaCommand::State => execute_state(session, &program, vm),
+        SolanaCommand::Session => execute_session(session, &program, &active_scenario),
+        SolanaCommand::Users => execute_users(scenario_users, vm),
+        SolanaCommand::UsersNew { name, lamports } => {
+            execute_users_new(name, lamports, scenario_users, vm)
+        }
+        SolanaCommand::Airdrop { user, lamports } => {
+            execute_airdrop(&user, lamports, scenario_users, vm)
+        }
+        SolanaCommand::TimeWarp { delta_seconds } => execute_time_warp(delta_seconds, vm),
+        SolanaCommand::Pda { instruction } => execute_pda(&program, &instruction),
+        SolanaCommand::Inspect { pubkey } => execute_inspect(&program, vm, &pubkey),
+        SolanaCommand::Call {
+            ix,
+            args,
+            accounts,
+            signers,
+        } => execute_call(
+            &program,
+            &ix,
+            args,
+            accounts,
+            signers,
+            scenario_users,
+            session,
+            vm,
+            &timestamp,
+        ),
+        SolanaCommand::Back => {
+            let r = execute_back(session);
+            if matches!(r, SolanaCommandResult::StepRemoved { .. }) {
+                if let Some(snap) = stack.pop() {
+                    if let Err(e) = vm.restore_state(snap) {
+                        return Ok(Json(serde_json::to_value(SolanaCommandResult::Error {
+                            message: format!("Back: rewind VM failed: {e:?}"),
+                        }).unwrap_or(Value::Null)));
+                    }
+                }
+            }
+            r
+        }
+        SolanaCommand::Clear => {
+            if let Some(genesis) = stack.first().cloned() {
+                if let Err(e) = vm.restore_state(genesis) {
+                    return Ok(Json(serde_json::to_value(SolanaCommandResult::Error {
+                        message: format!("Clear: rewind VM failed: {e:?}"),
+                    }).unwrap_or(Value::Null)));
+                }
+            }
+            stack.clear();
+            execute_clear(session)
+        }
+        SolanaCommand::Finding {
+            severity,
+            title,
+            description,
+            recommendation,
+        } => execute_finding(session, severity, title, description, recommendation, &timestamp),
+        SolanaCommand::Note { text } => execute_note(session, &text, &timestamp),
+        SolanaCommand::Status { ix, status } => {
+            execute_status(session, &program, &ix, status, &timestamp)
+        }
+        SolanaCommand::Step { index } => execute_step(session, index, &program),
+        SolanaCommand::Findings => execute_findings_list(session),
+        SolanaCommand::Export { metadata } => {
+            let names: Vec<String> = scenarios.names().to_vec();
+            let entries: Vec<(&str, &ilold_session_core::exploration::session::ExplorationSession)> =
+                names
+                    .iter()
+                    .filter_map(|n| scenarios.get(n).map(|s| (n.as_str(), s)))
+                    .collect();
+            execute_export(entries, &active_scenario, &program, metadata.as_ref())
+        }
+        SolanaCommand::Who { account_type } => execute_who(&program, &account_type),
+        SolanaCommand::Timeline { pubkey } => {
+            execute_timeline(session, &program, &pubkey, &active_scenario, scenario_users)
+        }
+        SolanaCommand::Info { ix } => execute_info(&program, &ix),
+        SolanaCommand::Coupling => execute_coupling(&program),
+        SolanaCommand::Vars => execute_vars(&program),
+        SolanaCommand::Coverage => execute_coverage(&program, session, &active_scenario),
+        SolanaCommand::SaveSession { .. }
+        | SolanaCommand::LoadSession { .. }
+        | SolanaCommand::Scenario { .. } => unreachable!("handled above"),
+    };
+
+    if let (Some(snap), SolanaCommandResult::StepAdded { .. }) = (pre_call_snapshot, &result) {
+        stack.push(snap);
+    }
+
+    let cpi_targets = match &result {
+        SolanaCommandResult::StepAdded { .. } => scenarios
+            .active_session()
+            .steps
+            .last()
+            .and_then(|s| s.runtime_trace.as_ref())
+            .and_then(|v| serde_json::from_value::<ilold_session_core::runtime_trace::RuntimeTrace>(v.clone()).ok())
+            .map(|t| ilold_solana_core::overlay::extract_cpi_programs(&t))
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+
+    for patch in canvas_patches_from_solana(&result, &active_scenario, &cpi_targets) {
+        state.session_tx.send(patch).ok();
+    }
+    Ok(Json(serde_json::to_value(result).unwrap_or(Value::Null)))
+}
+
+fn solana_scenario_action(
+    scenarios: &mut ScenarioStore,
+    solana: &crate::state::SolanaState,
+    sub: SharedScenarioAction,
+    active_before: &str,
+    timestamp: &str,
+    program_name: &str,
+) -> SolanaCommandResult {
+    match sub {
+        SharedScenarioAction::New { name } => {
+            if let Err(e) = ilold_session_core::exploration::scenario::validate_scenario_name(&name)
+            {
+                return SolanaCommandResult::Error { message: e };
+            }
+            if scenarios.contains(&name) {
+                return SolanaCommandResult::Error {
+                    message: format!("scenario '{name}' already exists"),
+                };
+            }
+            let session = ExplorationSession::new(program_name, "ilold");
+            let fresh_vm = match ilold_solana_core::execute::VmHost::boot(
+                solana.program_artifacts.clone(),
+            ) {
+                Ok(v) => v,
+                Err(e) => {
+                    return SolanaCommandResult::Error {
+                        message: format!("boot VM for '{name}': {e:?}"),
+                    };
+                }
+            };
+            scenarios.insert(name.clone(), session);
+            solana
+                .vms
+                .write()
+                .unwrap()
+                .insert(name.clone(), fresh_vm);
+            solana
+                .users
+                .write()
+                .unwrap()
+                .insert(name.clone(), std::collections::HashMap::new());
+            SolanaCommandResult::ScenarioCreated { name }
+        }
+        SharedScenarioAction::List => {
+            let active = scenarios.active().to_string();
+            let items = scenarios
+                .names()
+                .iter()
+                .map(|n| ilold_session_core::exploration::scenario::ScenarioInfo {
+                    name: n.clone(),
+                    active: n == &active,
+                    step_count: scenarios.get(n).map(|s| s.steps.len()).unwrap_or(0),
+                })
+                .collect();
+            SolanaCommandResult::ScenarioList { items }
+        }
+        SharedScenarioAction::Switch { name } => {
+            let from = scenarios.active().to_string();
+            if name == from {
+                return SolanaCommandResult::ScenarioSwitched { from, to: name };
+            }
+            match scenarios.set_active(name.clone()) {
+                Ok(()) => SolanaCommandResult::ScenarioSwitched { from, to: name },
+                Err(e) => SolanaCommandResult::Error { message: e },
+            }
+        }
+        SharedScenarioAction::Fork { name, at_step } => {
+            if let Err(e) = ilold_session_core::exploration::scenario::validate_scenario_name(&name)
+            {
+                return SolanaCommandResult::Error { message: e };
+            }
+            if scenarios.contains(&name) {
+                return SolanaCommandResult::Error {
+                    message: format!("scenario '{name}' already exists"),
+                };
+            }
+            let from = active_before.to_string();
+            let mut cloned = scenarios.active_session().clone();
+            cloned.reset_scenario_local_observations();
+            let len = cloned.steps.len();
+            let effective = match at_step {
+                None => len,
+                Some(n) if n > len => {
+                    let noun = if len == 1 { "step" } else { "steps" };
+                    return SolanaCommandResult::Error {
+                        message: format!(
+                            "cannot fork at step {n}: only {len} {noun} in active scenario"
+                        ),
+                    };
+                }
+                Some(n) => {
+                    cloned.steps.truncate(n);
+                    n
+                }
+            };
+            cloned.forked_from = Some(ForkOrigin {
+                scenario: from.clone(),
+                at_step: effective,
+            });
+            cloned.journal.record(JournalEntry::BranchCreated {
+                from_function: from.clone(),
+                branch_function: name.clone(),
+                timestamp: timestamp.to_string(),
+            });
+
+            let mut vms = solana.vms.write().unwrap();
+            let snap = match vms.get(&from) {
+                Some(vm) => vm.snapshot(),
+                None => {
+                    return SolanaCommandResult::Error {
+                        message: format!("VM for scenario '{from}' missing"),
+                    };
+                }
+            };
+            let mut new_vm = match ilold_solana_core::execute::VmHost::restore(snap) {
+                Ok(v) => v,
+                Err(e) => {
+                    return SolanaCommandResult::Error {
+                        message: format!("restore VM for '{name}': {e:?}"),
+                    };
+                }
+            };
+
+            let mut snapshots = solana.step_snapshots.write().unwrap();
+            let origin_stack = snapshots.entry(from.clone()).or_insert_with(Vec::new);
+            let cloned_stack: Vec<ilold_solana_core::execute::StateSnapshot> =
+                origin_stack.iter().take(effective).cloned().collect();
+            if let Some(rewind_to) = origin_stack.get(effective) {
+                if let Err(e) = new_vm.restore_state(rewind_to.clone()) {
+                    return SolanaCommandResult::Error {
+                        message: format!("rewind branch VM to step {effective}: {e:?}"),
+                    };
+                }
+            }
+
+            let mut users = solana.users.write().unwrap();
+            let cloned_users: std::collections::HashMap<String, Keypair> = users
+                .get(&from)
+                .map(|m| {
+                    m.iter()
+                        .map(|(k, kp)| (k.clone(), kp.insecure_clone()))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            scenarios.insert(name.clone(), cloned);
+            vms.insert(name.clone(), new_vm);
+            users.insert(name.clone(), cloned_users);
+            snapshots.insert(name.clone(), cloned_stack);
+            SolanaCommandResult::ScenarioForked {
+                from,
+                to: name,
+                at_step: effective,
+            }
+        }
+        SharedScenarioAction::Delete { name } => {
+            if name == scenarios.active() {
+                return SolanaCommandResult::Error {
+                    message: "cannot delete active scenario — switch first".into(),
+                };
+            }
+            if scenarios.len() == 1 {
+                return SolanaCommandResult::Error {
+                    message: "cannot delete the only remaining scenario".into(),
+                };
+            }
+            if !scenarios.contains(&name) {
+                return SolanaCommandResult::Error {
+                    message: format!("scenario '{name}' does not exist"),
+                };
+            }
+            scenarios.remove(&name);
+            solana.vms.write().unwrap().remove(&name);
+            solana.users.write().unwrap().remove(&name);
+            solana.step_snapshots.write().unwrap().remove(&name);
+            SolanaCommandResult::ScenarioDeleted { name }
         }
     }
 }
@@ -329,13 +828,10 @@ pub async fn get_step_detail(
     Ok(Json(narrative))
 }
 
-/// Return the persisted FlowTree of a session step. The tree is read
-/// directly from `step.flow_tree` — no recomputation against the source
-/// — so the result reflects what the auditor saw when `c <func>` ran.
 pub async fn get_session_step_trace(
     State(state): State<Arc<AppState>>,
     Path(step_index): Path<usize>,
-) -> Result<Json<FlowTree>, (StatusCode, String)> {
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let scenarios_guard = state.scenarios.read().unwrap();
     let session = scenarios_guard.active_session();
 
@@ -355,7 +851,6 @@ pub async fn get_session_step_trace(
     Ok(Json(tree))
 }
 
-/// Cross-step variable history with path conditions for each write.
 pub async fn get_variable_timeline_handler(
     State(state): State<Arc<AppState>>,
     Path(variable): Path<String>,
@@ -408,8 +903,6 @@ pub struct TraceQuery {
     pub depth: Option<usize>,
     #[serde(default)]
     pub reverts: Option<bool>,
-    /// Comma-separated step_ids to force-inline beyond `depth`. Example:
-    /// `?expand=17,24` will inline both calls regardless of max_depth.
     #[serde(default)]
     pub expand: Option<String>,
 }
@@ -434,16 +927,10 @@ pub async fn get_flow_trace(
 
 #[derive(Deserialize)]
 pub struct SliceQuery {
-    /// `backward`, `forward`, or `both`. Defaults to `both` when absent.
-    /// Short forms `b`/`f` and synonyms `back`/`fwd`/`all` are accepted.
     #[serde(default)]
     pub direction: Option<String>,
 }
 
-/// Dataflow slice for `variable` inside `function` of the session's
-/// current contract. The function is resolved from the active session so
-/// the auditor doesn't have to re-type the contract name; if no session
-/// exists the endpoint returns 404.
 pub async fn get_function_slice(
     State(state): State<Arc<AppState>>,
     Path((func_name, variable)): Path<(String, String)>,
@@ -454,7 +941,8 @@ pub async fn get_function_slice(
         guard.active_session().contract.clone()
     };
 
-    let contract = state.project.contracts.iter()
+    let s = require_solidity_msg(&state)?;
+    let contract = s.project.contracts.iter()
         .find(|c| c.name == contract_name)
         .ok_or((
             StatusCode::NOT_FOUND,
@@ -472,7 +960,7 @@ pub async fn get_function_slice(
         .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
 
     Ok(Json(build_slice_result(
-        &state.project,
+        &s.project,
         contract,
         function,
         &variable,
@@ -495,10 +983,6 @@ fn parse_slice_direction(raw: Option<&str>) -> Result<SliceDirection, String> {
     }
 }
 
-/// Lightweight per-step view for the `/api/scenarios/all` snapshot. The
-/// access level is resolved against `AppState.classifications` (same lookup
-/// pattern used by `execute_who` in the core crate) so the frontend can
-/// colour the node without re-classifying.
 #[derive(Serialize)]
 pub struct SessionStepView {
     pub function: String,
@@ -506,8 +990,6 @@ pub struct SessionStepView {
     pub step_index: usize,
 }
 
-/// Per-scenario snapshot in `AllScenariosResponse`. `forked_from` is `None`
-/// for `main` and for any scenario loaded from a pre-fork-origin save file.
 #[derive(Serialize)]
 pub struct ScenarioSnapshot {
     pub name: String,
@@ -518,13 +1000,9 @@ pub struct ScenarioSnapshot {
 #[derive(Serialize)]
 pub struct AllScenariosResponse {
     pub active: String,
-    /// Ordered by creation order (main first, then insertion order). Not a
-    /// HashMap — the frontend composes scenarios into a visual tree and needs
-    /// stable iteration so "main" always anchors the canvas.
     pub scenarios: Vec<ScenarioSnapshot>,
 }
 
-/// Return the list of scenarios — mirrors the `scenario list` CLI command.
 pub async fn get_scenarios(
     State(state): State<Arc<AppState>>,
 ) -> Json<Vec<ScenarioInfo>> {
@@ -542,29 +1020,25 @@ pub async fn get_scenarios(
     Json(items)
 }
 
-/// Bulk snapshot of every scenario's step list. Used by the frontend canvas
-/// to paint all scenarios at once (e.g. on reconnect / initial load).
 pub async fn get_all_scenarios(
     State(state): State<Arc<AppState>>,
-) -> Json<AllScenariosResponse> {
+) -> Result<Json<AllScenariosResponse>, (StatusCode, String)> {
+    let solidity = state.solidity();
     let guard = state.scenarios.read().unwrap();
     let active = guard.active().to_string();
     let mut scenarios: Vec<ScenarioSnapshot> = Vec::with_capacity(guard.len());
     for name in guard.names() {
         let Some(session) = guard.get(name) else { continue };
-        let classifs = state.classifications.get(&session.contract);
+        let classifs = solidity.and_then(|s| s.classifications.get(&session.contract));
         let steps = session
             .steps
             .iter()
             .enumerate()
             .map(|(idx, step)| {
-                // Same lookup pattern as `execute_who`'s `access_for`
-                // (`commands.rs:515-519`): fall back to `Internal` when the
-                // classification is missing so the response shape is stable.
                 let access = classifs
                     .and_then(|c| c.iter().find(|(n, _)| n == &step.function))
                     .map(|(_, a)| a.clone())
-                    .unwrap_or(AccessLevel::Internal);
+                    .unwrap_or(AccessLevel::Public);
                 SessionStepView {
                     function: step.function.clone(),
                     access,
@@ -578,12 +1052,9 @@ pub async fn get_all_scenarios(
             forked_from: session.forked_from.clone(),
         });
     }
-    Json(AllScenariosResponse { active, scenarios })
+    Ok(Json(AllScenariosResponse { active, scenarios }))
 }
 
-/// Parse a comma-separated `expand` query value into a set of step_ids.
-/// Empty input → empty set. Whitespace around values is tolerated.
-/// Returns `Err` with a descriptive message if any value is not a usize.
 fn parse_expand_set(raw: Option<&str>) -> Result<std::collections::HashSet<usize>, String> {
     let mut set = std::collections::HashSet::new();
     let raw = match raw {

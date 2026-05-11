@@ -1,83 +1,115 @@
 <script lang="ts">
-  import type { ContractDetail } from '$lib/api/rest';
+  import type { ContractDetail, ProgramView } from '$lib/api/rest';
   import { visibilityLabel } from '$lib/utils/visibility';
 
-  // Sidebar that lists every function declared in the contract (plus
-  // inherited ones), with a live search + visibility/access filters so it
-  // scales to large codebases (Aave has ~300 functions per pool).
+  // Sidebar that lists every entry point of the loaded artifact: Solidity
+  // functions (own + inherited) or Solana instructions. The component is
+  // parametrized by `kind` so the chrome stays single-source while the
+  // filters and badges adapt to each backend.
   //
   // Click semantics (mode-aware):
   // - Session mode: click dispatches "add step to active scenario"
-  // - CFG/Seq mode: click always adds to canvas (idempotent). To remove,
-  //   the row shows an explicit ✕ on hover when the function is already
-  //   on canvas. A top-level `Clear · N` button wipes the canvas at once.
+  // - CFG/Seq/Program mode: click always adds to canvas (idempotent). To
+  //   remove, the row shows an explicit ✕ on hover when the entry is
+  //   already on canvas. A top-level `Clear · N` wipes everything.
   let {
-    contract,
+    contract = null,
+    program = null,
     canvasFuncs,
     mode,
+    kind = 'solidity',
     onadd,
     onremove,
   }: {
-    contract: ContractDetail;
+    contract?: ContractDetail | null;
+    program?: ProgramView | null;
     canvasFuncs: Set<string>;
     mode: 'cfg' | 'sequences' | 'session';
-    onadd: (func: string) => void;
-    onremove: (func: string) => void;
+    kind?: 'solidity' | 'solana';
+    onadd: (entry: string) => void;
+    onremove: (entry: string) => void;
   } = $props();
 
   let sidebarOpen = $state(true);
   let query = $state('');
 
-  // Visibility filter — multi-select. Defaults to entry points only
-  // (Public + External) to preserve the previous default UX; auditors can
-  // expand to Internal/Private with one click.
   type Visibility = 'Public' | 'External' | 'Internal' | 'Private';
   const ALL_VISIBILITIES: Visibility[] = ['External', 'Public', 'Internal', 'Private'];
   let visFilter = $state<Set<Visibility>>(new Set<Visibility>(['Public', 'External']));
   let onlyAccessControl = $state(false);
 
-  // Merge own + inherited; tag each row with its source so we can group
-  // under a divider.
+  let onlyPdas = $state(false);
+  let onlySigners = $state(false);
+
   type Row = {
     name: string;
     visibility: string;
     path_count: number;
     modifiers: string[];
     source: 'own' | 'inherited';
+    hasPdas?: boolean;
+    signers?: string[];
   };
-  const allRows = $derived<Row[]>([
-    ...(contract.functions ?? []).map((f): Row => ({
-      name: f.name,
-      visibility: f.visibility,
-      path_count: f.path_count,
-      modifiers: f.modifiers ?? [],
-      source: 'own',
-    })),
-    ...(contract.inherited_functions ?? []).map((f): Row => ({
-      name: f.name,
-      visibility: f.visibility,
-      path_count: f.path_count,
-      modifiers: f.modifiers ?? [],
-      source: 'inherited',
-    })),
-  ]);
+  const allRows = $derived<Row[]>(() => {
+    if (kind === 'solana' && program) {
+      return (program.instructions ?? []).map((ix): Row => ({
+        name: ix.name,
+        visibility: 'Public',
+        path_count: 0,
+        modifiers: [],
+        source: 'own',
+        hasPdas: (ix.accounts ?? []).some((a: any) => a.pda != null),
+        signers: (ix.accounts ?? []).filter((a: any) => a.signer).map((a: any) => a.name),
+      }));
+    }
+    if (contract) {
+      return [
+        ...(contract.functions ?? []).map((f): Row => ({
+          name: f.name,
+          visibility: f.visibility,
+          path_count: f.path_count,
+          modifiers: f.modifiers ?? [],
+          source: 'own',
+        })),
+        ...(contract.inherited_functions ?? []).map((f): Row => ({
+          name: f.name,
+          visibility: f.visibility,
+          path_count: f.path_count,
+          modifiers: f.modifiers ?? [],
+          source: 'inherited',
+        })),
+      ];
+    }
+    return [];
+  });
 
   const filtered = $derived.by(() => {
     const q = query.trim().toLowerCase();
-    return allRows.filter((r) => {
+    const rows = allRows();
+    return rows.filter((r) => {
+      if (q && !r.name.toLowerCase().includes(q)) return false;
+      if (kind === 'solana') {
+        if (onlyPdas && !r.hasPdas) return false;
+        if (onlySigners && (!r.signers || r.signers.length === 0)) return false;
+        return true;
+      }
       if (!visFilter.has(r.visibility as Visibility)) return false;
       if (onlyAccessControl && r.modifiers.length === 0) return false;
-      if (q && !r.name.toLowerCase().includes(q)) return false;
       return true;
     });
   });
 
   const ownFiltered = $derived(filtered.filter((r) => r.source === 'own'));
   const inheritedFiltered = $derived(filtered.filter((r) => r.source === 'inherited'));
-  const totalCount = $derived(allRows.length);
+  const totalCount = $derived(allRows().length);
   const visibleCount = $derived(filtered.length);
   const canvasCount = $derived(canvasFuncs.size);
   const canClear = $derived(mode !== 'session' && canvasCount > 0);
+
+  const headerLabel = $derived(kind === 'solana' ? 'Instructions' : 'Functions');
+  const searchPlaceholder = $derived(
+    kind === 'solana' ? 'Search instructions…' : 'Search functions…',
+  );
 
   function toggleVisibility(v: Visibility) {
     const next = new Set(visFilter);
@@ -90,6 +122,8 @@
     query = '';
     visFilter = new Set<Visibility>(['Public', 'External']);
     onlyAccessControl = false;
+    onlyPdas = false;
+    onlySigners = false;
   }
 
   // Snapshot to Array before iterating because `onremove` mutates the
@@ -113,7 +147,7 @@
   <div class="header flex items-center justify-between px-2.5 py-2">
     {#if sidebarOpen}
       <span class="text-[10px] text-text-muted uppercase tracking-wider font-semibold">
-        Functions <span class="text-text-dim font-normal">· {visibleCount}/{totalCount}</span>
+        {headerLabel} <span class="text-text-dim font-normal">· {visibleCount}/{totalCount}</span>
       </span>
     {/if}
     <button
@@ -131,9 +165,9 @@
         <input
           type="text"
           class="search-input"
-          placeholder="Search functions..."
+          placeholder={searchPlaceholder}
           bind:value={query}
-          aria-label="Search functions"
+          aria-label={searchPlaceholder}
         />
         {#if query}
           <button
@@ -148,21 +182,38 @@
 
     <!-- Filter chips + canvas clear -->
     <div class="filters px-2 pb-2">
-      {#each ALL_VISIBILITIES as v}
+      {#if kind === 'solana'}
         <button
           class="chip"
-          class:active={visFilter.has(v)}
-          onclick={() => toggleVisibility(v)}
-          title="Toggle {v} visibility"
-        >{visShort(v)}</button>
-      {/each}
-      <button
-        class="chip"
-        class:active={onlyAccessControl}
-        onclick={() => onlyAccessControl = !onlyAccessControl}
-        title="Only functions with modifiers (access control)"
-        aria-pressed={onlyAccessControl}
-      >🔒</button>
+          class:active={onlyPdas}
+          onclick={() => (onlyPdas = !onlyPdas)}
+          title="Only instructions that derive PDAs"
+          aria-pressed={onlyPdas}
+        >PDA</button>
+        <button
+          class="chip"
+          class:active={onlySigners}
+          onclick={() => (onlySigners = !onlySigners)}
+          title="Only instructions that require signers"
+          aria-pressed={onlySigners}
+        >🔑</button>
+      {:else}
+        {#each ALL_VISIBILITIES as v}
+          <button
+            class="chip"
+            class:active={visFilter.has(v)}
+            onclick={() => toggleVisibility(v)}
+            title="Toggle {v} visibility"
+          >{visShort(v)}</button>
+        {/each}
+        <button
+          class="chip"
+          class:active={onlyAccessControl}
+          onclick={() => (onlyAccessControl = !onlyAccessControl)}
+          title="Only functions with modifiers (access control)"
+          aria-pressed={onlyAccessControl}
+        >🔒</button>
+      {/if}
       {#if canClear}
         <button
           class="chip chip-clear"
@@ -221,11 +272,20 @@
         : (onCanvas ? 'On canvas — click ✕ to remove' : 'Add to canvas')}
     >
       <span class="row-name">{row.name}</span>
-      <span class="row-vis {visShort(row.visibility)}">{visShort(row.visibility)}</span>
-      {#if row.modifiers.length > 0}
-        <span class="row-lock" title={row.modifiers.join(', ')}>🔒</span>
+      {#if kind === 'solana'}
+        {#if row.hasPdas}
+          <span class="row-vis P" title="Declares PDAs">pda</span>
+        {/if}
+        {#if row.signers && row.signers.length > 0}
+          <span class="row-lock" title={`Signers: ${row.signers.join(', ')}`}>🔑</span>
+        {/if}
+      {:else}
+        <span class="row-vis {visShort(row.visibility)}">{visShort(row.visibility)}</span>
+        {#if row.modifiers.length > 0}
+          <span class="row-lock" title={row.modifiers.join(', ')}>🔒</span>
+        {/if}
+        <span class="row-paths">{row.path_count}p</span>
       {/if}
-      <span class="row-paths">{row.path_count}p</span>
     </button>
     {#if showActive}
       <button
