@@ -100,7 +100,7 @@ For one-shot static analysis without the REPL:
 
 ## Documentation
 
-Full reference, walkthroughs and HTTP API are in [`docs/guide/`](docs/guide/src/SUMMARY.md). Build the book locally with:
+The published book lives at **[scab24.github.io/ilold](https://scab24.github.io/ilold/)**. Sources are in [`docs/guide/`](docs/guide/src/SUMMARY.md); build it locally with:
 
 ```
 mdbook serve docs/guide --open
