@@ -345,6 +345,12 @@ pub async fn get_instruction_source(
         .join(&program.name)
         .join("src")
         .join("lib.rs");
+    let file_path = std::fs::canonicalize(&file_path).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("canonicalize {}: {e}", file_path.display()),
+        )
+    })?;
     let content = std::fs::read_to_string(&file_path).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
