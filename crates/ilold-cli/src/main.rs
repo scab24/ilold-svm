@@ -6,9 +6,7 @@ use ilold_solana_core::ingest::{detect, ProjectKind};
 
 mod colors;
 mod explore;
-mod fmt;
 mod help;
-mod interactive;
 
 #[derive(Parser)]
 #[command(name = "ilold", version, about = "Solana program execution path analyzer")]

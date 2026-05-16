@@ -11,7 +11,6 @@ use ilold_solana_core::exploration::SolanaCommandResult;
 use ilold_solana_core::view::ProgramView;
 
 use crate::colors::*;
-use crate::fmt;
 
 pub async fn run(
     _paths: Vec<PathBuf>,
@@ -67,7 +66,7 @@ async fn run_solana_attach(
         })
         .unwrap_or_default();
 
-    let banner = fmt::header_box(&[
+    let banner = header_box(&[
         &format!("ilold explore — {} (solana, attached)", program_name),
         &format!("{} instructions | Type ? for help", function_names.len()),
         &format!("Server: {}", url),
@@ -112,7 +111,7 @@ async fn run_with_state(
         .map(|p| p.name.clone())
         .collect();
 
-    let banner = fmt::header_box(&[
+    let banner = header_box(&[
         &format!("ilold explore — {} (solana)", program_name),
         &format!("{} instructions | Type ? for help", function_names.len()),
         &format!("Web UI: http://localhost:{}", actual_port),
@@ -1326,11 +1325,11 @@ fn print_solana_help() {
         println!("  {}", c_warn(group_name));
         for (shortcut, name, desc) in *cmds {
             let sc = if shortcut.is_empty() {
-                format!("  {}  ", fmt::pad_right("", 3))
+                format!("  {}  ", pad_right("", 3))
             } else {
-                format!("  {} {}", c_accent(&fmt::pad_right(shortcut, 3)), c_muted("|"))
+                format!("  {} {}", c_accent(&pad_right(shortcut, 3)), c_muted("|"))
             };
-            println!("  {} {}  {}", sc, c_accent(&fmt::pad_right(name, 22)), c_muted(desc));
+            println!("  {} {}  {}", sc, c_accent(&pad_right(name, 22)), c_muted(desc));
         }
         println!();
     }

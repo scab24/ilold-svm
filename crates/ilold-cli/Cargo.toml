@@ -5,14 +5,13 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "CLI for Ilold: smart contract execution path analyzer"
+description = "CLI for Ilold: Solana program execution path analyzer"
 
 [[bin]]
 name = "ilold"
 path = "src/main.rs"
 
 [dependencies]
-ilold-core = { path = "../ilold-core" }
 ilold-solana-core = { path = "../ilold-solana-core" }
 ilold-web = { path = "../ilold-web" }
 ilold-mcp = { path = "../ilold-mcp" }
@@ -27,6 +26,3 @@ nu-ansi-term = "0.50"
 reqwest = { version = "0.12", features = ["json"] }
 serde_json = { workspace = true }
 dirs = "6"
-terminal_size = "0.4"
-ratatui = { version = "0.30", default-features = false, features = ["crossterm_0_29"] }
-crossterm = "0.29"
