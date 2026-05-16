@@ -1,5 +1,5 @@
 use colored::{ColoredString, Colorize};
-use ilold_core::classify::entry_points::AccessLevel;
+use ilold_session_core::exploration::access::AccessLevel;
 
 pub fn c_accent(s: &str) -> ColoredString { s.truecolor(140, 170, 210) }
 pub fn c_warn(s: &str) -> ColoredString { s.truecolor(180, 150, 80) }

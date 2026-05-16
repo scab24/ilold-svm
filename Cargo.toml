@@ -1,7 +1,6 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/ilold-core",
     "crates/ilold-cli",
     "crates/ilold-web",
     "crates/ilold-session-core",
@@ -18,10 +17,9 @@ authors = ["scab24 <git.seco@protonmail.com>"]
 license = "AGPL-3.0-only"
 repository = "https://github.com/scab24/ilold"
 homepage = "https://github.com/scab24/ilold"
-description = "Execution path analyzer and interactive security workbench for smart contracts"
+description = "Solana program execution path analyzer and interactive security workbench"
 
 [workspace.dependencies]
-solar = { version = "=0.1.8", package = "solar-compiler", default-features = false }
 petgraph = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
