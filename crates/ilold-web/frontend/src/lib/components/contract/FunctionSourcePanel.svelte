@@ -10,7 +10,7 @@
   // Uses the CodeMirror `oneDark` theme and the JS grammar as a Solidity/Rust
   // fallback so it stays close enough for highlighting without pulling extra
   // language bundles.
-  let { contract, func, kind = 'solidity', onclose }: {
+  let { contract, func, kind = 'solana', onclose }: {
     contract: string;
     func: string;
     kind?: 'solidity' | 'solana';

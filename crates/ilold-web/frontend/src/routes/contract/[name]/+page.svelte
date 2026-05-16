@@ -48,7 +48,7 @@
 
   let contract: ContractDetail | null = $state(null);
   let solanaProgram: ProgramView | null = $state(null);
-  let kind: 'solidity' | 'solana' = $state('solidity');
+  let kind: 'solidity' | 'solana' = $state('solana');
   let solanaCanvasIxs: Set<string> = $state(new Set());
   let solanaExpandedIxs: Set<string> = $state(new Set());
   let solanaUsers: { name: string; pubkey: string; lamports: number }[] = $state([]);
@@ -986,7 +986,7 @@
     try {
       const pm = await getProjectMap();
       if (!stillFresh()) return;
-      kind = pm.kind === 'solana' ? 'solana' : 'solidity';
+      kind = 'solana';
       if (kind === 'solana') {
         try {
           const prog = await getProgramView(contractName);

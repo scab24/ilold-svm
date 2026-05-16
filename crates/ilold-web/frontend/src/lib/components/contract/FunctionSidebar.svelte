@@ -17,7 +17,7 @@
     program = null,
     canvasFuncs,
     mode,
-    kind = 'solidity',
+    kind = 'solana',
     onadd,
     onremove,
   }: {
