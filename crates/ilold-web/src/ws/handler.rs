@@ -3,31 +3,18 @@ use std::sync::Arc;
 use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{State, WebSocketUpgrade};
 use axum::response::IntoResponse;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tokio::sync::broadcast;
 
-use ilold_core::classify::entry_points::AccessLevel;
-use ilold_core::exploration::commands::{CanvasPatch, ScenarioEvent};
+use ilold_session_core::exploration::access::AccessLevel;
+use ilold_session_core::exploration::canvas::CanvasPatch;
+use ilold_session_core::exploration::scenario::ScenarioEvent;
 
 use crate::state::AppState;
-use super::search::{self, SearchQuery};
-
-#[derive(Deserialize)]
-#[serde(tag = "type")]
-enum ClientMessage {
-    #[serde(rename = "search")]
-    Search(SearchQuery),
-}
 
 #[derive(Serialize)]
 #[serde(tag = "type")]
 enum ServerMessage {
-    #[serde(rename = "search_result")]
-    SearchResult(search::SearchResult),
-    #[serde(rename = "search_complete")]
-    SearchComplete { total: usize },
-    #[serde(rename = "error")]
-    Error { message: String },
     #[serde(rename = "session_add_node")]
     SessionAddNode {
         scenario: String,
@@ -127,37 +114,10 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
     loop {
         tokio::select! {
             client_msg = socket.recv() => {
-                let msg = match client_msg {
-                    Some(Ok(Message::Text(text))) => text,
+                match client_msg {
+                    Some(Ok(Message::Text(_))) => continue,
                     Some(Ok(Message::Close(_))) | None => break,
                     _ => continue,
-                };
-
-                let parsed: ClientMessage = match serde_json::from_str(&msg) {
-                    Ok(m) => m,
-                    Err(e) => {
-                        let err = ServerMessage::Error { message: format!("Invalid message: {e}") };
-                        if !send_json(&mut socket, &err).await { break; }
-                        continue;
-                    }
-                };
-
-                match parsed {
-                    ClientMessage::Search(query) => {
-                        let results = match state.solidity() {
-                            Some(s) => search::search_paths(s, &query),
-                            None => Vec::new(),
-                        };
-                        let total = results.len();
-
-                        for result in results {
-                            let msg = ServerMessage::SearchResult(result);
-                            if !send_json(&mut socket, &msg).await { break; }
-                        }
-
-                        let complete = ServerMessage::SearchComplete { total };
-                        if !send_json(&mut socket, &complete).await { break; }
-                    }
                 }
             }
 
