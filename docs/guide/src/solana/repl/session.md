@@ -130,5 +130,5 @@ ilold[staking → initialize_pool → stake]> step 1
 
 ## Notes
 
-- The Solidity equivalent (`seq` / `sequence`) is currently aliased to `session` on Solana; there is no cross-step narrative engine yet. See [Roadmap](../../roadmap/solana.md).
+- `seq` / `sequence` is currently aliased to `session`; a cross-step narrative engine is tracked in the [Roadmap](../../roadmap/solana.md).
 - `call` is the only command that drives the VM forward; everything else inspects or rewinds.

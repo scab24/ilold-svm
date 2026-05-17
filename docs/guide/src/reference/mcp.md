@@ -238,7 +238,6 @@ Every step also fires a WebSocket patch from `ilold serve`, so a browser tab poi
 
 ## Limitations
 
-- **Solana only.** The MCP server refuses to start when the backend is a Solidity project. Solidity support is in the [cross-cutting roadmap](../roadmap/cross-cutting.md).
 - **Single active program at a time.** The handler tracks one active program. Call `ilold_use <program>` to switch — the MCP subprocess does not need to be restarted to point at a different program in the same workspace.
 - **Static tool registry.** Tools are derived from `SOLANA_HELP_BLOCKS` once at startup. Reloading the backend project does not change the tool set; only the data behind the tools.
 - **No sandbox over the LLM.** Every tool that mutates the VM (`ilold_call`, `ilold_clear`, `ilold_back`, `ilold_scenario`) is invocable without confirmation from the server. Sandboxing is delegated to the MCP client: mature clients prompt the human before destructive tools (those whose names contain `clear`, `delete`, `reset`).
@@ -250,7 +249,6 @@ Every step also fires a WebSocket patch from `ilold serve`, so a browser tab poi
 | Symptom | Likely cause |
 | --- | --- |
 | `Cannot reach Ilold server at <url>` on startup | `ilold serve` is not running, or `--server-url` points to the wrong port. |
-| `Server at <url> is not a Solana project (kind=solidity)` | The backend was started against a Solidity workspace. Point `ilold serve` at a Solana project. |
 | Tools do not appear in the client | The client could not spawn `ilold`. Check that the binary is on `PATH` or use an absolute path in `command`. Inspect the client log (`~/Library/Logs/Claude/mcp-server-ilold.log` for Claude Desktop on macOS). |
 | `No active contract` from every tool but `ilold_programs` | The session has no active program. Call `ilold_use <program>` (or restart the subprocess with `--contract <name>`). |
 | Tool call returns `Error: ...` | The backend rejected the `SolanaCommand`. The error text is the same as the REPL would print; check the active program (`ilold_programs`) and the instruction arguments. |

@@ -116,5 +116,4 @@ Aliased to `vars` at the dispatcher level: same command, same output.
 
 ## Notes
 
-- The Solidity counterpart of these commands is documented under [Contract](../../solidity/repl/contract.md). The shapes line up so an auditor moving between backends sees the same structure.
 - `use` clears the displayed step list for the previous program. The underlying scenario state for that program is preserved and reappears when switching back.

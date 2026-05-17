@@ -8,7 +8,7 @@ Plug Elozer, our in-house static analyzer, into ilold to produce a typed AST for
 
 ## CFG on top of the AST
 
-Build the control-flow graph layer on the Elozer AST. Brings Solana to parity with the Solidity CFG view and unlocks `slice`, `trace`, and structural narratives.
+Build the control-flow graph layer on the Elozer AST. Unlocks `slice`, `trace`, and structural narratives over Anchor handlers.
 
 ## Detector engine
 
@@ -18,9 +18,9 @@ Detectors for known Sealevel attack patterns (missing signer checks, missing own
 
 Record concrete values at each VM instruction boundary so the dynamic trace can confirm or refute hypotheses produced by the static layer.
 
-## CFG visual parity on the canvas
+## CFG visual on the canvas
 
-The web canvas renders Solana state today as a flat bipartite graph (instructions ↔ accounts). The redesigned view will mirror the Solidity CFG: per-instruction control flow, branch nodes, constraint annotations.
+The web canvas renders Solana state today as a flat bipartite graph (instructions ↔ accounts). The redesigned view adds a per-instruction control-flow layer with branch nodes and constraint annotations once the CFG layer above is in place.
 
 ## CPI graph in the UI
 
@@ -28,7 +28,7 @@ The runtime already records CPI edges (`coverage` surfaces them in text). A dedi
 
 ## Sequence narrative
 
-`sequence` is aliased to `session` on Solana today. A true narrative engine reuses the existing `coupling` aggregate plus a renderer mirroring the Solidity output.
+`sequence` is aliased to `session` today. A true narrative engine on top of the CFG + `coupling` aggregate is tracked under Phase 2.
 
 ## Open to ideas
 

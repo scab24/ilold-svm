@@ -18,25 +18,25 @@ Two CLI entry points cover Solana: `ilold explore <project>` (REPL + API) and `i
 
 The committed fixtures live under `tests/fixtures/solana/staking` (single program) and `tests/fixtures/solana/cpi` (two programs that talk to each other through CPI). Both ship pre-built `bin/<program>.so` binaries so the suite runs without the Anchor toolchain.
 
-## Solidity vs Solana mental model
+## Mental model
 
-| Concept | Solidity | Solana |
-| --- | --- | --- |
-| Entry point | function on a contract | instruction on a program |
-| Persistent state | contract state variables | accounts owned by the program |
-| Caller identity | `msg.sender` (implicit) | signers passed by the client |
-| `who <X>` | reads/writes of a state variable (CFG-based) | instructions that touch an account type (IDL heuristic) |
-| `timeline <X>` | mutation history of a state variable | mutation history of an account pubkey, decoded |
-| `step <i>` | re-renders the persisted flow tree | re-prints CU, logs, account diffs |
-| `slice` / `trace` | full CFG-based analysis | not implemented (Phase 2) |
-| `sequence` | narrative with cross-step dependencies | aliased to `session` (no narrative engine yet) |
-| Execution | symbolic (CFG + paths) | concrete (in-process LiteSVM execution) |
-| `back` | drops the step from the timeline | drops the step AND rewinds the VM to the pre-call snapshot |
-| `save` / `load` | step list + persisted paths | step list + replay-driven VM reconstruction |
+| Concept | How ilold handles it |
+| --- | --- |
+| Entry point | instruction on a program |
+| Persistent state | accounts owned by the program |
+| Caller identity | signers passed by the client |
+| `who <X>` | instructions that touch an account type (IDL heuristic for fields) |
+| `timeline <X>` | mutation history of an account pubkey, decoded |
+| `step <i>` | re-prints CU, logs, and account diffs of the step |
+| `back` | drops the step AND rewinds the VM to the pre-call snapshot |
+| `save` / `load` | step list + replay-driven VM reconstruction |
+| Execution | concrete (in-process LiteSVM execution) |
+
+Structural commands (`slice`, `trace`, `sequence` narrative) are not implemented and are tracked in Phase 2.
 
 ## REPL command groups
 
-The REPL command surface mirrors the Solidity one with backend-specific extensions. Each group has its own page:
+Each group has its own page:
 
 - [Session](./repl/session.md): `c/call`, `b/back`, `cl/clear`, `s/session`, `state`, `st/step`.
 - [Programs and IDL](./repl/programs.md): `ct/programs`, `use`, `f/funcs`, `fa/funcs-all`, `i/info`, `v/vars`, `va/vars-all`.
@@ -49,5 +49,5 @@ The REPL command surface mirrors the Solidity one with backend-specific extensio
 
 ## Workflows
 
-- [Audit walkthrough](./workflows/audit-walkthrough.md): staking program end-to-end, paralleling the Solidity walkthrough.
+- [Audit walkthrough](./workflows/audit-walkthrough.md): staking program end-to-end.
 - [Scenarios and forks](./workflows/scenarios.md): branching VMs, rewinding the clock, persisting bundles.

@@ -6,5 +6,4 @@ Elozer is our in-house static analyzer. It produces a typed AST for smart-contra
 
 ## Related
 
-- [Solidity: future work](./solidity.md)
 - [Solana: future work](./solana.md)

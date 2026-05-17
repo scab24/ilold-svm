@@ -1,6 +1,6 @@
 # Solana Audit Walkthrough
 
-This walkthrough mirrors the [Solidity audit walkthrough](../../solidity/workflows/audit-walkthrough.md) against the canonical Solana staking fixture under `tests/fixtures/solana/staking`. The program exposes five instructions — `initialize_pool`, `stake`, `unstake`, `add_rewards`, `claim_rewards` — and ships with a pre-built `bin/staking.so` so the suite runs without the Anchor toolchain.
+This walkthrough exercises the canonical Solana staking fixture under `tests/fixtures/solana/staking`. The program exposes five instructions — `initialize_pool`, `stake`, `unstake`, `add_rewards`, `claim_rewards` — and ships with a pre-built `bin/staking.so` so the suite runs without the Anchor toolchain.
 
 ## Starting the session
 
@@ -165,18 +165,16 @@ ilold[staking]> load my-audit
 
 `--with-keypairs` is mandatory when the audit relies on deterministic PDAs (which depend on signer pubkeys): without it, `load` regenerates fresh keypairs and PDAs come back at different addresses.
 
-## Parallel to the Solidity walkthrough
+## Flow recap
 
-The flow is structurally identical to the Solidity one:
-
-1. `f` / `v` to map the surface (instructions and account types instead of functions and state variables).
-2. `users new` + `call` to push the VM forward (vs. `c <func>` on a parsed CFG).
+1. `f` / `v` to map the surface (instructions and account types).
+2. `users new` + `call` to push the VM forward.
 3. `state`, `step`, `timeline` to inspect what changed.
-4. `who` to navigate cross-instruction relationships (vs. cross-function in Solidity).
+4. `who` to navigate cross-instruction relationships.
 5. `finding`, `note`, `status` to record observations.
 6. `export`, `save`, `load` to ship the deliverable and resume later.
 
-What is **not** available yet on Solana: `slice` and `trace`. Both require the Anchor handler AST and are tracked in [Roadmap: Solana Phase 2](../../roadmap/solana.md).
+What is **not** available yet: `slice` and `trace`. Both require the Anchor handler AST and are tracked in [Roadmap: Solana Phase 2](../../roadmap/solana.md).
 
 ## Related pages
 
