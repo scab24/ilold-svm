@@ -77,9 +77,7 @@ export interface SearchSuggestions {
 
 export interface ProjectMap {
   kind: string;
-  contracts: MapContract[];
   programs: MapProgram[];
-  relationships: MapRelationship[];
 }
 
 export interface MapProgram {
