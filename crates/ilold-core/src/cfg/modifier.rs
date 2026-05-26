@@ -205,11 +205,11 @@ mod tests {
                 expression: Expression {
                     kind: ExpressionKind::FunctionCall {
                         callee: Box::new(Expression {
-                            kind: ExpressionKind::Identifier { name: "require".into() },
+                            kind: ExpressionKind::Identifier { name: "require".into(), resolved: None },
                             span: span(),
                         }),
                         arguments: vec![Expression {
-                            kind: ExpressionKind::Identifier { name: name.into() },
+                            kind: ExpressionKind::Identifier { name: name.into(), resolved: None },
                             span: span(),
                         }],
                     },

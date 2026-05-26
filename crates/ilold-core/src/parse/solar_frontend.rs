@@ -612,6 +612,7 @@ fn convert_expression(expr: &ast::Expr<'_>, mapper: &SpanMapper) -> Expression {
         ExprKind::Member(object, member) => ExpressionKind::MemberAccess {
             object: Box::new(convert_expression(object, mapper)),
             member: member.as_str().to_string(),
+            resolved: None,
         },
 
         ExprKind::Index(base, index_kind) => ExpressionKind::IndexAccess {
@@ -652,6 +653,7 @@ fn convert_expression(expr: &ast::Expr<'_>, mapper: &SpanMapper) -> Expression {
 
         ExprKind::Ident(ident) => ExpressionKind::Identifier {
             name: ident.as_str().to_string(),
+            resolved: None,
         },
 
         ExprKind::Lit(lit, _sub) => ExpressionKind::Literal {
@@ -670,6 +672,7 @@ fn convert_expression(expr: &ast::Expr<'_>, mapper: &SpanMapper) -> Expression {
 
         _ => ExpressionKind::Identifier {
             name: "/* unsupported expr */".into(),
+            resolved: None,
         },
     };
 

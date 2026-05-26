@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::common::SourceSpan;
+use super::decl_id::DeclId;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Expression {
@@ -17,6 +18,8 @@ pub enum ExpressionKind {
     MemberAccess {
         object: Box<Expression>,
         member: String,
+        #[serde(default)]
+        resolved: Option<DeclId>,
     },
     BinaryOp {
         left: Box<Expression>,
@@ -29,6 +32,8 @@ pub enum ExpressionKind {
     },
     Identifier {
         name: String,
+        #[serde(default)]
+        resolved: Option<DeclId>,
     },
     Literal {
         value: String,

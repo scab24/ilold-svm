@@ -7,7 +7,7 @@ use crate::model::statement::{Statement, StatementKind};
 /// Used to build the "uses" set of a statement.
 pub fn walk_expr_identifiers(expr: &Expression, out: &mut HashSet<String>) {
     match &expr.kind {
-        ExpressionKind::Identifier { name } => {
+        ExpressionKind::Identifier { name, .. } => {
             out.insert(name.clone());
         }
         ExpressionKind::MemberAccess { object, .. } => {
@@ -95,7 +95,7 @@ fn walk_assignment_target_uses(target: &Expression, out: &mut HashSet<String>) {
 /// variable name being written (e.g. `balances` for `balances[to] = x`).
 pub fn extract_assignment_def(target: &Expression) -> Option<String> {
     match &target.kind {
-        ExpressionKind::Identifier { name } => Some(name.clone()),
+        ExpressionKind::Identifier { name, .. } => Some(name.clone()),
         ExpressionKind::IndexAccess { base, .. } => extract_assignment_def(base),
         ExpressionKind::MemberAccess { object, .. } => extract_assignment_def(object),
         _ => None,
@@ -225,9 +225,9 @@ pub fn statement_text(stmt: &Statement) -> String {
 /// compact — full fidelity is not the goal.
 fn expr_to_text(expr: &Expression) -> String {
     match &expr.kind {
-        ExpressionKind::Identifier { name } => name.clone(),
+        ExpressionKind::Identifier { name, .. } => name.clone(),
         ExpressionKind::Literal { value, .. } => value.clone(),
-        ExpressionKind::MemberAccess { object, member } => {
+        ExpressionKind::MemberAccess { object, member, .. } => {
             format!("{}.{}", expr_to_text(object), member)
         }
         ExpressionKind::IndexAccess { base, index } => {

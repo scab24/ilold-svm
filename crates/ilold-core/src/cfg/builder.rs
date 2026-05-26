@@ -425,7 +425,7 @@ impl CfgBuilder {
     fn process_expression_stmt(&mut self, expr: &Expression) {
         // Check if this is a require/assert call
         if let ExpressionKind::FunctionCall { callee, arguments } = &expr.kind {
-            if let ExpressionKind::Identifier { name } = &callee.kind {
+            if let ExpressionKind::Identifier { name, .. } = &callee.kind {
                 match name.as_str() {
                     "require" => {
                         self.process_require(arguments);
@@ -548,7 +548,7 @@ fn collect_calls(expr: &Expression, stmts: &mut Vec<CfgStatement>, from_modifier
             match &callee.kind {
                 // `uint32(x)` etc. — type conversion, not a call.
                 ExpressionKind::TypeMeta { .. } => {}
-                ExpressionKind::Identifier { name } => {
+                ExpressionKind::Identifier { name, .. } => {
                     if !crate::util::is_type_cast(name) {
                         stmts.push(CfgStatement::InternalCall {
                             function: name.clone(),
@@ -557,8 +557,8 @@ fn collect_calls(expr: &Expression, stmts: &mut Vec<CfgStatement>, from_modifier
                         });
                     }
                 }
-                ExpressionKind::MemberAccess { object, member } => {
-                    if let ExpressionKind::Identifier { name } = &object.kind {
+                ExpressionKind::MemberAccess { object, member, .. } => {
+                    if let ExpressionKind::Identifier { name, .. } = &object.kind {
                         if name == "this" || name == "super" {
                             stmts.push(CfgStatement::InternalCall {
                                 function: member.clone(),
@@ -627,9 +627,9 @@ fn collect_calls(expr: &Expression, stmts: &mut Vec<CfgStatement>, from_modifier
 
 fn expr_to_string(expr: &Expression) -> String {
     match &expr.kind {
-        ExpressionKind::Identifier { name } => name.clone(),
+        ExpressionKind::Identifier { name, .. } => name.clone(),
         ExpressionKind::Literal { value, .. } => value.clone(),
-        ExpressionKind::MemberAccess { object, member } => {
+        ExpressionKind::MemberAccess { object, member, .. } => {
             format!("{}.{}", expr_to_string(object), member)
         }
         ExpressionKind::FunctionCall { callee, arguments } => {

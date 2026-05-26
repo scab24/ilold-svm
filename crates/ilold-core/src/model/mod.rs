@@ -1,5 +1,6 @@
 pub mod common;
 pub mod contract;
+pub mod decl_id;
 pub mod function;
 pub mod modifier;
 pub mod statement;
