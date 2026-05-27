@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use ilold_core::callgraph::builder::build_call_graph;
 use ilold_core::callgraph::types::CallKind;
+use ilold_core::model::function::Visibility;
 use ilold_core::parse::solar_frontend::SolarParser;
 use ilold_core::parse::solc_frontend::SolcFrontend;
 use ilold_core::parse::ProjectParser;
@@ -101,4 +102,14 @@ fn test_solc_cross_contract_resolved() {
 
     assert!(resolved_to_ipool, "pool.supply() must resolve to IPool::supply");
     assert!(!placeholder, "no 'pool' placeholder node should remain");
+
+    let safe_add = cg
+        .node_indices()
+        .find(|&i| cg[i].contract == "SafeMath" && cg[i].function == "safeAdd")
+        .expect("amount.safeAdd must resolve to SafeMath::safeAdd");
+    assert_eq!(
+        cg[safe_add].visibility,
+        Visibility::Internal,
+        "resolved node must carry the real visibility (internal), not the External default"
+    );
 }

@@ -149,11 +149,20 @@ fn resolve_external(
     if let Some(&idx) = index.get(&key) {
         return idx;
     }
+
+    let (visibility, mutability) = project
+        .contract_index
+        .get(&contract)
+        .map(|&i| &project.contracts[i])
+        .and_then(|c| c.functions.iter().find(|f| f.name == function))
+        .map(|f| (f.visibility, f.mutability))
+        .unwrap_or((Visibility::External, Mutability::NonPayable));
+
     let idx = graph.add_node(CallNode {
         contract,
         function,
-        visibility: Visibility::External,
-        mutability: Mutability::NonPayable,
+        visibility,
+        mutability,
         is_external: true,
     });
     index.insert(key, idx);
