@@ -7,6 +7,7 @@ use foundry_compilers_artifacts_solc::Settings;
 
 use crate::model::common::*;
 use crate::model::contract::*;
+use crate::model::decl_id::DeclId;
 use crate::model::expression::*;
 use crate::model::function::*;
 use crate::model::modifier::*;
@@ -433,11 +434,11 @@ fn map_expression(node: &Node, index: &LineIndex) -> Expression {
         NodeType::MemberAccess => ExpressionKind::MemberAccess {
             object: Box::new(child_expr(node, "expression", index)),
             member: node.attribute::<String>("memberName").unwrap_or_default(),
-            resolved: None,
+            resolved: referenced_decl(node),
         },
         NodeType::Identifier => ExpressionKind::Identifier {
             name: node.attribute::<String>("name").unwrap_or_default(),
-            resolved: None,
+            resolved: referenced_decl(node),
         },
         NodeType::Assignment => ExpressionKind::Assignment {
             target: Box::new(child_expr(node, "leftHandSide", index)),
@@ -535,6 +536,14 @@ fn type_expr_name(node: &Node) -> String {
     node.attribute::<String>("name")
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| type_string(node))
+}
+
+/// solc uses negative `referencedDeclaration` ids for builtins (msg, require…),
+/// which are not real declarations; keep only user-declaration ids.
+fn referenced_decl(node: &Node) -> Option<DeclId> {
+    node.attribute::<isize>("referencedDeclaration")
+        .filter(|&id| id >= 0)
+        .map(DeclId)
 }
 
 fn binary_op(node: &Node) -> BinaryOperator {
@@ -747,5 +756,43 @@ mod tests {
             gated.body.iter().any(|s| matches!(s.kind, K::Placeholder)),
             "placeholder _"
         );
+    }
+
+    #[test]
+    fn cross_contract_call_carries_resolved() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/solc/cross");
+        let project = SolcFrontend.parse_project(&root).expect("parse cross");
+        let vault = project
+            .contracts
+            .iter()
+            .find(|c| c.name == "Vault")
+            .expect("Vault contract");
+
+        // depositVia: `return pool.supply(total)` — call through typed state var.
+        let deposit_via = vault
+            .functions
+            .iter()
+            .find(|f| f.name == "depositVia")
+            .expect("depositVia fn");
+        let body = deposit_via.body.as_ref().expect("body");
+        let ret = body
+            .iter()
+            .find_map(|s| match &s.kind {
+                StatementKind::Return { value: Some(v) } => Some(v),
+                _ => None,
+            })
+            .expect("return statement");
+
+        let resolved = match &ret.kind {
+            ExpressionKind::FunctionCall { callee, .. } => match &callee.kind {
+                ExpressionKind::MemberAccess { member, resolved, .. } => {
+                    assert_eq!(member, "supply");
+                    *resolved
+                }
+                other => panic!("expected member access, got {other:?}"),
+            },
+            other => panic!("expected function call, got {other:?}"),
+        };
+        assert!(resolved.is_some(), "pool.supply() must carry a resolved DeclId");
     }
 }
