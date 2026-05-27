@@ -74,19 +74,22 @@ impl SolcFrontend {
             let content = std::fs::read_to_string(path).unwrap_or_default();
             let file_index = source_files.len();
             let index = LineIndex::new(file_index, &content);
+            let path_str = path.display().to_string();
+            let skip_listing = ["/dependencies/", "/lib/", "/deployments/", "/config-engine/"]
+                .iter()
+                .any(|seg| path_str.contains(seg));
 
             for node in &ast.nodes {
                 if node.node_type == NodeType::ContractDefinition {
                     if let Some(contract) = map_contract(node, &index, &mut decl_table) {
-                        contracts.push(contract);
+                        if !skip_listing {
+                            contracts.push(contract);
+                        }
                     }
                 }
             }
 
-            source_files.push(SourceFile {
-                path: path.display().to_string(),
-                content,
-            });
+            source_files.push(SourceFile { path: path_str, content });
         }
 
         let mut project = Project {
