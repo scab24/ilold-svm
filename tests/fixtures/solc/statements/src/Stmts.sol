@@ -59,4 +59,8 @@ contract Stmts {
     function split(uint256 x) internal pure returns (uint256, uint256) {
         return (x, x);
     }
+
+    function slice(bytes calldata d) external pure returns (bytes memory) {
+        return d[1:3];
+    }
 }

@@ -477,6 +477,23 @@ fn map_expression(node: &Node, index: &LineIndex) -> Expression {
             true_expr: Box::new(child_expr(node, "trueExpression", index)),
             false_expr: Box::new(child_expr(node, "falseExpression", index)),
         },
+        NodeType::TupleExpression => ExpressionKind::Tuple {
+            elements: node
+                .attribute::<Vec<Option<Node>>>("components")
+                .unwrap_or_default()
+                .iter()
+                .map(|c| c.as_ref().map(|n| map_expression(n, index)))
+                .collect(),
+        },
+        NodeType::IndexRangeAccess => ExpressionKind::IndexRange {
+            base: Box::new(child_expr(node, "baseExpression", index)),
+            start: node
+                .attribute::<Node>("startExpression")
+                .map(|n| Box::new(map_expression(&n, index))),
+            end: node
+                .attribute::<Node>("endExpression")
+                .map(|n| Box::new(map_expression(&n, index))),
+        },
         _ => placeholder_expr(node, index).kind,
     };
     Expression { kind, span: span_of(node, index) }
@@ -766,6 +783,115 @@ mod tests {
         );
     }
 
+    fn count_expr(e: &Expression, calls: &mut usize, placeholders: &mut usize, resolved_members: &mut usize) {
+        match &e.kind {
+            ExpressionKind::Identifier { name, .. } if name.starts_with("/*") => *placeholders += 1,
+            ExpressionKind::MemberAccess { object, resolved, .. } => {
+                if resolved.is_some() {
+                    *resolved_members += 1;
+                }
+                count_expr(object, calls, placeholders, resolved_members);
+            }
+            ExpressionKind::FunctionCall { callee, arguments } => {
+                *calls += 1;
+                count_expr(callee, calls, placeholders, resolved_members);
+                for a in arguments {
+                    count_expr(a, calls, placeholders, resolved_members);
+                }
+            }
+            ExpressionKind::BinaryOp { left, right, .. } => {
+                count_expr(left, calls, placeholders, resolved_members);
+                count_expr(right, calls, placeholders, resolved_members);
+            }
+            ExpressionKind::UnaryOp { operand, .. } => count_expr(operand, calls, placeholders, resolved_members),
+            ExpressionKind::Assignment { target, value, .. } => {
+                count_expr(target, calls, placeholders, resolved_members);
+                count_expr(value, calls, placeholders, resolved_members);
+            }
+            ExpressionKind::IndexAccess { base, index } => {
+                count_expr(base, calls, placeholders, resolved_members);
+                if let Some(i) = index {
+                    count_expr(i, calls, placeholders, resolved_members);
+                }
+            }
+            ExpressionKind::Ternary { condition, true_expr, false_expr } => {
+                count_expr(condition, calls, placeholders, resolved_members);
+                count_expr(true_expr, calls, placeholders, resolved_members);
+                count_expr(false_expr, calls, placeholders, resolved_members);
+            }
+            ExpressionKind::TypeCast { expression, .. } => count_expr(expression, calls, placeholders, resolved_members),
+            ExpressionKind::New { arguments, .. } => {
+                for a in arguments {
+                    count_expr(a, calls, placeholders, resolved_members);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn count_stmt(s: &Statement, calls: &mut usize, placeholders: &mut usize, resolved_members: &mut usize) {
+        use StatementKind as K;
+        let exprs: Vec<&Expression> = match &s.kind {
+            K::If { condition, .. } | K::While { condition, .. } | K::DoWhile { condition, .. } => vec![condition],
+            K::Return { value: Some(v) } => vec![v],
+            K::ExpressionStmt { expression } => vec![expression],
+            K::VariableDeclaration { initial_value: Some(v), .. } => vec![v],
+            K::TryCatch { expression, .. } => vec![expression],
+            _ => vec![],
+        };
+        for e in exprs {
+            count_expr(e, calls, placeholders, resolved_members);
+        }
+        for child in stmt_children(&s.kind) {
+            count_stmt(child, calls, placeholders, resolved_members);
+        }
+        for arg in stmt_call_args(&s.kind) {
+            count_expr(arg, calls, placeholders, resolved_members);
+        }
+    }
+
+    fn stmt_children(k: &StatementKind) -> Vec<&Statement> {
+        use StatementKind as K;
+        match k {
+            K::Block { statements } | K::UncheckedBlock { statements } => statements.iter().collect(),
+            K::If { then_body, else_body, .. } => {
+                then_body.iter().chain(else_body.iter().flatten()).collect()
+            }
+            K::For { body, init, .. } => body.iter().chain(init.iter().map(|b| b.as_ref())).collect(),
+            K::While { body, .. } | K::DoWhile { body, .. } => body.iter().collect(),
+            _ => vec![],
+        }
+    }
+
+    fn stmt_call_args(k: &StatementKind) -> Vec<&Expression> {
+        use StatementKind as K;
+        match k {
+            K::Emit { arguments, .. } | K::Revert { arguments, .. } => arguments.iter().collect(),
+            _ => vec![],
+        }
+    }
+
+    #[test]
+    fn diagnostic_no_placeholders_and_all_cross_resolved() {
+        for fixture in ["cross", "statements"] {
+            let root =
+                Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../../tests/fixtures/solc/{fixture}"));
+            let project = SolcFrontend.parse_project(&root).expect("parse");
+            let (mut calls, mut placeholders, mut resolved_members) = (0, 0, 0);
+            for c in &project.contracts {
+                for f in &c.functions {
+                    for s in f.body.iter().flatten() {
+                        count_stmt(s, &mut calls, &mut placeholders, &mut resolved_members);
+                    }
+                }
+            }
+            println!(
+                "[{fixture}] calls={calls} placeholders={placeholders} resolved_members={resolved_members}"
+            );
+            assert_eq!(placeholders, 0, "fixture {fixture} produced placeholder expressions");
+        }
+    }
+
     #[test]
     fn cross_contract_call_carries_resolved() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/solc/cross");
@@ -802,5 +928,43 @@ mod tests {
             other => panic!("expected function call, got {other:?}"),
         };
         assert!(resolved.is_some(), "pool.supply() must carry a resolved DeclId");
+    }
+
+    fn return_value<'a>(f: &'a FunctionDef) -> &'a Expression {
+        f.body
+            .as_ref()
+            .expect("body")
+            .iter()
+            .find_map(|s| match &s.kind {
+                StatementKind::Return { value: Some(v) } => Some(v),
+                _ => None,
+            })
+            .expect("return statement")
+    }
+
+    #[test]
+    fn maps_tuple_and_index_range() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/solc/statements");
+        let project = SolcFrontend.parse_project(&root).expect("parse statements");
+        let stmts = project.contracts.iter().find(|c| c.name == "Stmts").expect("Stmts");
+
+        let split = stmts.functions.iter().find(|f| f.name == "split").expect("split");
+        match &return_value(split).kind {
+            ExpressionKind::Tuple { elements } => {
+                assert_eq!(elements.len(), 2, "(x, x) has 2 elements");
+                assert!(elements.iter().all(|e| e.is_some()), "no empty tuple slots");
+            }
+            other => panic!("expected Tuple, got {other:?}"),
+        }
+
+        let slice = stmts.functions.iter().find(|f| f.name == "slice").expect("slice");
+        match &return_value(slice).kind {
+            ExpressionKind::IndexRange { base, start, end } => {
+                assert!(matches!(base.kind, ExpressionKind::Identifier { .. }), "base is the array");
+                assert!(start.is_some(), "start present");
+                assert!(end.is_some(), "end present");
+            }
+            other => panic!("expected IndexRange, got {other:?}"),
+        }
     }
 }

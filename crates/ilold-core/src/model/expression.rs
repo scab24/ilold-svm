@@ -66,6 +66,14 @@ pub enum ExpressionKind {
         type_name: String,
         arguments: Vec<Expression>,
     },
+    Tuple {
+        elements: Vec<Option<Expression>>,
+    },
+    IndexRange {
+        base: Box<Expression>,
+        start: Option<Box<Expression>>,
+        end: Option<Box<Expression>>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

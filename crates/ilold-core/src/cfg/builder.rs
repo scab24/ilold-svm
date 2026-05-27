@@ -623,6 +623,20 @@ fn collect_calls(expr: &Expression, stmts: &mut Vec<CfgStatement>, from_modifier
             collect_calls(true_expr, stmts, from_modifier);
             collect_calls(false_expr, stmts, from_modifier);
         }
+        ExpressionKind::Tuple { elements } => {
+            for e in elements.iter().flatten() {
+                collect_calls(e, stmts, from_modifier);
+            }
+        }
+        ExpressionKind::IndexRange { base, start, end } => {
+            collect_calls(base, stmts, from_modifier);
+            if let Some(s) = start {
+                collect_calls(s, stmts, from_modifier);
+            }
+            if let Some(e) = end {
+                collect_calls(e, stmts, from_modifier);
+            }
+        }
         _ => {}
     }
 }
@@ -671,6 +685,18 @@ fn expr_to_string(expr: &Expression) -> String {
         ExpressionKind::New { type_name, arguments } => {
             let args: Vec<String> = arguments.iter().map(expr_to_string).collect();
             format!("new {type_name}({})", args.join(", "))
+        }
+        ExpressionKind::Tuple { elements } => {
+            let parts: Vec<String> = elements
+                .iter()
+                .map(|e| e.as_ref().map(expr_to_string).unwrap_or_default())
+                .collect();
+            format!("({})", parts.join(", "))
+        }
+        ExpressionKind::IndexRange { base, start, end } => {
+            let s = start.as_ref().map(|e| expr_to_string(e)).unwrap_or_default();
+            let e = end.as_ref().map(|e| expr_to_string(e)).unwrap_or_default();
+            format!("{}[{}:{}]", expr_to_string(base), s, e)
         }
     }
 }
