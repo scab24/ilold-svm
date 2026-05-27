@@ -11,7 +11,7 @@ use ilold_core::classify::entry_points::classify_function;
 use ilold_core::model::contract::{ContractDef, ContractKind};
 use ilold_core::model::function::Visibility;
 use ilold_core::model::project::Project;
-use ilold_core::parse::solar_frontend::SolarParser;
+use ilold_core::parse::solc_frontend::SolcFrontend;
 use ilold_core::parse::ProjectParser;
 use ilold_core::pathtree::config::PruningConfig;
 use ilold_core::pathtree::types::PathTree;
@@ -27,12 +27,9 @@ pub fn run(
     max_seq_depth: usize,
     verbose: bool,
 ) -> Result<()> {
-    let paths = crate::collect_sol_files(path)?;
-    if paths.is_empty() {
-        anyhow::bail!("No .sol files found at {}", path.display());
-    }
+    let paths = vec![crate::foundry_root(path)?];
 
-    let parser = SolarParser;
+    let parser = SolcFrontend;
     let mut project = parser
         .parse(&paths)
         .context(format!("Failed to parse {}", path.display()))?;

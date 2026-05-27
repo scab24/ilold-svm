@@ -24,7 +24,7 @@ async fn start_with_ws() -> (
     u16,
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
 ) {
-    let paths = vec![fixture("staking.sol")];
+    let paths = vec![fixture("staking")];
     let (_state, port) = ilold_web::start_server(paths, 0, 2).await.unwrap();
     let (ws, _) = connect_async(format!("ws://127.0.0.1:{port}/ws"))
         .await

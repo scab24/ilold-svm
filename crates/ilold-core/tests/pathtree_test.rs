@@ -87,7 +87,7 @@ fn test_path_annotations() {
 #[test]
 fn test_loop_unrolling() {
     let parser = SolarParser;
-    let project = parser.parse(&[fixture_path("uniswap_v2_pair.sol")]).unwrap();
+    let project = parser.parse(&[fixture_path("uniswap_v2_pair/src/uniswap_v2_pair.sol")]).unwrap();
     let contract = project.contracts.iter().find(|c| c.name == "UniswapV2Pair").unwrap();
     let sqrt_fn = contract.functions.iter().find(|f| f.name == "_sqrt").unwrap();
     let cfg = CfgBuilder::build(sqrt_fn, contract).unwrap();
@@ -112,7 +112,7 @@ fn test_loop_unrolling() {
 #[test]
 fn test_interface_function_no_paths() {
     let parser = SolarParser;
-    let project = parser.parse(&[fixture_path("staking.sol")]).unwrap();
+    let project = parser.parse(&[fixture_path("staking/src/staking.sol")]).unwrap();
     let ierc20 = project.contracts.iter().find(|c| c.name == "IERC20").unwrap();
     let transfer = ierc20.functions.iter().find(|f| f.name == "transfer").unwrap();
     let cfg = CfgBuilder::build(transfer, ierc20).unwrap();

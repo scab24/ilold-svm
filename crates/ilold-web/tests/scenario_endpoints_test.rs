@@ -22,7 +22,7 @@ fn fixture(name: &str) -> PathBuf {
 /// `scenario_commands_test.rs` — duplicated because integration test files
 /// cannot share helper modules without extra plumbing.
 async fn start() -> (reqwest::Client, u16) {
-    let paths = vec![fixture("staking.sol")];
+    let paths = vec![fixture("staking")];
     let (_state, port) = ilold_web::start_server(paths, 0, 2).await.unwrap();
     (reqwest::Client::new(), port)
 }
@@ -49,7 +49,7 @@ async fn cmd(
 }
 
 async fn start_with_staking() -> (reqwest::Client, u16) {
-    let paths = vec![fixture("staking.sol")];
+    let paths = vec![fixture("staking")];
     let (_state, port) = ilold_web::start_server(paths, 0, 2).await.unwrap();
     let client = reqwest::Client::new();
 

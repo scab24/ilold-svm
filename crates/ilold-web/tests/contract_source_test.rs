@@ -23,7 +23,7 @@ async fn start_with(fixture_name: &str) -> (reqwest::Client, u16) {
 
 #[tokio::test]
 async fn get_function_source_returns_source_for_deposit() {
-    let (client, port) = start_with("staking.sol").await;
+    let (client, port) = start_with("staking").await;
 
     let res = client
         .get(format!(
@@ -61,7 +61,7 @@ async fn get_function_source_returns_source_for_deposit() {
 
 #[tokio::test]
 async fn get_function_source_returns_404_for_missing_function() {
-    let (client, port) = start_with("staking.sol").await;
+    let (client, port) = start_with("staking").await;
 
     let res = client
         .get(format!(
@@ -83,7 +83,7 @@ async fn get_function_source_resolves_inherited_function() {
     // `Governor is TimelockController`; `schedule` is declared in the parent.
     // `resolve_function` must walk the inheritance chain so that asking for
     // Governor/schedule returns the parent's FunctionDef (with its span).
-    let (client, port) = start_with("governor.sol").await;
+    let (client, port) = start_with("governor").await;
 
     let res = client
         .get(format!(

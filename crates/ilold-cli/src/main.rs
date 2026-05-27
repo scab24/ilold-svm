@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use clap::Parser;
@@ -74,54 +74,42 @@ async fn main() -> Result<()> {
             context::run(&path, contract.as_deref(), function.as_deref(), sequence.as_deref(), list)
         }
         Commands::Serve { path, port, max_seq_depth } => {
-            let paths = collect_sol_files(&path)?;
-            if paths.is_empty() {
-                anyhow::bail!("No .sol files found at {}", path.display());
-            }
-            ilold_web::serve(paths, port, max_seq_depth).await
+            let root = foundry_root(&path)?;
+            ilold_web::serve(vec![root], port, max_seq_depth).await
         }
         Commands::Explore { path, port, max_seq_depth, attach } => {
             if attach.is_some() {
                 // --attach mode: no local analysis needed, connect to remote server
                 explore::run(Vec::new(), port, max_seq_depth, attach).await
             } else {
-                let paths = collect_sol_files(&path)?;
-                if paths.is_empty() {
-                    anyhow::bail!("No .sol files found at {}", path.display());
-                }
-                explore::run(paths, port, max_seq_depth, attach).await
+                let root = foundry_root(&path)?;
+                explore::run(vec![root], port, max_seq_depth, attach).await
             }
         }
     }
 }
 
-pub fn collect_sol_files(path: &PathBuf) -> Result<Vec<PathBuf>> {
-    if path.is_file() {
-        return Ok(vec![path.clone()]);
-    }
-    if path.is_dir() {
-        let mut files = Vec::new();
-        walk_sol_files(path, &mut files)?;
-        files.sort();
-        return Ok(files);
-    }
-    anyhow::bail!("Path does not exist: {}", path.display());
-}
+pub fn foundry_root(path: &Path) -> Result<PathBuf> {
+    let mut dir = if path.is_dir() {
+        path.to_path_buf()
+    } else if path.is_file() {
+        path.parent().map(Path::to_path_buf).unwrap_or_default()
+    } else {
+        anyhow::bail!("Path does not exist: {}", path.display());
+    };
 
-fn walk_sol_files(dir: &PathBuf, out: &mut Vec<PathBuf>) -> Result<()> {
-    const SKIP: &[&str] = &["out", "cache", "node_modules", "lib", "target", ".git", ".svelte-kit"];
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let p = entry.path();
-        if p.is_dir() {
-            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if name.starts_with('.') || SKIP.contains(&name) {
-                continue;
-            }
-            walk_sol_files(&p, out)?;
-        } else if p.extension().is_some_and(|ext| ext == "sol") {
-            out.push(p);
+    loop {
+        if dir.join("foundry.toml").is_file() {
+            return Ok(dir);
+        }
+        match dir.parent() {
+            Some(parent) => dir = parent.to_path_buf(),
+            None => break,
         }
     }
-    Ok(())
+
+    anyhow::bail!(
+        "Not a Foundry project: no foundry.toml found from {}. The Solidity backend requires a compilable Foundry project.",
+        path.display()
+    );
 }

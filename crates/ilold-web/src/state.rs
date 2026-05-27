@@ -12,7 +12,7 @@ use ilold_core::cfg::types::CfgGraph;
 use ilold_core::classify::entry_points::{classify_all, AccessLevel};
 use ilold_core::exploration::session::ExplorationSession;
 use ilold_core::model::project::Project;
-use ilold_core::parse::solar_frontend::SolarParser;
+use ilold_core::parse::solc_frontend::SolcFrontend;
 use ilold_core::parse::ProjectParser;
 use ilold_core::pathtree::config::PruningConfig;
 use ilold_core::pathtree::types::PathTree;
@@ -244,7 +244,7 @@ pub enum AnnotationStatus {
 
 impl AppState {
     pub fn from_paths(paths: &[PathBuf], max_seq_depth: usize, port: u16, contract_path: PathBuf) -> anyhow::Result<Self> {
-        let parser = SolarParser;
+        let parser = SolcFrontend;
         let mut project = parser.parse(paths)?;
         project.rebuild_index();
 

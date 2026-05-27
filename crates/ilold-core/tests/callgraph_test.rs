@@ -18,7 +18,7 @@ fn fixture_path(name: &str) -> PathBuf {
 #[test]
 fn test_staking_call_graph() {
     let parser = SolarParser;
-    let mut project = parser.parse(&[fixture_path("staking.sol")]).unwrap();
+    let mut project = parser.parse(&[fixture_path("staking/src/staking.sol")]).unwrap();
     project.rebuild_index();
 
     let staking = project.contracts.iter().find(|c| c.name == "Staking").unwrap();
