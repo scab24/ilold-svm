@@ -112,4 +112,15 @@ fn test_solc_cross_contract_resolved() {
         Visibility::Internal,
         "resolved node must carry the real visibility (internal), not the External default"
     );
+
+    let cast_edge = cg.edge_indices().any(|e| {
+        let (src, dst) = cg.edge_endpoints(e).unwrap();
+        cg[src].function == "depositCast"
+            && cg[dst].contract == "IPool"
+            && cg[dst].function == "supply"
+    });
+    assert!(
+        cast_edge,
+        "IPool(addr).supply() casting must produce a depositCast → IPool::supply edge"
+    );
 }

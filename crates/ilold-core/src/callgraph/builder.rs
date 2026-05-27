@@ -59,7 +59,12 @@ pub fn build_call_graph(project: &Project, contract: &ContractDef) -> CallGraph 
                         }
                     }
                     CfgStatement::ExternalCall { target, function, resolved, .. } => {
-                        if !is_type_cast(function) && !is_type_cast(target) {
+                        // The is_type_cast heuristic drops `uint256(x)`-style
+                        // non-calls, but a resolved id means it's a real call
+                        // (e.g. `IPool(addr).supply()`), so only filter unresolved ones.
+                        let unresolved_cast = resolved.is_none()
+                            && (is_type_cast(function) || is_type_cast(target));
+                        if !unresolved_cast {
                             let callee_idx = resolve_external(
                                 target,
                                 function,
