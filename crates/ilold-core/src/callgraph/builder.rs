@@ -5,6 +5,7 @@ use petgraph::stable_graph::NodeIndex;
 use crate::cfg::builder::CfgBuilder;
 use crate::cfg::types::CfgStatement;
 use crate::model::contract::ContractDef;
+use crate::model::decl_id::DeclId;
 use crate::model::function::{Mutability, Visibility};
 use crate::model::project::Project;
 use crate::util::is_type_cast;
@@ -57,11 +58,13 @@ pub fn build_call_graph(project: &Project, contract: &ContractDef) -> CallGraph 
                             add_or_increment_edge(&mut graph, caller_idx, callee_idx);
                         }
                     }
-                    CfgStatement::ExternalCall { target, function, .. } => {
+                    CfgStatement::ExternalCall { target, function, resolved, .. } => {
                         if !is_type_cast(function) && !is_type_cast(target) {
                             let callee_idx = resolve_external(
                                 target,
                                 function,
+                                *resolved,
+                                project,
                                 &mut graph,
                                 &mut node_index,
                             );
@@ -132,16 +135,23 @@ fn resolve_internal(
 fn resolve_external(
     target: &str,
     function_name: &str,
+    resolved: Option<DeclId>,
+    project: &Project,
     graph: &mut CallGraph,
     index: &mut HashMap<String, NodeIndex>,
 ) -> NodeIndex {
-    let key = format!("{target}::{function_name}");
+    let (contract, function) = resolved
+        .and_then(|id| project.decl_table.lookup(id))
+        .map(|t| (t.contract.clone(), t.function.clone()))
+        .unwrap_or_else(|| (target.to_string(), function_name.to_string()));
+
+    let key = format!("{contract}::{function}");
     if let Some(&idx) = index.get(&key) {
         return idx;
     }
     let idx = graph.add_node(CallNode {
-        contract: target.to_string(),
-        function: function_name.to_string(),
+        contract,
+        function,
         visibility: Visibility::External,
         mutability: Mutability::NonPayable,
         is_external: true,

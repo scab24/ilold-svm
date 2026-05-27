@@ -55,6 +55,7 @@ impl ProjectParser for SolarParser {
             source_files,
             contracts: all_contracts,
             contract_index: Default::default(),
+            decl_table: Default::default(),
         };
         project.rebuild_index();
         Ok(project)

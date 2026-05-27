@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::common::StateVar;
 use super::contract::{ContractDef, ContractKind};
+use super::decl_id::DeclTable;
 use super::function::{FunctionDef, Visibility};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -13,6 +14,8 @@ pub struct Project {
     pub contracts: Vec<ContractDef>,
     #[serde(skip)]
     pub contract_index: HashMap<String, usize>,
+    #[serde(skip)]
+    pub decl_table: DeclTable,
 }
 
 impl Project {

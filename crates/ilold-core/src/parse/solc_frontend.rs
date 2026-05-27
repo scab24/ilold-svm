@@ -7,7 +7,7 @@ use foundry_compilers_artifacts_solc::Settings;
 
 use crate::model::common::*;
 use crate::model::contract::*;
-use crate::model::decl_id::DeclId;
+use crate::model::decl_id::{DeclId, DeclTable};
 use crate::model::expression::*;
 use crate::model::function::*;
 use crate::model::modifier::*;
@@ -66,6 +66,7 @@ impl SolcFrontend {
 
         let mut source_files = Vec::new();
         let mut contracts = Vec::new();
+        let mut decl_table = DeclTable::default();
 
         let aggregated = output.into_output();
         for (path, source_file) in aggregated.sources.sources() {
@@ -76,7 +77,7 @@ impl SolcFrontend {
 
             for node in &ast.nodes {
                 if node.node_type == NodeType::ContractDefinition {
-                    if let Some(contract) = map_contract(node, &index) {
+                    if let Some(contract) = map_contract(node, &index, &mut decl_table) {
                         contracts.push(contract);
                     }
                 }
@@ -92,6 +93,7 @@ impl SolcFrontend {
             source_files,
             contracts,
             contract_index: Default::default(),
+            decl_table,
         };
         project.rebuild_index();
         Ok(project)
@@ -123,7 +125,7 @@ fn project_root(paths: &[PathBuf]) -> Result<PathBuf, ParseError> {
     Ok(start)
 }
 
-fn map_contract(node: &Node, index: &LineIndex) -> Option<ContractDef> {
+fn map_contract(node: &Node, index: &LineIndex, decl_table: &mut DeclTable) -> Option<ContractDef> {
     let name: String = node.attribute("name")?;
 
     let mut functions = Vec::new();
@@ -136,7 +138,13 @@ fn map_contract(node: &Node, index: &LineIndex) -> Option<ContractDef> {
 
     for child in &node.nodes {
         match child.node_type {
-            NodeType::FunctionDefinition => functions.push(map_function(child, index)),
+            NodeType::FunctionDefinition => {
+                let func = map_function(child, index);
+                if let Some(id) = child.id {
+                    decl_table.insert(DeclId(id as isize), name.clone(), func.name.clone());
+                }
+                functions.push(func);
+            }
             NodeType::ModifierDefinition => modifiers.push(map_modifier(child, index)),
             NodeType::VariableDeclaration => {
                 if child.attribute::<bool>("stateVariable").unwrap_or(false) {

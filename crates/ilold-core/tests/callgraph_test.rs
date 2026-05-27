@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use ilold_core::callgraph::builder::build_call_graph;
 use ilold_core::callgraph::types::CallKind;
 use ilold_core::parse::solar_frontend::SolarParser;
+use ilold_core::parse::solc_frontend::SolcFrontend;
 use ilold_core::parse::ProjectParser;
 
 fn fixture_path(name: &str) -> PathBuf {
@@ -83,4 +84,21 @@ fn test_simple_storage_no_calls() {
 
     // SimpleStorage has no function calls — graph should have 0 edges
     assert_eq!(cg.edge_count(), 0, "SimpleStorage should have no call edges");
+}
+
+#[test]
+fn test_solc_cross_contract_resolved() {
+    let project = SolcFrontend
+        .parse_project(&fixture_path("solc/cross"))
+        .expect("parse cross fixture");
+    let vault = project.contracts.iter().find(|c| c.name == "Vault").expect("Vault");
+    let cg = build_call_graph(&project, vault);
+
+    let resolved_to_ipool = cg
+        .node_indices()
+        .any(|i| cg[i].contract == "IPool" && cg[i].function == "supply");
+    let placeholder = cg.node_indices().any(|i| cg[i].contract == "pool");
+
+    assert!(resolved_to_ipool, "pool.supply() must resolve to IPool::supply");
+    assert!(!placeholder, "no 'pool' placeholder node should remain");
 }
