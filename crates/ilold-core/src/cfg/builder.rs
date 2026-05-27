@@ -170,6 +170,11 @@ impl CfgBuilder {
             StatementKind::VariableDeclaration { name, initial_value, .. } => {
                 if let Some(val) = initial_value {
                     let from_modifier = self.current_modifier.clone();
+                    let mut call_stmts = Vec::new();
+                    collect_calls(val, &mut call_stmts, &from_modifier);
+                    for s in call_stmts {
+                        self.add_stmt_to_current(s);
+                    }
                     self.add_stmt_to_current(CfgStatement::Assignment {
                         target: name.clone(),
                         value: expr_to_string(val),
