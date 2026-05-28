@@ -62,14 +62,15 @@ pub fn run(
         .filter(|c| contract_filter.map_or(true, |f| c.name == f))
         .collect();
     ordered.sort_by(|a, b| {
-        contract_folder(&project, a)
-            .cmp(&contract_folder(&project, b))
+        project
+            .contract_folder(a)
+            .cmp(&project.contract_folder(b))
             .then(a.name.cmp(&b.name))
     });
 
     let mut current_folder: Option<String> = None;
     for contract in ordered {
-        let folder = contract_folder(&project, contract);
+        let folder = project.contract_folder(contract);
         if current_folder.as_deref() != Some(&folder) {
             let label = if folder.is_empty() { "(root)" } else { &folder };
             println!("\n{}", format!("── {label} ──").bold());
@@ -81,15 +82,6 @@ pub fn run(
     Ok(())
 }
 
-fn contract_folder(project: &Project, c: &ContractDef) -> String {
-    let path = project
-        .source_files
-        .get(c.span.file_index)
-        .map(|s| s.path.as_str())
-        .unwrap_or("");
-    let rel = path.rsplit_once("/src/").map(|(_, r)| r).unwrap_or(path);
-    rel.rsplit_once('/').map(|(dir, _)| dir.to_string()).unwrap_or_default()
-}
 
 fn print_contract(
     project: &Project,

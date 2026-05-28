@@ -107,6 +107,18 @@ pub async fn run(paths: Vec<PathBuf>, port: u16, max_seq_depth: usize, attach: O
     ]);
     println!("{}\n", banner);
 
+    let mut by_folder: std::collections::BTreeMap<String, Vec<&str>> = std::collections::BTreeMap::new();
+    for c in &state.project.contracts {
+        by_folder.entry(state.project.contract_folder(c)).or_default().push(c.name.as_str());
+    }
+    println!("{}", "Contracts:".bold());
+    for (folder, mut names) in by_folder {
+        names.sort();
+        let label = if folder.is_empty() { "(root)" } else { folder.as_str() };
+        println!("  {} {}", format!("{label}/").dimmed(), names.join(", "));
+    }
+    println!();
+
     let handle = tokio::runtime::Handle::current();
     let state_for_thread = state.clone();
     let base_url = format!("http://127.0.0.1:{}", actual_port);
