@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use ilold_core::parse::solar_frontend::SolarParser;
+use ilold_core::parse::solc_frontend::SolcFrontend;
 use ilold_core::parse::ProjectParser;
 use ilold_core::slicing::{
     build_slice_result, SliceDirection, SliceEntry, SliceResult, StatementOrigin,
@@ -20,7 +20,7 @@ fn slice(
     variable: &str,
     direction: SliceDirection,
 ) -> SliceResult {
-    let parser = SolarParser;
+    let parser = SolcFrontend;
     let mut project = parser.parse(&[fixture_path("staking/src/staking.sol")]).unwrap();
     project.rebuild_index();
 

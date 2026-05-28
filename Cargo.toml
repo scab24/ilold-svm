@@ -8,8 +8,6 @@ members = [
 
 # Shared dependency versions — referenced via { workspace = true } in member crates
 [workspace.dependencies]
-# Pinned: no API stability guarantee between patch versions
-solar = { version = "=0.1.8", package = "solar-compiler", default-features = false }
 # svm-solc: auto-download the project's exact solc via svm
 foundry-compilers = { version = "0.21", features = ["svm-solc"] }
 foundry-compilers-artifacts-solc = "0.21"

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use ilold_core::cfg::builder::CfgBuilder;
-use ilold_core::parse::solar_frontend::SolarParser;
+use ilold_core::parse::solc_frontend::SolcFrontend;
 use ilold_core::parse::ProjectParser;
 use ilold_core::pathtree::config::PruningConfig;
 use ilold_core::pathtree::types::TerminalKind;
@@ -18,8 +18,8 @@ fn fixture_path(name: &str) -> PathBuf {
 // REQ-PT-5: set() must produce exactly 2 paths (1 happy + 1 revert)
 #[test]
 fn test_set_produces_2_paths() {
-    let parser = SolarParser;
-    let project = parser.parse(&[fixture_path("simple_storage.sol")]).unwrap();
+    let parser = SolcFrontend;
+    let project = parser.parse(&[fixture_path("simple_storage/src/simple_storage.sol")]).unwrap();
     let contract = &project.contracts[0];
     let set_fn = contract.functions.iter().find(|f| f.name == "set").unwrap();
     let cfg = CfgBuilder::build(set_fn, contract).unwrap();
@@ -40,8 +40,8 @@ fn test_set_produces_2_paths() {
 // REQ-PT-6: transferFrom() must produce exactly 5 paths (1 happy + 4 revert)
 #[test]
 fn test_transfer_from_produces_5_paths() {
-    let parser = SolarParser;
-    let project = parser.parse(&[fixture_path("erc20.sol")]).unwrap();
+    let parser = SolcFrontend;
+    let project = parser.parse(&[fixture_path("erc20/src/erc20.sol")]).unwrap();
     let contract = &project.contracts[0];
     let func = contract.functions.iter().find(|f| f.name == "transferFrom").unwrap();
     let cfg = CfgBuilder::build(func, contract).unwrap();
@@ -62,8 +62,8 @@ fn test_transfer_from_produces_5_paths() {
 // REQ-PT-4: paths should have annotations (external calls, state writes, events)
 #[test]
 fn test_path_annotations() {
-    let parser = SolarParser;
-    let project = parser.parse(&[fixture_path("simple_storage.sol")]).unwrap();
+    let parser = SolcFrontend;
+    let project = parser.parse(&[fixture_path("simple_storage/src/simple_storage.sol")]).unwrap();
     let contract = &project.contracts[0];
     let set_fn = contract.functions.iter().find(|f| f.name == "set").unwrap();
     let cfg = CfgBuilder::build(set_fn, contract).unwrap();
@@ -86,7 +86,7 @@ fn test_path_annotations() {
 // REQ-PT-8: loops should be unrolled max 3 times
 #[test]
 fn test_loop_unrolling() {
-    let parser = SolarParser;
+    let parser = SolcFrontend;
     let project = parser.parse(&[fixture_path("uniswap_v2_pair/src/uniswap_v2_pair.sol")]).unwrap();
     let contract = project.contracts.iter().find(|c| c.name == "UniswapV2Pair").unwrap();
     let sqrt_fn = contract.functions.iter().find(|f| f.name == "_sqrt").unwrap();
@@ -111,7 +111,7 @@ fn test_loop_unrolling() {
 // Interface functions should produce 0 paths
 #[test]
 fn test_interface_function_no_paths() {
-    let parser = SolarParser;
+    let parser = SolcFrontend;
     let project = parser.parse(&[fixture_path("staking/src/staking.sol")]).unwrap();
     let ierc20 = project.contracts.iter().find(|c| c.name == "IERC20").unwrap();
     let transfer = ierc20.functions.iter().find(|f| f.name == "transfer").unwrap();

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use ilold_core::cfg::builder::CfgBuilder;
 use ilold_core::cfg::types::BlockKind;
 use ilold_core::model::function::{FunctionKind, Visibility, Mutability};
-use ilold_core::parse::solar_frontend::SolarParser;
+use ilold_core::parse::solc_frontend::SolcFrontend;
 use ilold_core::parse::ProjectParser;
 
 fn fixture_path(name: &str) -> PathBuf {
@@ -18,8 +18,8 @@ fn fixture_path(name: &str) -> PathBuf {
 
 #[test]
 fn test_parse_simple_storage() {
-    let parser = SolarParser;
-    let project = parser.parse(&[fixture_path("simple_storage.sol")]).unwrap();
+    let parser = SolcFrontend;
+    let project = parser.parse(&[fixture_path("simple_storage/src/simple_storage.sol")]).unwrap();
 
     // Should have 1 contract
     assert_eq!(project.contracts.len(), 1);
@@ -54,8 +54,8 @@ fn test_parse_simple_storage() {
 
 #[test]
 fn test_cfg_simple_get() {
-    let parser = SolarParser;
-    let project = parser.parse(&[fixture_path("simple_storage.sol")]).unwrap();
+    let parser = SolcFrontend;
+    let project = parser.parse(&[fixture_path("simple_storage/src/simple_storage.sol")]).unwrap();
     let contract = &project.contracts[0];
     let get_fn = contract.functions.iter().find(|f| f.name == "get").unwrap();
 
@@ -74,8 +74,8 @@ fn test_cfg_simple_get() {
 
 #[test]
 fn test_cfg_set_with_require() {
-    let parser = SolarParser;
-    let project = parser.parse(&[fixture_path("simple_storage.sol")]).unwrap();
+    let parser = SolcFrontend;
+    let project = parser.parse(&[fixture_path("simple_storage/src/simple_storage.sol")]).unwrap();
     let contract = &project.contracts[0];
     let set_fn = contract.functions.iter().find(|f| f.name == "set").unwrap();
 
@@ -102,7 +102,7 @@ fn test_cfg_set_with_require() {
 
 #[test]
 fn test_parse_file_not_found() {
-    let parser = SolarParser;
+    let parser = SolcFrontend;
     let result = parser.parse(&[PathBuf::from("nonexistent.sol")]);
     assert!(result.is_err());
 }

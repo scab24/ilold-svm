@@ -3,7 +3,6 @@ use std::path::PathBuf;
 use ilold_core::callgraph::builder::build_call_graph;
 use ilold_core::callgraph::types::CallKind;
 use ilold_core::model::function::Visibility;
-use ilold_core::parse::solar_frontend::SolarParser;
 use ilold_core::parse::solc_frontend::SolcFrontend;
 use ilold_core::parse::ProjectParser;
 
@@ -17,7 +16,7 @@ fn fixture_path(name: &str) -> PathBuf {
 
 #[test]
 fn test_staking_call_graph() {
-    let parser = SolarParser;
+    let parser = SolcFrontend;
     let mut project = parser.parse(&[fixture_path("staking/src/staking.sol")]).unwrap();
     project.rebuild_index();
 
@@ -76,8 +75,8 @@ fn test_staking_call_graph() {
 
 #[test]
 fn test_simple_storage_no_calls() {
-    let parser = SolarParser;
-    let mut project = parser.parse(&[fixture_path("simple_storage.sol")]).unwrap();
+    let parser = SolcFrontend;
+    let mut project = parser.parse(&[fixture_path("simple_storage/src/simple_storage.sol")]).unwrap();
     project.rebuild_index();
 
     let contract = &project.contracts[0];

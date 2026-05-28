@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use ilold_core::cfg::builder::CfgBuilder;
-use ilold_core::parse::solar_frontend::SolarParser;
+use ilold_core::parse::solc_frontend::SolcFrontend;
 use ilold_core::parse::ProjectParser;
 use ilold_core::pathtree::config::PruningConfig;
 use ilold_core::pathtree::walker::build_path_tree;
@@ -16,7 +16,7 @@ fn fixture_path(name: &str) -> PathBuf {
 }
 
 fn build_staking_path_trees() -> (ilold_core::model::project::Project, Vec<ilold_core::pathtree::types::PathTree>) {
-    let parser = SolarParser;
+    let parser = SolcFrontend;
     let mut project = parser.parse(&[fixture_path("staking/src/staking.sol")]).unwrap();
     project.rebuild_index();
 
