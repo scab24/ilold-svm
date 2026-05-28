@@ -11,13 +11,13 @@ The session is the central abstraction. Every analysis command operates either o
 ## Pipeline
 
 ```
-.sol files
+Foundry project
   |
   v
-Parser (solar-compiler)
+Parser (solc via foundry-compilers)
   |
   v
-Model (contracts, functions, modifiers, state variables)
+Model (contracts, functions, modifiers, state variables, resolved cross-contract calls)
   |
   v
 CFG (control flow graph per function)
