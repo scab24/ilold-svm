@@ -49,14 +49,22 @@
 
   onDestroy(() => clearPaletteCommands());
 
-  let contracts: any[] = $state([]);
-  let interfaces: any[] = $state([]);
+  let groups: { folder: string; contracts: MapContract[] }[] = $state([]);
+  let interfaces: MapContract[] = $state([]);
 
   $effect(() => {
-    if (projectMap) {
-      contracts = projectMap.contracts.filter(c => c.kind !== 'Interface');
-      interfaces = projectMap.contracts.filter(c => c.kind === 'Interface');
+    if (!projectMap) return;
+    interfaces = projectMap.contracts.filter(c => c.kind === 'Interface');
+    const byFolder = new Map<string, MapContract[]>();
+    for (const c of projectMap.contracts) {
+      if (c.kind === 'Interface') continue;
+      const f = c.folder || '(root)';
+      if (!byFolder.has(f)) byFolder.set(f, []);
+      byFolder.get(f)!.push(c);
     }
+    groups = [...byFolder.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([folder, cs]) => ({ folder, contracts: cs.sort((x, y) => x.name.localeCompare(y.name)) }));
   });
 
   function mutColorClass(m: string): string {
@@ -83,8 +91,10 @@
     <div class="p-6 text-text-muted">Analyzing...</div>
   {:else}
     <div class="flex-1 overflow-y-auto p-6">
+      {#each groups as group}
+      <h2 class="text-xs text-text-muted uppercase tracking-wide mt-5 mb-2 font-semibold">{group.folder}</h2>
       <div class="grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] gap-4">
-        {#each contracts as contract}
+        {#each group.contracts as contract}
           <div class="bg-hover border border-border-subtle rounded-[10px] overflow-hidden">
             <div class="px-3.5 pt-3 pb-2 border-b border-border-subtle">
               <span class="text-[10px] text-text-muted uppercase tracking-wide">{contract.kind.toLowerCase()}</span>
@@ -140,6 +150,7 @@
           </div>
         {/each}
       </div>
+      {/each}
 
       {#if interfaces.length > 0}
         <div class="mt-6">
