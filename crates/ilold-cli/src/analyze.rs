@@ -56,14 +56,39 @@ pub fn run(
     }
     analyze_project(&project, &mut all_analyses);
 
-    for contract in &project.contracts {
-        if let Some(filter) = contract_filter {
-            if contract.name != filter { continue; }
+    let mut ordered: Vec<&ContractDef> = project
+        .contracts
+        .iter()
+        .filter(|c| contract_filter.map_or(true, |f| c.name == f))
+        .collect();
+    ordered.sort_by(|a, b| {
+        contract_folder(&project, a)
+            .cmp(&contract_folder(&project, b))
+            .then(a.name.cmp(&b.name))
+    });
+
+    let mut current_folder: Option<String> = None;
+    for contract in ordered {
+        let folder = contract_folder(&project, contract);
+        if current_folder.as_deref() != Some(&folder) {
+            let label = if folder.is_empty() { "(root)" } else { &folder };
+            println!("\n{}", format!("── {label} ──").bold());
+            current_folder = Some(folder);
         }
         print_contract(&project, contract, max_seq_depth, verbose, &all_analyses);
     }
 
     Ok(())
+}
+
+fn contract_folder(project: &Project, c: &ContractDef) -> String {
+    let path = project
+        .source_files
+        .get(c.span.file_index)
+        .map(|s| s.path.as_str())
+        .unwrap_or("");
+    let rel = path.rsplit_once("/src/").map(|(_, r)| r).unwrap_or(path);
+    rel.rsplit_once('/').map(|(dir, _)| dir.to_string()).unwrap_or_default()
 }
 
 fn print_contract(
