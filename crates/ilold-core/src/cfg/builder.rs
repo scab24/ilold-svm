@@ -170,6 +170,11 @@ impl CfgBuilder {
             StatementKind::VariableDeclaration { name, initial_value, .. } => {
                 if let Some(val) = initial_value {
                     let from_modifier = self.current_modifier.clone();
+                    let mut call_stmts = Vec::new();
+                    collect_calls(val, &mut call_stmts, &from_modifier);
+                    for s in call_stmts {
+                        self.add_stmt_to_current(s);
+                    }
                     self.add_stmt_to_current(CfgStatement::Assignment {
                         target: name.clone(),
                         value: expr_to_string(val),
@@ -425,7 +430,7 @@ impl CfgBuilder {
     fn process_expression_stmt(&mut self, expr: &Expression) {
         // Check if this is a require/assert call
         if let ExpressionKind::FunctionCall { callee, arguments } = &expr.kind {
-            if let ExpressionKind::Identifier { name } = &callee.kind {
+            if let ExpressionKind::Identifier { name, .. } = &callee.kind {
                 match name.as_str() {
                     "require" => {
                         self.process_require(arguments);
@@ -548,7 +553,7 @@ fn collect_calls(expr: &Expression, stmts: &mut Vec<CfgStatement>, from_modifier
             match &callee.kind {
                 // `uint32(x)` etc. — type conversion, not a call.
                 ExpressionKind::TypeMeta { .. } => {}
-                ExpressionKind::Identifier { name } => {
+                ExpressionKind::Identifier { name, .. } => {
                     if !crate::util::is_type_cast(name) {
                         stmts.push(CfgStatement::InternalCall {
                             function: name.clone(),
@@ -557,8 +562,8 @@ fn collect_calls(expr: &Expression, stmts: &mut Vec<CfgStatement>, from_modifier
                         });
                     }
                 }
-                ExpressionKind::MemberAccess { object, member } => {
-                    if let ExpressionKind::Identifier { name } = &object.kind {
+                ExpressionKind::MemberAccess { object, member, resolved } => {
+                    if let ExpressionKind::Identifier { name, .. } = &object.kind {
                         if name == "this" || name == "super" {
                             stmts.push(CfgStatement::InternalCall {
                                 function: member.clone(),
@@ -571,6 +576,7 @@ fn collect_calls(expr: &Expression, stmts: &mut Vec<CfgStatement>, from_modifier
                                 function: member.clone(),
                                 span: None,
                                 from_modifier: from_modifier.clone(),
+                                resolved: *resolved,
                             });
                         }
                     } else {
@@ -579,6 +585,7 @@ fn collect_calls(expr: &Expression, stmts: &mut Vec<CfgStatement>, from_modifier
                             function: member.clone(),
                             span: None,
                             from_modifier: from_modifier.clone(),
+                            resolved: *resolved,
                         });
                     }
                 }
@@ -621,15 +628,29 @@ fn collect_calls(expr: &Expression, stmts: &mut Vec<CfgStatement>, from_modifier
             collect_calls(true_expr, stmts, from_modifier);
             collect_calls(false_expr, stmts, from_modifier);
         }
+        ExpressionKind::Tuple { elements } => {
+            for e in elements.iter().flatten() {
+                collect_calls(e, stmts, from_modifier);
+            }
+        }
+        ExpressionKind::IndexRange { base, start, end } => {
+            collect_calls(base, stmts, from_modifier);
+            if let Some(s) = start {
+                collect_calls(s, stmts, from_modifier);
+            }
+            if let Some(e) = end {
+                collect_calls(e, stmts, from_modifier);
+            }
+        }
         _ => {}
     }
 }
 
 fn expr_to_string(expr: &Expression) -> String {
     match &expr.kind {
-        ExpressionKind::Identifier { name } => name.clone(),
+        ExpressionKind::Identifier { name, .. } => name.clone(),
         ExpressionKind::Literal { value, .. } => value.clone(),
-        ExpressionKind::MemberAccess { object, member } => {
+        ExpressionKind::MemberAccess { object, member, .. } => {
             format!("{}.{}", expr_to_string(object), member)
         }
         ExpressionKind::FunctionCall { callee, arguments } => {
@@ -669,6 +690,18 @@ fn expr_to_string(expr: &Expression) -> String {
         ExpressionKind::New { type_name, arguments } => {
             let args: Vec<String> = arguments.iter().map(expr_to_string).collect();
             format!("new {type_name}({})", args.join(", "))
+        }
+        ExpressionKind::Tuple { elements } => {
+            let parts: Vec<String> = elements
+                .iter()
+                .map(|e| e.as_ref().map(expr_to_string).unwrap_or_default())
+                .collect();
+            format!("({})", parts.join(", "))
+        }
+        ExpressionKind::IndexRange { base, start, end } => {
+            let s = start.as_ref().map(|e| expr_to_string(e)).unwrap_or_default();
+            let e = end.as_ref().map(|e| expr_to_string(e)).unwrap_or_default();
+            format!("{}[{}:{}]", expr_to_string(base), s, e)
         }
     }
 }

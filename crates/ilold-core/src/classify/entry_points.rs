@@ -157,7 +157,7 @@ fn check_statement_for_access(stmt: &Statement) -> Option<String> {
 fn is_require_with_sender_comparison(expr: &Expression) -> bool {
     if let ExpressionKind::FunctionCall { callee, arguments } = &expr.kind {
         let is_require = matches!(&callee.kind,
-            ExpressionKind::Identifier { name } if name == "require" || name == "assert"
+            ExpressionKind::Identifier { name, .. } if name == "require" || name == "assert"
         );
         if is_require {
             return arguments
@@ -193,9 +193,9 @@ fn expr_is_sender_comparison(expr: &Expression) -> bool {
 
 /// Returns true only for the exact expression `msg.sender`
 fn expr_is_msg_sender(expr: &Expression) -> bool {
-    if let ExpressionKind::MemberAccess { object, member } = &expr.kind {
+    if let ExpressionKind::MemberAccess { object, member, .. } = &expr.kind {
         if member == "sender" {
-            if let ExpressionKind::Identifier { name } = &object.kind {
+            if let ExpressionKind::Identifier { name, .. } = &object.kind {
                 return name == "msg";
             }
         }
@@ -247,10 +247,11 @@ mod tests {
         Expression {
             kind: ExpressionKind::MemberAccess {
                 object: Box::new(Expression {
-                    kind: ExpressionKind::Identifier { name: "msg".into() },
+                    kind: ExpressionKind::Identifier { name: "msg".into(), resolved: None },
                     span: span(),
                 }),
                 member: "sender".into(),
+                resolved: None,
             },
             span: span(),
         }
@@ -258,7 +259,7 @@ mod tests {
 
     fn owner_expr() -> Expression {
         Expression {
-            kind: ExpressionKind::Identifier { name: "owner".into() },
+            kind: ExpressionKind::Identifier { name: "owner".into(), resolved: None },
             span: span(),
         }
     }
@@ -269,7 +270,7 @@ mod tests {
                 expression: Expression {
                     kind: ExpressionKind::FunctionCall {
                         callee: Box::new(Expression {
-                            kind: ExpressionKind::Identifier { name: "require".into() },
+                            kind: ExpressionKind::Identifier { name: "require".into(), resolved: None },
                             span: span(),
                         }),
                         arguments: vec![
@@ -375,10 +376,11 @@ mod tests {
         let not_msg = Expression {
             kind: ExpressionKind::MemberAccess {
                 object: Box::new(Expression {
-                    kind: ExpressionKind::Identifier { name: "tx".into() },
+                    kind: ExpressionKind::Identifier { name: "tx".into(), resolved: None },
                     span: span(),
                 }),
                 member: "sender".into(),
+                resolved: None,
             },
             span: span(),
         };

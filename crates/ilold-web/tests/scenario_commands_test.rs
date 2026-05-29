@@ -18,7 +18,7 @@ fn fixture(name: &str) -> PathBuf {
 }
 
 async fn start() -> (reqwest::Client, u16) {
-    let paths = vec![fixture("staking.sol")];
+    let paths = vec![fixture("staking")];
     let (_state, port) = ilold_web::start_server(paths, 0, 2).await.unwrap();
     (reqwest::Client::new(), port)
 }

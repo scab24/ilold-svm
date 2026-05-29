@@ -37,7 +37,7 @@ fn flatten_flow_tree(node: &serde_json::Value, out: &mut Vec<FlowEvent>) {
 
 #[tokio::test]
 async fn vars_endpoint_returns_state_variables() {
-    let paths = vec![fixture("staking.sol")];
+    let paths = vec![fixture("staking")];
     let (_, port) = ilold_web::start_server(paths, 0, 2).await.unwrap();
 
     let client = reqwest::Client::new();
@@ -66,7 +66,7 @@ async fn vars_endpoint_returns_state_variables() {
 
 #[tokio::test]
 async fn info_endpoint_returns_narrative_with_tree_data() {
-    let paths = vec![fixture("staking.sol")];
+    let paths = vec![fixture("staking")];
     let (_, port) = ilold_web::start_server(paths, 0, 2).await.unwrap();
 
     let client = reqwest::Client::new();
@@ -92,7 +92,7 @@ async fn info_endpoint_returns_narrative_with_tree_data() {
 
 #[tokio::test]
 async fn sequence_endpoint_with_two_steps() {
-    let paths = vec![fixture("staking.sol")];
+    let paths = vec![fixture("staking")];
     let (_, port) = ilold_web::start_server(paths, 0, 2).await.unwrap();
 
     let client = reqwest::Client::new();
@@ -118,7 +118,7 @@ async fn sequence_endpoint_with_two_steps() {
 
 #[tokio::test]
 async fn sequence_with_one_step_returns_error() {
-    let paths = vec![fixture("staking.sol")];
+    let paths = vec![fixture("staking")];
     let (_, port) = ilold_web::start_server(paths, 0, 2).await.unwrap();
 
     let client = reqwest::Client::new();
@@ -138,7 +138,7 @@ async fn sequence_with_one_step_returns_error() {
 
 #[tokio::test]
 async fn full_explore_workflow() {
-    let paths = vec![fixture("staking.sol")];
+    let paths = vec![fixture("staking")];
     let (_, port) = ilold_web::start_server(paths, 0, 2).await.unwrap();
 
     let client = reqwest::Client::new();
@@ -199,7 +199,7 @@ async fn full_explore_workflow() {
 
 #[tokio::test]
 async fn trace_swap_shows_external_call_before_update_writes() {
-    let paths = vec![fixture("uniswap_v2_pair.sol")];
+    let paths = vec![fixture("uniswap_v2_pair")];
     let (_, port) = ilold_web::start_server(paths, 0, 2).await.unwrap();
 
     let client = reqwest::Client::new();
@@ -257,7 +257,7 @@ async fn trace_swap_shows_external_call_before_update_writes() {
 async fn trace_getreserves_has_no_empty_target_writes() {
     // Regression for classify_expression catchall emitting fake Assignments
     // for tuple returns. getReserves must have zero Write events.
-    let paths = vec![fixture("uniswap_v2_pair.sol")];
+    let paths = vec![fixture("uniswap_v2_pair")];
     let (_, port) = ilold_web::start_server(paths, 0, 2).await.unwrap();
 
     let client = reqwest::Client::new();
@@ -278,7 +278,7 @@ async fn trace_getreserves_has_no_empty_target_writes() {
 
 #[tokio::test]
 async fn trace_update_has_no_internal_calls_and_shows_state_writes() {
-    let paths = vec![fixture("uniswap_v2_pair.sol")];
+    let paths = vec![fixture("uniswap_v2_pair")];
     let (_, port) = ilold_web::start_server(paths, 0, 2).await.unwrap();
 
     let client = reqwest::Client::new();
@@ -329,7 +329,7 @@ fn collect_step_ids(node: &serde_json::Value, out: &mut Vec<(u64, String)>) {
 /// the FlowKind variant must match.
 #[tokio::test]
 async fn step_ids_are_stable_across_max_depth_configs() {
-    let paths = vec![fixture("uniswap_v2_pair.sol")];
+    let paths = vec![fixture("uniswap_v2_pair")];
     let (_, port) = ilold_web::start_server(paths, 0, 2).await.unwrap();
 
     let client = reqwest::Client::new();
@@ -386,7 +386,7 @@ async fn step_ids_are_stable_across_max_depth_configs() {
 /// flow_step_id resolving to a Write/StateWrite node in that tree.
 #[tokio::test]
 async fn session_step_persists_flow_tree_with_populated_flow_step_ids() {
-    let paths = vec![fixture("staking.sol")];
+    let paths = vec![fixture("staking")];
     let (_, port) = ilold_web::start_server(paths, 0, 2).await.unwrap();
 
     let client = reqwest::Client::new();
@@ -466,7 +466,7 @@ async fn session_step_persists_flow_tree_with_populated_flow_step_ids() {
 /// build an execution sequence that is impossible on-chain.
 #[tokio::test]
 async fn call_rejects_internal_function_as_session_entry() {
-    let paths = vec![fixture("uniswap_v2_pair.sol")];
+    let paths = vec![fixture("uniswap_v2_pair")];
     let (_, port) = ilold_web::start_server(paths, 0, 2).await.unwrap();
 
     let client = reqwest::Client::new();
@@ -506,7 +506,7 @@ async fn call_rejects_internal_function_as_session_entry() {
 /// walker's expand_set.
 #[tokio::test]
 async fn tr_swap_expand_inlines_update() {
-    let paths = vec![fixture("uniswap_v2_pair.sol")];
+    let paths = vec![fixture("uniswap_v2_pair")];
     let (_, port) = ilold_web::start_server(paths, 0, 2).await.unwrap();
 
     let client = reqwest::Client::new();
@@ -609,7 +609,7 @@ async fn tr_swap_expand_inlines_update() {
 /// path conditions populated for each entry.
 #[tokio::test]
 async fn timeline_balances_across_multiple_steps() {
-    let paths = vec![fixture("staking.sol")];
+    let paths = vec![fixture("staking")];
     let (_, port) = ilold_web::start_server(paths, 0, 2).await.unwrap();
 
     let client = reqwest::Client::new();
@@ -672,7 +672,7 @@ async fn timeline_balances_across_multiple_steps() {
 ///   - `tr step <N>` returns the documented 404 for legacy sessions
 #[tokio::test]
 async fn legacy_session_loads_and_degrades_gracefully() {
-    let paths = vec![fixture("staking.sol")];
+    let paths = vec![fixture("staking")];
     let (_, port) = ilold_web::start_server(paths, 0, 2).await.unwrap();
 
     let client = reqwest::Client::new();
@@ -782,7 +782,7 @@ async fn legacy_session_loads_and_degrades_gracefully() {
 /// Task 1.9 enrichment is wired through the API.
 #[tokio::test]
 async fn sequence_narrative_includes_flow_summary_per_step() {
-    let paths = vec![fixture("staking.sol")];
+    let paths = vec![fixture("staking")];
     let (_, port) = ilold_web::start_server(paths, 0, 2).await.unwrap();
 
     let client = reqwest::Client::new();
@@ -832,7 +832,7 @@ async fn sequence_narrative_includes_flow_summary_per_step() {
 /// that the persisted tree round-trips through HTTP.
 #[tokio::test]
 async fn tr_step_endpoint_returns_persisted_flow_tree() {
-    let paths = vec![fixture("staking.sol")];
+    let paths = vec![fixture("staking")];
     let (_, port) = ilold_web::start_server(paths, 0, 2).await.unwrap();
 
     let client = reqwest::Client::new();
@@ -860,7 +860,7 @@ async fn tr_step_endpoint_returns_persisted_flow_tree() {
 /// Requesting an out-of-range step index returns 404.
 #[tokio::test]
 async fn tr_step_endpoint_404_on_unknown_step() {
-    let paths = vec![fixture("staking.sol")];
+    let paths = vec![fixture("staking")];
     let (_, port) = ilold_web::start_server(paths, 0, 2).await.unwrap();
 
     let client = reqwest::Client::new();
@@ -877,7 +877,7 @@ async fn tr_step_endpoint_404_on_unknown_step() {
 /// new walker's flow_step_id is propagating through to the render layer.
 #[tokio::test]
 async fn state_view_renders_flow_step_refs() {
-    let paths = vec![fixture("staking.sol")];
+    let paths = vec![fixture("staking")];
     let (_, port) = ilold_web::start_server(paths, 0, 2).await.unwrap();
 
     let client = reqwest::Client::new();

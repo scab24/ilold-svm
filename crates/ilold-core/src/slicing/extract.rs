@@ -7,7 +7,7 @@ use crate::model::statement::{Statement, StatementKind};
 /// Used to build the "uses" set of a statement.
 pub fn walk_expr_identifiers(expr: &Expression, out: &mut HashSet<String>) {
     match &expr.kind {
-        ExpressionKind::Identifier { name } => {
+        ExpressionKind::Identifier { name, .. } => {
             out.insert(name.clone());
         }
         ExpressionKind::MemberAccess { object, .. } => {
@@ -61,6 +61,20 @@ pub fn walk_expr_identifiers(expr: &Expression, out: &mut HashSet<String>) {
                 walk_expr_identifiers(arg, out);
             }
         }
+        ExpressionKind::Tuple { elements } => {
+            for e in elements.iter().flatten() {
+                walk_expr_identifiers(e, out);
+            }
+        }
+        ExpressionKind::IndexRange { base, start, end } => {
+            walk_expr_identifiers(base, out);
+            if let Some(s) = start {
+                walk_expr_identifiers(s, out);
+            }
+            if let Some(e) = end {
+                walk_expr_identifiers(e, out);
+            }
+        }
         ExpressionKind::Literal { .. } | ExpressionKind::TypeMeta { .. } => {}
     }
 }
@@ -95,7 +109,7 @@ fn walk_assignment_target_uses(target: &Expression, out: &mut HashSet<String>) {
 /// variable name being written (e.g. `balances` for `balances[to] = x`).
 pub fn extract_assignment_def(target: &Expression) -> Option<String> {
     match &target.kind {
-        ExpressionKind::Identifier { name } => Some(name.clone()),
+        ExpressionKind::Identifier { name, .. } => Some(name.clone()),
         ExpressionKind::IndexAccess { base, .. } => extract_assignment_def(base),
         ExpressionKind::MemberAccess { object, .. } => extract_assignment_def(object),
         _ => None,
@@ -225,9 +239,9 @@ pub fn statement_text(stmt: &Statement) -> String {
 /// compact — full fidelity is not the goal.
 fn expr_to_text(expr: &Expression) -> String {
     match &expr.kind {
-        ExpressionKind::Identifier { name } => name.clone(),
+        ExpressionKind::Identifier { name, .. } => name.clone(),
         ExpressionKind::Literal { value, .. } => value.clone(),
-        ExpressionKind::MemberAccess { object, member } => {
+        ExpressionKind::MemberAccess { object, member, .. } => {
             format!("{}.{}", expr_to_text(object), member)
         }
         ExpressionKind::IndexAccess { base, index } => {
@@ -262,6 +276,19 @@ fn expr_to_text(expr: &Expression) -> String {
         ExpressionKind::New { type_name, arguments } => {
             let args = arguments.iter().map(expr_to_text).collect::<Vec<_>>().join(", ");
             format!("new {}({})", type_name, args)
+        }
+        ExpressionKind::Tuple { elements } => {
+            let parts = elements
+                .iter()
+                .map(|e| e.as_ref().map(expr_to_text).unwrap_or_default())
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("({})", parts)
+        }
+        ExpressionKind::IndexRange { base, start, end } => {
+            let s = start.as_ref().map(|e| expr_to_text(e)).unwrap_or_default();
+            let e = end.as_ref().map(|e| expr_to_text(e)).unwrap_or_default();
+            format!("{}[{}:{}]", expr_to_text(base), s, e)
         }
     }
 }

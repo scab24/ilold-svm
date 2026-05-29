@@ -13,3 +13,10 @@ Thumbs.db
 
 # Environment
 .env
+
+# Local test projects (external, used for validation, not part of the repo)
+/tests/real/
+/tests/fixtures/solana/
+
+# Local tooling
+/.atl/

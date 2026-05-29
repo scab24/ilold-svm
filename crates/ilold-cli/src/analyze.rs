@@ -8,10 +8,11 @@ use ilold_core::callgraph::builder::build_call_graph;
 use ilold_core::callgraph::types::CallKind;
 use ilold_core::cfg::builder::CfgBuilder;
 use ilold_core::classify::entry_points::classify_function;
+use ilold_core::depgraph::ContractDeps;
 use ilold_core::model::contract::{ContractDef, ContractKind};
 use ilold_core::model::function::Visibility;
 use ilold_core::model::project::Project;
-use ilold_core::parse::solar_frontend::SolarParser;
+use ilold_core::parse::solc_frontend::SolcFrontend;
 use ilold_core::parse::ProjectParser;
 use ilold_core::pathtree::config::PruningConfig;
 use ilold_core::pathtree::types::PathTree;
@@ -27,12 +28,9 @@ pub fn run(
     max_seq_depth: usize,
     verbose: bool,
 ) -> Result<()> {
-    let paths = crate::collect_sol_files(path)?;
-    if paths.is_empty() {
-        anyhow::bail!("No .sol files found at {}", path.display());
-    }
+    let paths = vec![crate::foundry_root(path)?];
 
-    let parser = SolarParser;
+    let parser = SolcFrontend;
     let mut project = parser
         .parse(&paths)
         .context(format!("Failed to parse {}", path.display()))?;
@@ -59,15 +57,153 @@ pub fn run(
     }
     analyze_project(&project, &mut all_analyses);
 
-    for contract in &project.contracts {
-        if let Some(filter) = contract_filter {
-            if contract.name != filter { continue; }
+    let mut ordered: Vec<&ContractDef> = project
+        .contracts
+        .iter()
+        .filter(|c| contract_filter.map_or(true, |f| c.name == f))
+        .collect();
+    ordered.sort_by(|a, b| {
+        project
+            .contract_folder(a)
+            .cmp(&project.contract_folder(b))
+            .then(a.name.cmp(&b.name))
+    });
+
+    let mut current_folder: Option<String> = None;
+    for contract in ordered {
+        let folder = project.contract_folder(contract);
+        if current_folder.as_deref() != Some(&folder) {
+            let label = if folder.is_empty() { "(root)" } else { &folder };
+            println!("\n{}", format!("── {label} ──").bold());
+            current_folder = Some(folder);
         }
         print_contract(&project, contract, max_seq_depth, verbose, &all_analyses);
     }
 
     Ok(())
 }
+
+pub fn run_deps(path: &PathBuf, contract: Option<&str>) -> Result<()> {
+    let paths = vec![crate::foundry_root(path)?];
+    let parser = SolcFrontend;
+    let mut project = parser
+        .parse(&paths)
+        .context(format!("Failed to parse {}", path.display()))?;
+    project.rebuild_index();
+
+    let deps = ContractDeps::build(&project);
+
+    if let Some(name) = contract {
+        if deps.node(name).is_none() {
+            anyhow::bail!("Contract '{name}' not found");
+        }
+        crate::deps_view::print_direction(name, false, crate::deps_view::dep_rows(&deps, name, false));
+        crate::deps_view::print_direction(name, true, crate::deps_view::dep_rows(&deps, name, true));
+        return Ok(());
+    }
+
+    let layers = deps.layers();
+    let name_w = project.contracts.iter().map(|c| c.name.len()).max().unwrap_or(0);
+
+    println!(
+        "Dependency map · reading order ({} = read first)\n",
+        c_muted("layer 0")
+    );
+    if layers.is_empty() {
+        println!("  {}", c_muted("no contracts"));
+        return Ok(());
+    }
+
+    for layer in &layers {
+        println!("{}", format!("── layer {} ──", layer.index).bold());
+
+        let mut groups: Vec<_> = layer.groups.iter().collect();
+        groups.sort_by_key(|g| {
+            g.members
+                .iter()
+                .map(|&m| deps.graph[m].name.clone())
+                .min()
+                .unwrap_or_default()
+        });
+
+        for g in groups {
+            if g.is_cycle() {
+                let mut names: Vec<&str> =
+                    g.members.iter().map(|&m| deps.graph[m].name.as_str()).collect();
+                names.sort();
+                println!(
+                    "  {} {}  {}",
+                    c_warn("⟲ cycle"),
+                    names.join(" ⇄ "),
+                    c_muted("(mutually dependent — read together)")
+                );
+            } else {
+                let m = g.members[0];
+                print_dep_line(&deps, &deps.graph[m].name, deps.graph[m].kind, name_w);
+            }
+        }
+    }
+    println!(
+        "\n{} {}  {}  {}",
+        c_muted("legend:"),
+        c_accent("inherits→"),
+        c_warn("calls→"),
+        c_muted("holds→")
+    );
+    Ok(())
+}
+
+fn print_dep_line(deps: &ContractDeps, name: &str, kind: ContractKind, name_w: usize) {
+    let outs = deps.dependencies(name);
+    let mut inherits = Vec::new();
+    let mut calls = Vec::new();
+    let mut holds = Vec::new();
+    for d in &outs {
+        if d.edge.inherits {
+            inherits.push(d.node.name.as_str());
+        }
+        if d.edge.calls {
+            calls.push(d.node.name.as_str());
+        }
+        if d.edge.holds {
+            holds.push(d.node.name.as_str());
+        }
+    }
+
+    let mut parts = Vec::new();
+    if !inherits.is_empty() {
+        parts.push(format!("{} {}", c_accent("inherits→"), inherits.join(", ")));
+    }
+    if !calls.is_empty() {
+        parts.push(format!("{} {}", c_warn("calls→"), calls.join(", ")));
+    }
+    if !holds.is_empty() {
+        parts.push(format!("{} {}", c_muted("holds→"), holds.join(", ")));
+    }
+
+    let kind_str = format!("{:<9}", kind_word(kind));
+    if parts.is_empty() {
+        println!("  {} {}", c_muted(&kind_str), c_bright(name));
+    } else {
+        let name_str = format!("{name:<name_w$}");
+        println!(
+            "  {} {}   {}",
+            c_muted(&kind_str),
+            c_bright(&name_str),
+            parts.join("  ·  ")
+        );
+    }
+}
+
+fn kind_word(kind: ContractKind) -> &'static str {
+    match kind {
+        ContractKind::Contract => "contract",
+        ContractKind::Interface => "interface",
+        ContractKind::Library => "library",
+        ContractKind::Abstract => "abstract",
+    }
+}
+
 
 fn print_contract(
     project: &Project,

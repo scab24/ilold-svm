@@ -5,6 +5,7 @@ use std::sync::RwLock;
 use tokio::sync::broadcast;
 
 use ilold_core::callgraph::builder::build_call_graph;
+use ilold_core::depgraph::ContractDeps;
 use ilold_core::exploration::commands::CanvasPatch;
 use ilold_core::callgraph::types::CallGraph;
 use ilold_core::cfg::builder::CfgBuilder;
@@ -12,7 +13,7 @@ use ilold_core::cfg::types::CfgGraph;
 use ilold_core::classify::entry_points::{classify_all, AccessLevel};
 use ilold_core::exploration::session::ExplorationSession;
 use ilold_core::model::project::Project;
-use ilold_core::parse::solar_frontend::SolarParser;
+use ilold_core::parse::solc_frontend::SolcFrontend;
 use ilold_core::parse::ProjectParser;
 use ilold_core::pathtree::config::PruningConfig;
 use ilold_core::pathtree::types::PathTree;
@@ -202,6 +203,7 @@ pub struct AppState {
     pub cfgs: HashMap<(String, String), CfgGraph>,
     pub path_trees: HashMap<(String, String), PathTree>,
     pub call_graphs: HashMap<String, CallGraph>,
+    pub dep_graph: ContractDeps,
     pub sequence_trees: HashMap<String, SequenceTree>,
     pub sequence_analyses: HashMap<String, SequenceAnalysis>,
     pub classifications: HashMap<String, Vec<(String, AccessLevel)>>,
@@ -244,7 +246,7 @@ pub enum AnnotationStatus {
 
 impl AppState {
     pub fn from_paths(paths: &[PathBuf], max_seq_depth: usize, port: u16, contract_path: PathBuf) -> anyhow::Result<Self> {
-        let parser = SolarParser;
+        let parser = SolcFrontend;
         let mut project = parser.parse(paths)?;
         project.rebuild_index();
 
@@ -296,6 +298,8 @@ impl AppState {
         // Compute transitive effects across contracts (inheritance-aware).
         analyze_project(&project, &mut sequence_analyses);
 
+        let dep_graph = ContractDeps::from_call_graphs(&project, &call_graphs);
+
         let (session_tx, _) = broadcast::channel(64);
 
         let default_contract = project.contracts.iter()
@@ -308,6 +312,7 @@ impl AppState {
             cfgs,
             path_trees,
             call_graphs,
+            dep_graph,
             sequence_trees,
             sequence_analyses,
             classifications,

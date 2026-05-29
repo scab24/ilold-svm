@@ -2,6 +2,7 @@ use petgraph::stable_graph::StableDiGraph;
 use serde::{Deserialize, Serialize};
 
 use crate::model::common::SourceSpan;
+use crate::model::decl_id::DeclId;
 use crate::model::expression::AssignOperator;
 
 pub type CfgGraph = StableDiGraph<BasicBlock, BranchEdge>;
@@ -69,6 +70,8 @@ pub enum CfgStatement {
         span: Option<SourceSpan>,
         #[serde(default)]
         from_modifier: Option<String>,
+        #[serde(default)]
+        resolved: Option<DeclId>,
     },
     InternalCall {
         function: String,

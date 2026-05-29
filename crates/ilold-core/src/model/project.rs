@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::common::StateVar;
 use super::contract::{ContractDef, ContractKind};
+use super::decl_id::DeclTable;
 use super::function::{FunctionDef, Visibility};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -13,9 +14,21 @@ pub struct Project {
     pub contracts: Vec<ContractDef>,
     #[serde(skip)]
     pub contract_index: HashMap<String, usize>,
+    #[serde(skip)]
+    pub decl_table: DeclTable,
 }
 
 impl Project {
+    pub fn contract_folder(&self, c: &ContractDef) -> String {
+        let path = self
+            .source_files
+            .get(c.span.file_index)
+            .map(|s| s.path.as_str())
+            .unwrap_or("");
+        let rel = path.rsplit_once("/src/").map(|(_, r)| r).unwrap_or(path);
+        rel.rsplit_once('/').map(|(dir, _)| dir.to_string()).unwrap_or_default()
+    }
+
     /// Rebuild the contract_index from the contracts vec.
     /// Call this after deserialization since serde(skip) means the index is empty.
     pub fn rebuild_index(&mut self) {

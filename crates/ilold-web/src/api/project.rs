@@ -16,6 +16,7 @@ pub struct ProjectSummary {
 pub struct ContractSummary {
     pub name: String,
     pub kind: String,
+    pub folder: String,
     pub functions: usize,
     pub state_vars: usize,
     pub inherits: Vec<String>,
@@ -29,6 +30,7 @@ pub async fn get_project(State(state): State<Arc<AppState>>) -> Json<ProjectSumm
         .map(|c| ContractSummary {
             name: c.name.clone(),
             kind: format!("{:?}", c.kind),
+            folder: state.project.contract_folder(c),
             functions: c.functions.len(),
             state_vars: c.state_vars.len(),
             inherits: c.inherits.clone(),
@@ -55,6 +57,7 @@ pub struct ProjectMap {
 pub struct MapContract {
     pub name: String,
     pub kind: String,
+    pub folder: String,
     pub inherits: Vec<String>,
     pub functions: Vec<MapFunction>,
     pub state_vars: Vec<MapStateVar>,
@@ -127,6 +130,7 @@ pub async fn get_project_map(State(state): State<Arc<AppState>>) -> Json<Project
         contracts.push(MapContract {
             name: contract.name.clone(),
             kind: format!("{:?}", contract.kind),
+            folder: state.project.contract_folder(contract),
             inherits: contract.inherits.clone(),
             functions,
             state_vars,

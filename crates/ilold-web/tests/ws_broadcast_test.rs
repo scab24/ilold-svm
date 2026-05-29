@@ -14,7 +14,7 @@ fn fixture(name: &str) -> PathBuf {
 
 #[tokio::test]
 async fn broadcast_add_node_on_call_command() {
-    let paths = vec![fixture("staking.sol")];
+    let paths = vec![fixture("staking")];
     let (_, port) = ilold_web::start_server(paths, 0, 2).await.unwrap();
 
     let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{port}/ws"))
@@ -52,7 +52,7 @@ async fn broadcast_add_node_on_call_command() {
 
 #[tokio::test]
 async fn broadcast_clear_after_call_and_clear() {
-    let paths = vec![fixture("staking.sol")];
+    let paths = vec![fixture("staking")];
     let (_, port) = ilold_web::start_server(paths, 0, 2).await.unwrap();
 
     let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{port}/ws"))
@@ -98,7 +98,7 @@ async fn broadcast_clear_after_call_and_clear() {
 
 #[tokio::test]
 async fn no_broadcast_on_non_mutating_command() {
-    let paths = vec![fixture("staking.sol")];
+    let paths = vec![fixture("staking")];
     let (_, port) = ilold_web::start_server(paths, 0, 2).await.unwrap();
 
     let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{port}/ws"))
@@ -127,7 +127,7 @@ async fn no_broadcast_on_non_mutating_command() {
 
 #[tokio::test]
 async fn who_command_returns_variable_info() {
-    let paths = vec![fixture("staking.sol")];
+    let paths = vec![fixture("staking")];
     let (_, port) = ilold_web::start_server(paths, 0, 2).await.unwrap();
 
     let client = reqwest::Client::new();

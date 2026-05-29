@@ -24,6 +24,8 @@ pub struct StateVar {
     pub is_constant: bool,
     pub is_immutable: bool,
     pub initial_value: Option<super::expression::Expression>,
+    #[serde(default)]
+    pub resolved_types: Vec<super::decl_id::DeclId>,
     pub span: SourceSpan,
 }
 

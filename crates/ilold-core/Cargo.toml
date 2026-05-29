@@ -5,7 +5,8 @@ edition = "2021"
 description = "Core library for Ilold: smart contract execution path analysis engine"
 
 [dependencies]
-solar = { workspace = true }
+foundry-compilers = { workspace = true }
+foundry-compilers-artifacts-solc = { workspace = true }
 petgraph = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -107,6 +107,18 @@ pub async fn run(paths: Vec<PathBuf>, port: u16, max_seq_depth: usize, attach: O
     ]);
     println!("{}\n", banner);
 
+    let mut by_folder: std::collections::BTreeMap<String, Vec<&str>> = std::collections::BTreeMap::new();
+    for c in &state.project.contracts {
+        by_folder.entry(state.project.contract_folder(c)).or_default().push(c.name.as_str());
+    }
+    println!("{}", "Contracts:".bold());
+    for (folder, mut names) in by_folder {
+        names.sort();
+        let label = if folder.is_empty() { "(root)" } else { folder.as_str() };
+        println!("  {} {}", format!("{label}/").dimmed(), names.join(", "));
+    }
+    println!();
+
     let handle = tokio::runtime::Handle::current();
     let state_for_thread = state.clone();
     let base_url = format!("http://127.0.0.1:{}", actual_port);
@@ -407,6 +419,16 @@ fn handle_input(
                     Err(e) => eprintln!("  {}", c_danger(&format!("Failed to fetch contracts: {e}"))),
                 }
             }
+            InputResult::Continue
+        }
+        "deps" | "dep" => {
+            let target = if arg.is_empty() { contract } else { arg };
+            show_deps(handle, client, base_url, state, target, false);
+            InputResult::Continue
+        }
+        "usedby" | "rdeps" => {
+            let target = if arg.is_empty() { contract } else { arg };
+            show_deps(handle, client, base_url, state, target, true);
             InputResult::Continue
         }
         "use" => {
@@ -1129,6 +1151,38 @@ fn print_contracts(state: &std::sync::Arc<ilold_web::state::AppState>, current: 
     println!();
 }
 
+fn show_deps(
+    handle: &tokio::runtime::Handle,
+    client: &reqwest::Client,
+    base_url: &str,
+    state: &Option<std::sync::Arc<ilold_web::state::AppState>>,
+    name: &str,
+    reverse: bool,
+) {
+    if let Some(state) = state {
+        let rows = crate::deps_view::dep_rows(&state.dep_graph, name, reverse);
+        crate::deps_view::print_direction(name, reverse, rows);
+        return;
+    }
+
+    let url = format!("{base_url}/api/contract/{name}/depgraph");
+    let result = handle.block_on(async {
+        let resp = client.get(&url).send().await?;
+        if !resp.status().is_success() {
+            return Ok::<Option<serde_json::Value>, reqwest::Error>(None);
+        }
+        Ok(Some(resp.json::<serde_json::Value>().await?))
+    });
+    match result {
+        Ok(Some(json)) => {
+            let rows = crate::deps_view::rows_from_depgraph_json(&json, name, reverse);
+            crate::deps_view::print_direction(name, reverse, Some(rows));
+        }
+        Ok(None) => crate::deps_view::print_direction(name, reverse, None),
+        Err(e) => eprintln!("  {}", c_danger(&format!("Failed to fetch depgraph: {e}"))),
+    }
+}
+
 fn print_findings_list(
     handle: &tokio::runtime::Handle,
     client: &reqwest::Client,
@@ -1689,6 +1743,8 @@ fn print_help() {
             ("v",      "vars",             "List state variables"),
             ("va",     "vars-all",         "List all accessible (incl. inherited)"),
             ("ct",     "contracts",        "List project contracts"),
+            ("",       "deps [contract]",  "What this contract depends on"),
+            ("",       "usedby [contract]","What depends on it (blast radius)"),
             ("",       "use <contract>",   "Switch active contract"),
         ]),
         ("Findings", &[
@@ -1748,6 +1804,8 @@ fn print_inline_help(cmd: &str) {
         (&["fa", "funcs-all"],"funcs-all",                       "List all accessible functions including inherited."),
         (&["va", "vars-all"], "vars-all",                        "List all accessible state variables including inherited."),
         (&["ct", "contracts"],"contracts",                       "List all contracts in the project."),
+        (&["deps", "dep"],    "deps [contract]",                 "Contracts the current (or named) contract depends on. Example: deps Vault"),
+        (&["usedby", "rdeps"],"usedby [contract]",               "Contracts that depend on it — the blast radius. Example: usedby IPool"),
         (&["use"],            "use <contract>",                  "Switch the active contract. Example: use Staking"),
         (&["status"],         "status <func> <status>",          "Change review status. Example: status deposit reviewed"),
         (&["save"],           "save <name>",                     "Save session to disk. Example: save my-audit"),
@@ -1837,7 +1895,11 @@ impl Completer for IloldCompleter {
             || (line_lower.starts_with("sl ") && line[..pos].matches(' ').count() == 1)
             || (line_lower.starts_with("slice ") && line[..pos].matches(' ').count() == 1);
 
-        let needs_contract = line_lower.starts_with("use ");
+        let needs_contract = line_lower.starts_with("use ")
+            || line_lower.starts_with("deps ")
+            || line_lower.starts_with("dep ")
+            || line_lower.starts_with("usedby ")
+            || line_lower.starts_with("rdeps ");
 
         let needs_scenario = line_lower.starts_with("scenario switch ")
             || line_lower.starts_with("scenario delete ")

@@ -11,7 +11,7 @@ use ilold_core::model::project::Project;
 use ilold_core::narrative::function::build_function_narrative;
 use ilold_core::narrative::sequence::build_sequence_narrative;
 use ilold_core::narrative::types::*;
-use ilold_core::parse::solar_frontend::SolarParser;
+use ilold_core::parse::solc_frontend::SolcFrontend;
 use ilold_core::parse::ProjectParser;
 use ilold_core::pathtree::config::PruningConfig;
 use ilold_core::pathtree::types::{PathTree, TerminalKind};
@@ -27,10 +27,9 @@ pub fn run(
     sequence_filter: Option<&str>,
     list: bool,
 ) -> Result<()> {
-    let paths = crate::collect_sol_files(path)?;
-    if paths.is_empty() { anyhow::bail!("No .sol files found at {}", path.display()); }
+    let paths = vec![crate::foundry_root(path)?];
 
-    let parser = SolarParser;
+    let parser = SolcFrontend;
     let mut project = parser.parse(&paths).context("Failed to parse")?;
     project.rebuild_index();
 

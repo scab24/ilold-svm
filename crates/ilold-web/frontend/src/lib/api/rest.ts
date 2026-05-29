@@ -83,6 +83,7 @@ export interface ProjectMap {
 export interface MapContract {
   name: string;
   kind: string;
+  folder: string;
   inherits: string[];
   functions: MapFunction[];
   state_vars: { name: string; type_name: string; is_constant: boolean }[];
