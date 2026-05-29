@@ -131,6 +131,10 @@ fn project_root(paths: &[PathBuf]) -> Result<PathBuf, ParseError> {
 fn map_contract(node: &Node, index: &LineIndex, decl_table: &mut DeclTable) -> Option<ContractDef> {
     let name: String = node.attribute("name")?;
 
+    if let Some(id) = node.id {
+        decl_table.insert(DeclId(id as isize), name.clone(), String::new());
+    }
+
     let mut functions = Vec::new();
     let mut modifiers = Vec::new();
     let mut state_vars = Vec::new();
@@ -210,7 +214,44 @@ fn map_state_var(node: &Node, index: &LineIndex) -> StateVar {
         is_constant: node.attribute::<bool>("constant").unwrap_or(false),
         is_immutable: node.attribute::<String>("mutability").as_deref() == Some("immutable"),
         initial_value: node.attribute::<Node>("value").map(|v| map_expression(&v, index)),
+        resolved_types: type_decl_ids(node),
         span: span_of(node, index),
+    }
+}
+
+/// Declaration ids referenced anywhere in a variable's `typeName` (handles
+/// arrays and mappings). Each id resolves via the decl table — only those
+/// pointing at a contract/interface become `holds` edges; struct/enum types
+/// resolve to non-contract decls and are dropped downstream.
+fn type_decl_ids(node: &Node) -> Vec<DeclId> {
+    let mut out = Vec::new();
+    if let Some(type_name) = node.attribute::<serde_json::Value>("typeName") {
+        collect_referenced_decls(&type_name, &mut out);
+    }
+    out
+}
+
+fn collect_referenced_decls(value: &serde_json::Value, out: &mut Vec<DeclId>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            if let Some(id) = map.get("referencedDeclaration").and_then(|v| v.as_i64()) {
+                if id >= 0 {
+                    let id = DeclId(id as isize);
+                    if !out.contains(&id) {
+                        out.push(id);
+                    }
+                }
+            }
+            for child in map.values() {
+                collect_referenced_decls(child, out);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for child in items {
+                collect_referenced_decls(child, out);
+            }
+        }
+        _ => {}
     }
 }
 

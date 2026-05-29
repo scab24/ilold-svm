@@ -6,6 +6,7 @@ pub mod model;
 pub mod parse;
 pub mod cfg;
 pub mod callgraph;
+pub mod depgraph;
 pub mod pathtree;
 pub mod sequence;
 pub mod classify;
