@@ -114,6 +114,38 @@ export async function getProjectMap(): Promise<ProjectMap> {
   return res.json();
 }
 
+export interface DepGraphNode {
+  data: {
+    id: string;
+    label: string;
+    kind: string;
+    folder: string;
+    layer: number;
+    focus: boolean;
+  };
+}
+
+export interface DepGraphEdge {
+  data: {
+    id: string;
+    source: string;
+    target: string;
+    kind: string;
+    kinds: string[];
+    call_count: number;
+  };
+}
+
+export interface ProjectDepGraph {
+  nodes: DepGraphNode[];
+  edges: DepGraphEdge[];
+}
+
+export async function getProjectDepgraph(): Promise<ProjectDepGraph> {
+  const res = await fetch(`${BASE}/api/project/depgraph`);
+  return res.json();
+}
+
 export async function getProject(): Promise<ProjectSummary> {
   const res = await fetch(`${BASE}/api/project`);
   return res.json();

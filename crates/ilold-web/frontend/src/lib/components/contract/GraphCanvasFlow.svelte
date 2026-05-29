@@ -7,6 +7,7 @@
   import FunctionNode from './nodes/FunctionNode.svelte';
   import BlockNode from './nodes/BlockNode.svelte';
   import SequenceNode from './nodes/SequenceNode.svelte';
+  import ContractNode from './nodes/ContractNode.svelte';
   import {
     getNodes,
     getEdges,
@@ -32,9 +33,13 @@
      *  that only forwards the node list — the parent usually just wants a
      *  count for the status bar. */
     onselectionchange?: (nodes: Node<GraphNodeData>[]) => void;
+    /** Pointer enters/leaves a node — used by the project graph to highlight
+     *  a contract's relationships on hover. */
+    onnodemouseenter?: (node: Node<GraphNodeData>) => void;
+    onnodemouseleave?: (node: Node<GraphNodeData>) => void;
   }
 
-  let { onnodetap, onbackgroundtap, oncontextmenu, onready, onnodesdelete, canDeleteNodes = true, onselectionchange }: Props = $props();
+  let { onnodetap, onbackgroundtap, oncontextmenu, onready, onnodesdelete, canDeleteNodes = true, onselectionchange, onnodemouseenter, onnodemouseleave }: Props = $props();
 
   // Explicit null disables SvelteFlow's built-in delete shortcut; otherwise
   // we listen to both Delete and Backspace (Figma/Excalidraw convention).
@@ -45,6 +50,7 @@
     function: FunctionNode,
     block: BlockNode,
     sequence: SequenceNode,
+    contract: ContractNode,
   } as unknown as NodeTypes;
 
   // ── Reactive bridge: graph store → SvelteFlow ──────────────
@@ -154,6 +160,8 @@
       }}
       ondelete={({ nodes }) => onnodesdelete?.(nodes as unknown as Node<GraphNodeData>[])}
       onselectionchange={({ nodes }) => onselectionchange?.(nodes as unknown as Node<GraphNodeData>[])}
+      onnodepointerenter={({ node }) => onnodemouseenter?.(node as Node<GraphNodeData>)}
+      onnodepointerleave={({ node }) => onnodemouseleave?.(node as Node<GraphNodeData>)}
       oninit={() => {
         const { fitView } = useSvelteFlow();
         onready?.({ fitView });

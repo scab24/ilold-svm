@@ -1,29 +1,171 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
-  import { getProjectMap, type ProjectMap, type MapContract } from '$lib/api/rest';
+  import type { Node, Edge } from '@xyflow/svelte';
+  import {
+    getProjectMap,
+    getProjectDepgraph,
+    type ProjectMap,
+    type ProjectDepGraph,
+  } from '$lib/api/rest';
   import { setSearchContext } from '$lib/stores/search.svelte';
   import { togglePalette, setPaletteCommands, clearPaletteCommands } from '$lib/stores/palette.svelte';
   import type { Command } from '$lib/commands/registry';
+  import GraphCanvasFlow from '$lib/components/contract/GraphCanvasFlow.svelte';
+  import {
+    setNodes, setEdges, getNodes, getEdges, clearGraph,
+    type GraphNodeData,
+  } from '$lib/stores/graph.svelte';
+  import { runDagreLayout } from '$lib/utils/graph-helpers';
+
+  const ROOT_COLOR = '#8b949e';
+  const EDGE_COLOR: Record<string, string> = {
+    inherits: '#d2a8ff',
+    calls: '#ffa657',
+    holds: '#56d4dd',
+  };
+  const NODE_KINDS = ['contract', 'abstract', 'interface', 'library'] as const;
+  const EDGE_KINDS = ['inherits', 'calls', 'holds'] as const;
 
   let projectMap: ProjectMap | null = $state(null);
+  let dep: ProjectDepGraph | null = $state(null);
   let error: string | null = $state(null);
+  let legendFolders: { folder: string; color: string }[] = $state([]);
+  let nodeFilter = $state<Record<string, boolean>>({ contract: true, abstract: true, interface: true, library: true });
+  let edgeFilter = $state<Record<string, boolean>>({ inherits: true, calls: true, holds: true });
+  let fitView: ((opts?: any) => Promise<boolean>) | null = null;
+  let hoveredId: string | null = null;
 
   onMount(async () => {
     setSearchContext(null);
     try {
-      projectMap = await getProjectMap();
+      [projectMap, dep] = await Promise.all([getProjectMap(), getProjectDepgraph()]);
+      buildGraph(dep);
     } catch (e) {
       error = 'Failed to connect. Is "ilold serve" running?';
     }
   });
 
-  // Publish project-level commands: navigate into any contract. The
-  // contract page replaces this list with its richer set on mount.
-  // ProjectMap may report the same name twice (e.g. an interface that
-  // appears as its own entry and as an inherited reference elsewhere),
-  // so we dedupe by name before mapping to Commands — Svelte's keyed
-  // each block would otherwise error on the duplicate id.
+  // Color encodes the top-level subsystem (hub, spoke, ...), not every
+  // subfolder: a handful of evenly-spaced hues stay distinguishable, and the
+  // subfolder/kind is already carried by the border style and node label.
+  function topLevel(folder: string): string {
+    return folder === '' ? '' : folder.split('/')[0];
+  }
+
+  function colorMap(folders: string[]): Map<string, string> {
+    const groups = [...new Set(folders.map(topLevel))].sort();
+    const nonRoot = groups.filter((g) => g !== '');
+    const map = new Map<string, string>();
+    nonRoot.forEach((g, i) => {
+      const hue = Math.round((i * 360) / Math.max(nonRoot.length, 1));
+      map.set(g, `hsl(${hue}, 60%, 66%)`);
+    });
+    if (groups.includes('')) map.set('', ROOT_COLOR);
+    return map;
+  }
+
+  function buildGraph(d: ProjectDepGraph) {
+    const colors = colorMap(d.nodes.map((n) => n.data.folder));
+    legendFolders = [...colors.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([group, color]) => ({ folder: group === '' ? '(root)' : group, color }));
+
+    const nodes: Node<GraphNodeData>[] = d.nodes.map((n) => ({
+      id: n.data.id,
+      type: 'contract',
+      position: { x: 0, y: 0 },
+      data: {
+        _type: 'contract',
+        label: n.data.label,
+        kind: n.data.kind,
+        folder: n.data.folder,
+        layer: n.data.layer,
+        color: colors.get(topLevel(n.data.folder)) ?? ROOT_COLOR,
+      },
+    }));
+    const edges: Edge[] = d.edges.map((e) => ({
+      id: e.data.id,
+      source: e.data.source,
+      target: e.data.target,
+      sourceHandle: 'r',
+      targetHandle: 'l',
+      data: { kind: e.data.kind, kinds: e.data.kinds, stroke: EDGE_COLOR[e.data.kind] ?? ROOT_COLOR },
+    }));
+    const laid = runDagreLayout(nodes, edges, {
+      rankDir: 'LR',
+      nodeWidth: 170,
+      nodeHeight: 54,
+      nodeSep: 28,
+      rankSep: 110,
+    });
+    setNodes(laid);
+    setEdges(edges);
+    applyVisual();
+    queueMicrotask(() => fitView?.({ padding: 0.15 }));
+  }
+
+  // Single visual layer: node dimming and edge style/visibility are a pure
+  // function of the active kind filters plus the currently hovered contract.
+  // Keeping it in one place stops the filter and hover passes from fighting
+  // over the same _dimmed flag.
+  function applyVisual() {
+    const neighbors = new Set<string>();
+    if (hoveredId) {
+      neighbors.add(hoveredId);
+      for (const e of getEdges()) {
+        if (e.source === hoveredId) neighbors.add(e.target);
+        if (e.target === hoveredId) neighbors.add(e.source);
+      }
+    }
+
+    setNodes(getNodes().map((n) => {
+      const d = n.data as GraphNodeData & { kind: string };
+      const kindOn = nodeFilter[d.kind] ?? true;
+      const dimmed = !kindOn || (hoveredId != null && !neighbors.has(n.id));
+      return { ...n, data: { ...n.data, _dimmed: dimmed } };
+    }));
+
+    setEdges(getEdges().map((e) => {
+      const kinds: string[] = (e.data?.kinds as string[]) ?? [];
+      const stroke = (e.data?.stroke as string) ?? ROOT_COLOR;
+      const visible = kinds.some((k) => edgeFilter[k] ?? true);
+      const incident = hoveredId != null && (e.source === hoveredId || e.target === hoveredId);
+      const opacity = !hoveredId ? 1 : incident ? 1 : 0.05;
+      const width = incident ? 2.5 : 1.5;
+      return {
+        ...e,
+        hidden: !visible,
+        animated: incident,
+        style: `stroke: ${stroke}; stroke-width: ${width}; opacity: ${opacity}`,
+      };
+    }));
+  }
+
+  function toggleNode(kind: string) {
+    nodeFilter = { ...nodeFilter, [kind]: !nodeFilter[kind] };
+    applyVisual();
+  }
+  function toggleEdge(kind: string) {
+    edgeFilter = { ...edgeFilter, [kind]: !edgeFilter[kind] };
+    applyVisual();
+  }
+
+  function onHover(node: Node<GraphNodeData>) {
+    hoveredId = node.id;
+    applyVisual();
+  }
+  function offHover() {
+    hoveredId = null;
+    applyVisual();
+  }
+
+  function openContract(node: Node<GraphNodeData>) {
+    goto(`/contract/${encodeURIComponent(node.id)}`);
+  }
+
+  // Cmd+K palette: navigate into any contract. Deduped by name because the
+  // project map can list a name twice (own entry + inherited reference).
   $effect(() => {
     if (!projectMap) {
       setPaletteCommands([]);
@@ -47,38 +189,18 @@
     setPaletteCommands(cmds);
   });
 
-  onDestroy(() => clearPaletteCommands());
-
-  let groups: { folder: string; contracts: MapContract[] }[] = $state([]);
-  let interfaces: MapContract[] = $state([]);
-
-  $effect(() => {
-    if (!projectMap) return;
-    interfaces = projectMap.contracts.filter(c => c.kind === 'Interface');
-    const byFolder = new Map<string, MapContract[]>();
-    for (const c of projectMap.contracts) {
-      if (c.kind === 'Interface') continue;
-      const f = c.folder || '(root)';
-      if (!byFolder.has(f)) byFolder.set(f, []);
-      byFolder.get(f)!.push(c);
-    }
-    groups = [...byFolder.entries()]
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([folder, cs]) => ({ folder, contracts: cs.sort((x, y) => x.name.localeCompare(y.name)) }));
+  onDestroy(() => {
+    clearPaletteCommands();
+    clearGraph();
   });
-
-  function mutColorClass(m: string): string {
-    if (m === 'View' || m === 'Pure') return 'bg-accent';
-    return 'bg-accent-hover';
-  }
 </script>
 
 <div class="fixed inset-0 flex flex-col bg-dark">
   <div class="flex items-center gap-2.5 px-4 py-2 bg-hover border-b border-border-subtle z-10 shrink-0">
     <span class="text-lg font-bold text-text">ilold</span>
     <span class="text-xs text-text-dim">execution path analyzer</span>
-    {#if projectMap}
-      <span class="text-xs text-text-muted">{projectMap.contracts.length} contracts · {projectMap.relationships.length} cross-contract calls</span>
+    {#if dep}
+      <span class="text-xs text-text-muted">{dep.nodes.length} contracts · {dep.edges.length} relationships</span>
     {/if}
     <div class="ml-auto flex gap-1">
       <button class="bg-hover border border-border-subtle text-accent-hover px-3 py-1 rounded-sm cursor-pointer text-xs hover:border-accent" onclick={togglePalette}>⌘K Search</button>
@@ -87,89 +209,82 @@
 
   {#if error}
     <div class="p-6 text-danger">{error}</div>
-  {:else if !projectMap}
+  {:else if !dep}
     <div class="p-6 text-text-muted">Analyzing...</div>
+  {:else if dep.nodes.length === 0}
+    <div class="p-6 text-text-muted">No contracts found in this project.</div>
   {:else}
-    <div class="flex-1 overflow-y-auto p-6">
-      {#each groups as group}
-      <h2 class="text-xs text-text-muted uppercase tracking-wide mt-5 mb-2 font-semibold">{group.folder}</h2>
-      <div class="grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] gap-4">
-        {#each group.contracts as contract}
-          <div class="bg-hover border border-border-subtle rounded-[10px] overflow-hidden">
-            <div class="px-3.5 pt-3 pb-2 border-b border-border-subtle">
-              <span class="text-[10px] text-text-muted uppercase tracking-wide">{contract.kind.toLowerCase()}</span>
-              <h2 class="text-lg mt-0.5 mb-0"><a class="text-text no-underline hover:text-accent-hover" href="/contract/{contract.name}">{contract.name}</a></h2>
-              {#if contract.inherits.length > 0}
-                <div class="text-[11px] text-text-dim italic mt-0.5">inherits {contract.inherits.join(', ')}</div>
-              {/if}
-            </div>
+    <div class="flex-1 min-h-0 relative">
+      <GraphCanvasFlow
+        onnodetap={openContract}
+        onnodemouseenter={onHover}
+        onnodemouseleave={offHover}
+        canDeleteNodes={false}
+        onready={(api) => { fitView = api.fitView; queueMicrotask(() => api.fitView({ padding: 0.15 })); }}
+      />
 
-            <div class="card-section">
-              <div class="text-[9px] text-text-muted uppercase tracking-wide mb-1 font-semibold">Functions</div>
-              {#each contract.functions as func}
-                <a href="/contract/{contract.name}/{func.name}" class="flex items-center gap-1.5 px-1 py-1 rounded-sm text-xs text-inherit no-underline hover:bg-border">
-                  <span class="size-1.5 rounded-full shrink-0 {mutColorClass(func.mutability)}"></span>
-                  <span class="text-text font-semibold font-mono flex-1">{func.name}</span>
-                  <span class="text-[10px] text-text-dim">{func.visibility.toLowerCase()}</span>
-                  {#if func.has_external_calls}
-                    <span class="text-[9px] px-1 py-px rounded-md bg-warning/10 text-warning">ext</span>
-                  {/if}
-                  <span class="text-[10px] text-text-muted flex gap-0.5">
-                    {func.path_count}p
-                    {#if func.happy_paths > 0}<span class="text-success">{func.happy_paths}✓</span>{/if}
-                    {#if func.revert_paths > 0}<span class="text-danger">{func.revert_paths}✗</span>{/if}
-                  </span>
-                </a>
-              {/each}
-            </div>
-
-            {#if contract.state_vars.length > 0}
-              <div class="card-section">
-                <div class="text-[9px] text-text-muted uppercase tracking-wide mb-1 font-semibold">Variables</div>
-                {#each contract.state_vars as sv}
-                  <div class="flex justify-between px-1 py-0.5 text-[11px] font-mono">
-                    <span class="text-text">{sv.name}</span>
-                    <span class="text-text-dim text-[10px] max-w-[150px] overflow-hidden text-ellipsis whitespace-nowrap">{sv.type_name}</span>
-                  </div>
-                {/each}
-              </div>
-            {/if}
-
-            {#if projectMap.relationships.filter(r => r.from_contract === contract.name).length > 0}
-              <div class="card-section">
-                <div class="text-[9px] text-text-muted uppercase tracking-wide mb-1 font-semibold">Calls to</div>
-                {#each projectMap.relationships.filter(r => r.from_contract === contract.name) as rel}
-                  <div class="flex items-center gap-1 px-1 py-0.5 text-[11px] font-mono">
-                    <span class="text-text">{rel.from_function}</span>
-                    <span class="text-accent">→</span>
-                    <span class="text-accent-hover">{rel.to_contract}.{rel.to_function}</span>
-                  </div>
-                {/each}
-              </div>
-            {/if}
-          </div>
-        {/each}
-      </div>
-      {/each}
-
-      {#if interfaces.length > 0}
-        <div class="mt-6">
-          <h3 class="text-sm text-text-muted mb-2">Interfaces</h3>
-          <div class="flex gap-2 flex-wrap">
-            {#each interfaces as iface}
-              <div class="bg-hover border border-dashed border-border-subtle rounded-md px-3 py-2 flex gap-2 items-center">
-                <span class="text-text-muted font-semibold text-[13px]">{iface.name}</span>
-                <span class="text-text-dim text-[11px]">{iface.functions.length} functions</span>
-              </div>
-            {/each}
-          </div>
+      <div
+        class="absolute top-3 right-3 z-10 flex flex-col gap-1.5 px-3 py-2.5 text-[11px]"
+        style="
+          border-radius: 10px;
+          border: 1px solid color-mix(in srgb, var(--color-border) 50%, transparent);
+          background: linear-gradient(180deg, rgba(30, 30, 40, 0.88) 0%, rgba(24, 24, 30, 0.92) 100%);
+          backdrop-filter: blur(16px) saturate(1.6);
+          -webkit-backdrop-filter: blur(16px) saturate(1.6);
+          box-shadow: 0 4px 16px -4px rgba(0, 0, 0, 0.3);
+        "
+      >
+        <div class="flex items-center gap-1.5">
+          <span class="text-text-muted uppercase tracking-wide text-[9px] w-12">Relations</span>
+          {#each EDGE_KINDS as k}
+            <button
+              type="button"
+              onclick={() => toggleEdge(k)}
+              class="px-1.5 py-0.5 rounded-sm border cursor-pointer transition-opacity {edgeFilter[k] ? 'border-transparent text-text' : 'border-border-subtle text-text-dim opacity-50'}"
+              style={edgeFilter[k] ? `background: color-mix(in srgb, ${EDGE_COLOR[k]} 22%, transparent); color: ${EDGE_COLOR[k]}` : ''}
+            >{k}</button>
+          {/each}
         </div>
-      {/if}
+        <div class="flex items-center gap-1.5">
+          <span class="text-text-muted uppercase tracking-wide text-[9px] w-12">Kind</span>
+          {#each NODE_KINDS as k}
+            <button
+              type="button"
+              onclick={() => toggleNode(k)}
+              class="px-1.5 py-0.5 rounded-sm border cursor-pointer {nodeFilter[k] ? 'border-accent text-text' : 'border-border-subtle text-text-dim opacity-50'}"
+            >{k}</button>
+          {/each}
+        </div>
+      </div>
+
+      <div
+        class="absolute bottom-3 left-4 z-10 max-w-[340px] max-h-[42%] overflow-y-auto text-[11px] px-3 py-2.5"
+        style="
+          border-radius: 10px;
+          border: 1px solid color-mix(in srgb, var(--color-border) 50%, transparent);
+          background: linear-gradient(180deg, rgba(30, 30, 40, 0.88) 0%, rgba(24, 24, 30, 0.92) 100%);
+          backdrop-filter: blur(16px) saturate(1.6);
+          -webkit-backdrop-filter: blur(16px) saturate(1.6);
+          box-shadow: 0 4px 16px -4px rgba(0, 0, 0, 0.3);
+        "
+      >
+        <div class="text-text-muted uppercase tracking-wide text-[9px] mb-1 font-semibold">Kind</div>
+        <div class="flex flex-wrap gap-x-3 gap-y-1 mb-2 text-text-dim">
+          <span class="border-[1.5px] border-solid border-text-muted rounded px-1">contract</span>
+          <span class="border-[1.5px] border-dashed border-text-muted rounded px-1">abstract</span>
+          <span class="border-[1.5px] border-dotted border-text-muted rounded px-1">interface</span>
+          <span class="border-[3px] border-double border-text-muted rounded px-1">library</span>
+        </div>
+        <div class="text-text-muted uppercase tracking-wide text-[9px] mb-1 font-semibold">Subsystem</div>
+        <div class="flex flex-wrap gap-x-3 gap-y-1">
+          {#each legendFolders as f}
+            <span class="flex items-center gap-1"><span class="inline-block w-2.5 h-2.5 rounded-sm" style="background: {f.color}"></span>{f.folder}</span>
+          {/each}
+        </div>
+      </div>
+    </div>
+    <div class="px-4 py-1.5 bg-hover border-t border-border-subtle text-[11px] text-text-muted shrink-0">
+      click a contract to open its functions · hover to highlight its relationships · toggle Relations/Kind to filter · ⌘K to search
     </div>
   {/if}
 </div>
-
-<style>
-  .card-section { padding: 8px 14px; }
-  .card-section + .card-section { border-top: 1px solid var(--color-border-subtle); }
-</style>
