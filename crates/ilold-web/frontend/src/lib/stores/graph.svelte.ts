@@ -51,7 +51,18 @@ export interface SequenceNodeData {
   _dimmed?: boolean;
 }
 
-export type GraphNodeData = FunctionNodeData | BlockNodeData | SequenceNodeData;
+export interface ContractNodeData {
+  [key: string]: unknown;
+  _type: 'contract';
+  label: string;
+  kind: string; // "contract" | "interface" | "library" | "abstract"
+  folder: string;
+  layer: number;
+  color?: string; // border color encoding the source folder
+  _dimmed?: boolean;
+}
+
+export type GraphNodeData = FunctionNodeData | BlockNodeData | SequenceNodeData | ContractNodeData;
 
 // ── Reactive state ──────────────────────────────────────────
 // SvelteFlow uses $bindable nodes/edges — the wrapper component
