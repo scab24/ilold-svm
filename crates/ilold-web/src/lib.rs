@@ -15,6 +15,8 @@ fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/project", get(api::project::get_project))
         .route("/api/project/map", get(api::project::get_project_map))
+        .route("/api/project/depgraph", get(api::depgraph::get_project_depgraph))
+        .route("/api/contract/{name}/depgraph", get(api::depgraph::get_contract_depgraph))
         .route("/api/contract/{name}", get(api::contract::get_contract))
         .route("/api/contract/{name}/callgraph", get(api::contract::get_callgraph))
         .route("/api/contract/{name}/{func}/cfg", get(api::contract::get_cfg))

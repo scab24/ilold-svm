@@ -5,6 +5,7 @@ use std::sync::RwLock;
 use tokio::sync::broadcast;
 
 use ilold_core::callgraph::builder::build_call_graph;
+use ilold_core::depgraph::ContractDeps;
 use ilold_core::exploration::commands::CanvasPatch;
 use ilold_core::callgraph::types::CallGraph;
 use ilold_core::cfg::builder::CfgBuilder;
@@ -202,6 +203,7 @@ pub struct AppState {
     pub cfgs: HashMap<(String, String), CfgGraph>,
     pub path_trees: HashMap<(String, String), PathTree>,
     pub call_graphs: HashMap<String, CallGraph>,
+    pub dep_graph: ContractDeps,
     pub sequence_trees: HashMap<String, SequenceTree>,
     pub sequence_analyses: HashMap<String, SequenceAnalysis>,
     pub classifications: HashMap<String, Vec<(String, AccessLevel)>>,
@@ -296,6 +298,8 @@ impl AppState {
         // Compute transitive effects across contracts (inheritance-aware).
         analyze_project(&project, &mut sequence_analyses);
 
+        let dep_graph = ContractDeps::from_call_graphs(&project, &call_graphs);
+
         let (session_tx, _) = broadcast::channel(64);
 
         let default_contract = project.contracts.iter()
@@ -308,6 +312,7 @@ impl AppState {
             cfgs,
             path_trees,
             call_graphs,
+            dep_graph,
             sequence_trees,
             sequence_analyses,
             classifications,
