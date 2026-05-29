@@ -32,6 +32,16 @@ Analysis
 
 The parser produces a typed model of each contract. From the model, ilold builds a control flow graph per function, then layers analysis passes on top. The REPL exposes these passes as individual commands.
 
+## Dependency Graph
+
+Before drilling into a single function, ilold maps how the whole project fits together. Because the solc frontend resolves cross-contract calls to their real targets, it can build a **contract dependency graph** with three relationship kinds:
+
+- **inherits** — one contract extends another.
+- **calls** — a function calls into another contract.
+- **holds** — a contract keeps a state variable of another contract's type.
+
+Cycles are condensed and the graph is sorted into **topological layers**, giving a reading order: dependency-free contracts (interfaces, libraries) first, the contracts that build on them next. The same data drives `deps`/`usedby` in the REPL, `analyze --deps` on the CLI, and the interactive graph that opens as the web canvas — color by source subsystem, line color by relationship.
+
 ## Key Differentiator
 
 Traditional static analyzers run a fixed set of detectors and produce a flat list of warnings. ilold does not detect vulnerabilities automatically. Instead, it gives the auditor tools to explore the contract interactively: build a call sequence, inspect state changes, trace execution flow, slice data dependencies. The auditor drives the analysis and records findings as they go.

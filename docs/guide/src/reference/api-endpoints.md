@@ -135,6 +135,10 @@ Returns a project summary with file count and a list of contracts (name, kind, f
 
 Returns the full project map with all contracts, their functions (with path counts and external call flags), state variables, and cross-contract relationships extracted from call graphs.
 
+### GET /api/project/depgraph
+
+Returns the contract dependency graph in Cytoscape-compatible JSON. Nodes carry the contract name, kind, source folder, and topological layer. Edges carry the relationship kinds (`inherits`, `calls`, `holds`) and call count.
+
 ### GET /api/contract/{name}
 
 Returns contract detail: name, kind, inheritance chain, functions (with path stats), state variables, and inherited functions and state variables.
@@ -142,6 +146,10 @@ Returns contract detail: name, kind, inheritance chain, functions (with path sta
 ### GET /api/contract/{name}/callgraph
 
 Returns the call graph for a contract in Cytoscape-compatible JSON format. Nodes represent functions (with contract, type, external flag). Edges represent calls (with kind and count).
+
+### GET /api/contract/{name}/depgraph
+
+Returns the contract's neighbourhood in the dependency graph: the contract itself (flagged `focus`), the contracts it depends on, and the contracts that depend on it. Same node and edge shape as `/api/project/depgraph`.
 
 ### GET /api/contract/{name}/{func}/cfg
 

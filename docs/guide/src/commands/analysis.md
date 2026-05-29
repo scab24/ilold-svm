@@ -116,6 +116,16 @@ ilold[Staking]> tr step 0
   (renders the persisted trace from session step 0)
 ```
 
+### Cross-contract calls
+
+External calls (`→`) to a typed contract are resolved to the real target. When
+`Vault` calls `pool.supply(...)` through an `IPool pool` variable, or casts an
+address with `IPool(addr).supply(...)`, the solc frontend resolves both to
+`IPool.supply` rather than an unnamed placeholder. The resolved target is what
+`info`, `trace`, the call graph, and `deps`/`usedby` report. Low-level calls
+with no typed target (`addr.call(...)`, assembly) cannot be resolved and stay
+anonymous.
+
 ## timeline
 
 `tl <variable>` or `timeline <variable>`

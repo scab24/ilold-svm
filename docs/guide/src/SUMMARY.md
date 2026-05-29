@@ -13,6 +13,7 @@
 
 # Workflows
 
+- [Mapping a Codebase](./workflows/dependency-mapping.md)
 - [Audit Walkthrough](./workflows/audit-walkthrough.md)
 - [Taint Analysis](./workflows/taint-analysis.md)
 

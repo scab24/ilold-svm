@@ -34,7 +34,25 @@ The `timeline`, `state`, and `sequence` endpoints require an active session with
 
 Session steps model real external transactions. Functions with `internal` or `private` visibility cannot be called from outside the contract, so they cannot be added as session steps via `c <func>`. Use `tr <func>` to inspect their execution flow, or call a public/external function that invokes them to see their effects through the modifier and internal-call inlining in the trace.
 
+## Project must compile
+
+The solc frontend compiles the whole Foundry project to produce the AST it
+analyzes. If the project does not compile -- missing dependencies, a version
+mismatch, an uninitialized submodule -- there is no AST and analysis cannot run.
+ilold reports the compiler error rather than analyzing a partial model. Point it
+at a directory with a `foundry.toml` whose contracts build.
+
+## Dependency graph keys contracts by name
+
+The contract dependency graph (`deps`, `usedby`, `analyze --deps`, the canvas)
+identifies contracts by name. If a project declares the same name twice -- for
+example two `EIP712Hash` libraries in different folders -- they collapse into a
+single node, and one's relationships can mask the other's. Cross-contract call
+edges also require a typed target: calls through `address.call(...)` or assembly
+have no resolvable contract and produce no `calls` edge.
+
 ## Related pages
 
 - [Taint Analysis](../workflows/taint-analysis.md) -- forward slice caveats in practice
+- [Contract Commands](../commands/contract.md) -- the `deps` and `usedby` commands
 - [HTTP API Reference](./api-endpoints.md)
