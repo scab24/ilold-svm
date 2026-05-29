@@ -521,6 +521,12 @@ fn map_call(node: &Node, index: &LineIndex) -> ExpressionKind {
         return ExpressionKind::TypeCast { type_name, expression };
     }
 
+    if node.attribute::<String>("kind").as_deref() == Some("structConstructorCall") {
+        return ExpressionKind::Tuple {
+            elements: arguments.into_iter().map(Some).collect(),
+        };
+    }
+
     if let Some(callee) = &callee {
         if callee.node_type == NodeType::NewExpression {
             return ExpressionKind::New { type_name: type_expr_name(callee), arguments };

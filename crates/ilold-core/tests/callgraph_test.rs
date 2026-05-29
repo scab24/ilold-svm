@@ -122,4 +122,23 @@ fn test_solc_cross_contract_resolved() {
         cast_edge,
         "IPool(addr).supply() casting must produce a depositCast → IPool::supply edge"
     );
+
+    let struct_as_call = cg
+        .node_indices()
+        .any(|i| cg[i].function == "DepositInfo");
+    assert!(
+        !struct_as_call,
+        "struct literal DepositInfo({{...}}) must not surface as a function call"
+    );
+
+    let nested_safeadd = cg.edge_indices().any(|e| {
+        let (src, dst) = cg.edge_endpoints(e).unwrap();
+        cg[src].function == "record"
+            && cg[dst].contract == "SafeMath"
+            && cg[dst].function == "safeAdd"
+    });
+    assert!(
+        nested_safeadd,
+        "calls nested inside a struct literal must still be collected"
+    );
 }

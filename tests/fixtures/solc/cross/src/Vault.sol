@@ -7,6 +7,11 @@ import {SafeMath} from "./SafeMath.sol";
 contract Vault {
     using SafeMath for uint256;
 
+    struct DepositInfo {
+        uint256 amount;
+        address from;
+    }
+
     IPool public pool;
 
     constructor(IPool pool_) {
@@ -17,6 +22,11 @@ contract Vault {
     function depositVia(uint256 amount) external returns (uint256) {
         uint256 total = amount.safeAdd(1);
         return pool.supply(total);
+    }
+
+    function record(uint256 amount) external view returns (uint256) {
+        DepositInfo memory info = DepositInfo({amount: amount.safeAdd(0), from: msg.sender});
+        return info.amount;
     }
 
     // Cross-contract call through interface casting of a raw address.
