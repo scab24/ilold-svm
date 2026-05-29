@@ -14,13 +14,13 @@ The binary is at `target/release/ilold`.
 
 ## Running
 
-Point ilold at a Solidity file or directory:
+Point ilold at a Foundry project — a directory containing a `foundry.toml`:
 
 ```
-cargo run -- explore contracts/staking.sol
+cargo run -- explore tests/fixtures/staking
 ```
 
-ilold parses the files, builds the model and CFGs, and drops you into the REPL:
+ilold compiles the project with solc, builds the model and CFGs, and drops you into the REPL:
 
 ```
   ╭──────────────────────────────────────────╮

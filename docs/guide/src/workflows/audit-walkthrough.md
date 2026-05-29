@@ -4,10 +4,10 @@ This walkthrough demonstrates a realistic audit of a Staking contract using the 
 
 ## Starting the session
 
-Launch ilold against the Staking contract source files:
+Launch ilold against the Staking Foundry project:
 
 ```
-ilold explore contracts/Staking.sol
+ilold explore tests/fixtures/staking
 ```
 
 The REPL starts and auto-selects the main contract:
