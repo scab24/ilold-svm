@@ -100,6 +100,49 @@ ilold[Staking]> ct
 
 Type badges: `[C]` contract, `[I]` interface, `[L]` library, `[A]` abstract.
 
+## deps
+
+`deps [contract]`
+
+Lists what a contract depends on — the current contract, or the named one. Each
+dependency is tagged with the kind of relationship:
+
+- **inherits** — the contract extends it (`is`).
+- **calls** — a function calls into it (resolved to the real target contract).
+- **holds** — it has a state variable of that contract/interface type.
+
+```
+ilold[Vault]> deps
+
+  Vault → depends on
+    IPool     calls×2 holds
+    SafeMath  calls×2
+```
+
+Here `Vault` calls into `IPool` twice and keeps an `IPool` state variable
+(`holds`), and calls the `SafeMath` library through a `using` directive.
+
+## usedby
+
+`usedby [contract]`
+
+The reverse direction — which contracts depend on this one. This is the blast
+radius: if you change the contract, these are the contracts that could be
+affected.
+
+```
+ilold[IPool]> usedby IPool
+
+  IPool ← used by (blast radius)
+    LendingPool  inherits
+    Vault        calls×2 holds
+```
+
+The same relationships are available project-wide on the CLI with
+`ilold analyze <project> --deps`, which prints every contract grouped into
+topological reading order (dependency-free contracts first), and as an
+interactive graph on the web canvas.
+
 ## use
 
 `use <contract>`
