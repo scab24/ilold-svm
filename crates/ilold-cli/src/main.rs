@@ -6,6 +6,7 @@ use clap::Parser;
 mod analyze;
 mod colors;
 mod context;
+mod deps_view;
 mod explore;
 mod fmt;
 mod interactive;
@@ -28,6 +29,8 @@ enum Commands {
         max_seq_depth: usize,
         #[arg(long)]
         verbose: bool,
+        #[arg(long)]
+        deps: bool,
     },
     /// Generate context for a function or sequence
     Context {
@@ -67,8 +70,12 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Analyze { path, contract, max_seq_depth, verbose } => {
-            analyze::run(&path, contract.as_deref(), max_seq_depth, verbose)
+        Commands::Analyze { path, contract, max_seq_depth, verbose, deps } => {
+            if deps {
+                analyze::run_deps(&path, contract.as_deref())
+            } else {
+                analyze::run(&path, contract.as_deref(), max_seq_depth, verbose)
+            }
         }
         Commands::Context { path, contract, function, sequence, list } => {
             context::run(&path, contract.as_deref(), function.as_deref(), sequence.as_deref(), list)
