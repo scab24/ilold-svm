@@ -6,6 +6,7 @@ contract Stmts {
     event Done(uint256 x);
     error Bad(uint256 x);
     uint256 public total;
+    uint256[] public items;
 
     modifier gated() {
         require(total >= 0, "g");
@@ -58,6 +59,10 @@ contract Stmts {
         }
         assert(total < 100);
         total -= 1;
+    }
+
+    function pushItem(uint256 x) external {
+        items.push(x);
     }
 
     function ext(uint256 x) external pure returns (uint256) {

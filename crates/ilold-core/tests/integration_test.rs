@@ -143,3 +143,23 @@ fn constructor_is_named() {
         .expect("constructor present");
     assert_eq!(ctor.name, "constructor");
 }
+
+#[test]
+fn array_push_is_not_an_external_call() {
+    let parser = SolcFrontend;
+    let project = parser.parse(&[fixture_path("solc/statements/src/Stmts.sol")]).unwrap();
+    let contract = project.contracts.iter().find(|c| c.name == "Stmts").unwrap();
+    let push_fn = contract.functions.iter().find(|f| f.name == "pushItem").unwrap();
+
+    let cfg = CfgBuilder::build(push_fn, contract).unwrap();
+    let tree = build_path_tree(
+        &cfg,
+        &contract.name,
+        &push_fn.name,
+        &contract.state_vars,
+        &PruningConfig::default(),
+    );
+
+    let has_external = tree.paths.iter().any(|p| !p.annotations.external_calls.is_empty());
+    assert!(!has_external, "array push must not be classified as an external call");
+}

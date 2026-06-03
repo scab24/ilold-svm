@@ -562,7 +562,9 @@ fn collect_calls(expr: &Expression, stmts: &mut Vec<CfgStatement>, from_modifier
                         });
                     }
                 }
-                ExpressionKind::MemberAccess { object, member, resolved } => {
+                ExpressionKind::MemberAccess { object, member, resolved }
+                    if member != "push" && member != "pop" =>
+                {
                     if let ExpressionKind::Identifier { name, .. } = &object.kind {
                         if name == "this" || name == "super" {
                             stmts.push(CfgStatement::InternalCall {
@@ -589,6 +591,7 @@ fn collect_calls(expr: &Expression, stmts: &mut Vec<CfgStatement>, from_modifier
                         });
                     }
                 }
+                ExpressionKind::MemberAccess { .. } => {}
                 _ => {
                     stmts.push(CfgStatement::InternalCall {
                         function: expr_to_string(callee),
