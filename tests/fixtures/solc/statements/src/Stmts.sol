@@ -7,6 +7,10 @@ contract Stmts {
     error Bad(uint256 x);
     uint256 public total;
     uint256[] public items;
+    uint256 public rCond;
+    uint256 public rAssert;
+    uint256 public rCompound;
+    uint256 public delVar;
 
     modifier gated() {
         require(total >= 0, "g");
@@ -53,26 +57,35 @@ contract Stmts {
         return acc;
     }
 
-    function reads() external {
-        if (total > 5) {
-            total += 1;
-        }
-        assert(total < 100);
-        total -= 1;
+    function reads() external view {
+        if (rCond > 5) {}
+        assert(rAssert < 100);
+    }
+
+    function compoundRead() external {
+        rCompound -= 1;
     }
 
     function pushItem(uint256 x) external {
         items.push(x);
     }
 
+    function popItem() external {
+        items.pop();
+    }
+
     function mutates(uint256 x) external {
         items.push(x);
         total++;
-        delete items;
+        delete delVar;
     }
 
     function getTotal() external view returns (uint256) {
         return total;
+    }
+
+    function pair() external view returns (uint256, uint256) {
+        return (total, rAssert);
     }
 
     function localOnly() external returns (uint256) {

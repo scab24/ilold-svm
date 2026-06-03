@@ -109,27 +109,34 @@ fn test_parse_file_not_found() {
     assert!(result.is_err());
 }
 
-#[test]
-fn reads_in_conditions_and_compound_assignments_detected() {
-    let parser = SolcFrontend;
-    let project = parser.parse(&[fixture_path("solc/statements/src/Stmts.sol")]).unwrap();
+fn state_access(fn_name: &str) -> (Vec<String>, Vec<String>) {
+    let project = SolcFrontend.parse(&[fixture_path("solc/statements/src/Stmts.sol")]).unwrap();
     let contract = project.contracts.iter().find(|c| c.name == "Stmts").unwrap();
-    let reads_fn = contract.functions.iter().find(|f| f.name == "reads").unwrap();
-
-    let cfg = CfgBuilder::build(reads_fn, contract).unwrap();
+    let f = contract.functions.iter().find(|f| f.name == fn_name).unwrap();
+    let cfg = CfgBuilder::build(f, contract).unwrap();
     let tree = build_path_tree(
         &cfg,
         &contract.name,
-        &reads_fn.name,
+        &f.name,
         &contract.state_vars,
         &PruningConfig::default(),
     );
+    let reads: Vec<String> = tree.paths.iter().flat_map(|p| p.annotations.state_reads.clone()).collect();
+    let writes: Vec<String> = tree.paths.iter().flat_map(|p| p.annotations.state_writes.clone()).collect();
+    (reads, writes)
+}
 
-    let reads_total = tree
-        .paths
-        .iter()
-        .any(|p| p.annotations.state_reads.iter().any(|r| r == "total"));
-    assert!(reads_total, "total read in if-condition/assert/compound not detected");
+#[test]
+fn reads_in_branch_condition_and_assert() {
+    let (reads, _) = state_access("reads");
+    assert!(reads.iter().any(|r| r == "rCond"), "state read in if-condition not detected");
+    assert!(reads.iter().any(|r| r == "rAssert"), "state read in assert not detected");
+}
+
+#[test]
+fn reads_via_compound_assignment_target() {
+    let (reads, _) = state_access("compoundRead");
+    assert!(reads.iter().any(|r| r == "rCompound"), "state read via compound assignment target not detected");
 }
 
 #[test]
@@ -165,47 +172,30 @@ fn array_push_is_not_an_external_call() {
 }
 
 #[test]
-fn push_increment_delete_count_as_writes() {
-    let parser = SolcFrontend;
-    let project = parser.parse(&[fixture_path("solc/statements/src/Stmts.sol")]).unwrap();
-    let contract = project.contracts.iter().find(|c| c.name == "Stmts").unwrap();
-    let f = contract.functions.iter().find(|f| f.name == "mutates").unwrap();
+fn push_increment_and_delete_count_as_writes() {
+    let (_, writes) = state_access("mutates");
+    assert!(writes.iter().any(|w| w.starts_with("items")), "push not detected as write");
+    assert!(writes.iter().any(|w| w == "total"), "increment not detected as write");
+    assert!(writes.iter().any(|w| w == "delVar"), "delete not detected as write");
+}
 
-    let cfg = CfgBuilder::build(f, contract).unwrap();
-    let tree = build_path_tree(
-        &cfg,
-        &contract.name,
-        &f.name,
-        &contract.state_vars,
-        &PruningConfig::default(),
-    );
-    let writes: Vec<String> = tree.paths.iter().flat_map(|p| p.annotations.state_writes.clone()).collect();
-
-    assert!(writes.iter().any(|w| w.contains("items")), "push/delete on items not detected as write");
-    assert!(writes.iter().any(|w| w == "total"), "increment on total not detected as write");
+#[test]
+fn array_pop_counts_as_write() {
+    let (_, writes) = state_access("popItem");
+    assert!(writes.iter().any(|w| w.starts_with("items")), "pop not detected as write");
 }
 
 #[test]
 fn return_value_reads_are_detected() {
-    let parser = SolcFrontend;
-    let project = parser.parse(&[fixture_path("solc/statements/src/Stmts.sol")]).unwrap();
-    let contract = project.contracts.iter().find(|c| c.name == "Stmts").unwrap();
-    let f = contract.functions.iter().find(|f| f.name == "getTotal").unwrap();
+    let (reads, _) = state_access("getTotal");
+    assert!(reads.iter().any(|r| r == "total"), "state read in return value not detected");
+}
 
-    let cfg = CfgBuilder::build(f, contract).unwrap();
-    let tree = build_path_tree(
-        &cfg,
-        &contract.name,
-        &f.name,
-        &contract.state_vars,
-        &PruningConfig::default(),
-    );
-
-    let reads_total = tree
-        .paths
-        .iter()
-        .any(|p| p.annotations.state_reads.iter().any(|r| r == "total"));
-    assert!(reads_total, "state read in return value not detected");
+#[test]
+fn tuple_return_reads_are_detected() {
+    let (reads, _) = state_access("pair");
+    assert!(reads.iter().any(|r| r == "total"), "tuple return read (total) not detected");
+    assert!(reads.iter().any(|r| r == "rAssert"), "tuple return read (rAssert) not detected");
 }
 
 #[test]
