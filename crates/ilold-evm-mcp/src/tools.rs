@@ -25,6 +25,66 @@ pub fn build_tool_registry() -> Vec<Tool> {
             "Dependencies of one contract and its blast radius: the contracts it depends on, and the contracts that depend on it.",
             contract_schema(),
         ),
+        tool(
+            "ilold_contract_detail",
+            "Full detail of one contract: functions (visibility, mutability, modifiers, params, path stats), state variables, inheritance, and inherited members.",
+            contract_schema(),
+        ),
+        tool(
+            "ilold_entry_points",
+            "Functions of a contract with their access level (public, or restricted to a role), state-write and external-call flags. The externally reachable attack surface.",
+            contract_schema(),
+        ),
+        tool(
+            "ilold_search",
+            "Searchable names in a contract: functions, state variables, events, and external-call targets.",
+            contract_schema(),
+        ),
+        tool(
+            "ilold_function_analysis",
+            "Narrative of one function: paths (happy/revert), state reads and writes, external calls resolved to their real target, require checks, events, transitive effects, and observations.",
+            contract_function_schema(),
+        ),
+        tool(
+            "ilold_trace",
+            "Execution tree of a function with modifier bodies inlined and external calls resolved. depth limits internal-call inlining; reverts includes revert paths.",
+            trace_schema(),
+        ),
+        tool(
+            "ilold_callgraph",
+            "Call graph of a contract: function call edges (internal, external, inherited) with call counts.",
+            contract_schema(),
+        ),
+        tool(
+            "ilold_cfg",
+            "Control flow graph of one function: basic blocks and branch edges.",
+            contract_function_schema(),
+        ),
+        tool(
+            "ilold_function_paths",
+            "Enumerated execution paths of one function, each with annotations (state writes, external calls, require checks) and terminal kind (return/revert).",
+            contract_function_schema(),
+        ),
+        tool(
+            "ilold_source",
+            "Solidity source code of one function with its file path and line span.",
+            contract_function_schema(),
+        ),
+        tool(
+            "ilold_who_touches",
+            "Functions that read and write a state variable, with their access level.",
+            contract_variable_schema(),
+        ),
+        tool(
+            "ilold_sequence_analysis",
+            "Per-function behavior and the transition matrix of a contract: state shared between functions and conditions affected.",
+            contract_schema(),
+        ),
+        tool(
+            "ilold_sequences",
+            "Transaction sequence tree of a contract up to a depth.",
+            sequences_schema(),
+        ),
     ]
 }
 
@@ -46,8 +106,56 @@ fn empty_schema() -> Value {
 fn contract_schema() -> Value {
     json!({
         "type": "object",
+        "properties": { "contract": { "type": "string", "description": "Contract name" } },
+        "required": ["contract"],
+        "additionalProperties": false
+    })
+}
+
+fn contract_function_schema() -> Value {
+    json!({
+        "type": "object",
         "properties": {
-            "contract": { "type": "string", "description": "Contract name" }
+            "contract": { "type": "string", "description": "Contract name" },
+            "function": { "type": "string", "description": "Function name" }
+        },
+        "required": ["contract", "function"],
+        "additionalProperties": false
+    })
+}
+
+fn contract_variable_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "contract": { "type": "string", "description": "Contract name" },
+            "variable": { "type": "string", "description": "State variable name" }
+        },
+        "required": ["contract", "variable"],
+        "additionalProperties": false
+    })
+}
+
+fn trace_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "contract": { "type": "string", "description": "Contract name" },
+            "function": { "type": "string", "description": "Function name" },
+            "depth": { "type": "integer", "description": "Max internal-call inlining depth (default 2)" },
+            "reverts": { "type": "boolean", "description": "Include revert paths (default false)" }
+        },
+        "required": ["contract", "function"],
+        "additionalProperties": false
+    })
+}
+
+fn sequences_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "contract": { "type": "string", "description": "Contract name" },
+            "depth": { "type": "integer", "description": "Max sequence depth" }
         },
         "required": ["contract"],
         "additionalProperties": false

@@ -40,6 +40,28 @@ impl IloldClient {
             .map_err(|e| McpClientError::InvalidResponse(e.to_string()))
     }
 
+    pub async fn post(&self, path: &str, body: Value) -> Result<Value, McpClientError> {
+        let url = format!("{}{}", self.base_url, path);
+        let resp = self
+            .http
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| McpClientError::Unreachable {
+                url: url.clone(),
+                reason: e.to_string(),
+            })?;
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(McpClientError::HttpError { status, body });
+        }
+        resp.json::<Value>()
+            .await
+            .map_err(|e| McpClientError::InvalidResponse(e.to_string()))
+    }
+
     pub async fn health_check(&self) -> Result<(), McpClientError> {
         self.get("/api/project").await.map(|_| ())
     }
