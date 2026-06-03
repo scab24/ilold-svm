@@ -382,23 +382,14 @@ fn map_statement(node: &Node, index: &LineIndex) -> Statement {
                 .attribute::<Node>("loopExpression")
                 .and_then(|s| s.attribute::<Node>("expression"))
                 .map(|e| map_expression(&e, index)),
-            body: node
-                .attribute::<Node>("body")
-                .map(|b| map_body(&b, index))
-                .unwrap_or_default(),
+            body: node.body.as_deref().map(|b| map_body(b, index)).unwrap_or_default(),
         },
         NodeType::WhileStatement => StatementKind::While {
             condition: child_expr(node, "condition", index),
-            body: node
-                .attribute::<Node>("body")
-                .map(|b| map_body(&b, index))
-                .unwrap_or_default(),
+            body: node.body.as_deref().map(|b| map_body(b, index)).unwrap_or_default(),
         },
         NodeType::DoWhileStatement => StatementKind::DoWhile {
-            body: node
-                .attribute::<Node>("body")
-                .map(|b| map_body(&b, index))
-                .unwrap_or_default(),
+            body: node.body.as_deref().map(|b| map_body(b, index)).unwrap_or_default(),
             condition: child_expr(node, "condition", index),
         },
         NodeType::Return => StatementKind::Return {
@@ -846,6 +837,34 @@ mod tests {
             body.iter().any(|s| matches!(s.kind, K::VariableDeclaration { .. })),
             "var decl"
         );
+
+        let for_body = body
+            .iter()
+            .find_map(|s| match &s.kind {
+                K::For { body, .. } => Some(body),
+                _ => None,
+            })
+            .expect("for present");
+        assert!(
+            for_body.iter().any(|s| matches!(s.kind, K::ExpressionStmt { .. })),
+            "for body lost its statements"
+        );
+        let while_body = body
+            .iter()
+            .find_map(|s| match &s.kind {
+                K::While { body, .. } => Some(body),
+                _ => None,
+            })
+            .expect("while present");
+        assert!(!while_body.is_empty(), "while body lost its statements");
+        let do_body = body
+            .iter()
+            .find_map(|s| match &s.kind {
+                K::DoWhile { body, .. } => Some(body),
+                _ => None,
+            })
+            .expect("do-while present");
+        assert!(!do_body.is_empty(), "do-while body lost its statements");
 
         let gated = stmts
             .modifiers
