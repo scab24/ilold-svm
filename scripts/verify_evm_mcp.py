@@ -10,7 +10,10 @@ import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIXTURE = os.path.join(ROOT, "tests/fixtures/solc/cross")
-ILOLD = os.path.join(ROOT, "target/debug/ilold")
+_GLOBAL = os.path.expanduser("~/.cargo/bin/ilold-evm")
+ILOLD = os.environ.get("ILOLD_BIN") or (
+    _GLOBAL if os.path.exists(_GLOBAL) else os.path.join(ROOT, "target/debug/ilold")
+)
 PORT = int(os.environ.get("PORT", "8079"))
 URL = f"http://127.0.0.1:{PORT}"
 
