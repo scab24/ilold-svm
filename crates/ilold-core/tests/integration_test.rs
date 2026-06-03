@@ -131,3 +131,15 @@ fn reads_in_conditions_and_compound_assignments_detected() {
         .any(|p| p.annotations.state_reads.iter().any(|r| r == "total"));
     assert!(reads_total, "total read in if-condition/assert/compound not detected");
 }
+
+#[test]
+fn constructor_is_named() {
+    let project = SolcFrontend.parse_project(&fixture_path("solc/cross")).unwrap();
+    let vault = project.contracts.iter().find(|c| c.name == "Vault").unwrap();
+    let ctor = vault
+        .functions
+        .iter()
+        .find(|f| matches!(f.kind, FunctionKind::Constructor))
+        .expect("constructor present");
+    assert_eq!(ctor.name, "constructor");
+}

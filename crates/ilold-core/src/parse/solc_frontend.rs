@@ -207,9 +207,10 @@ fn map_contract(node: &Node, index: &LineIndex, decl_table: &mut DeclTable) -> O
 }
 
 fn map_function(node: &Node, index: &LineIndex) -> FunctionDef {
+    let kind = function_kind(node);
     FunctionDef {
-        name: node.attribute::<String>("name").unwrap_or_default(),
-        kind: function_kind(node),
+        name: function_name(node, kind),
+        kind,
         visibility: visibility(node),
         mutability: mutability(node),
         modifiers: modifier_refs(node),
@@ -773,6 +774,18 @@ fn function_kind(node: &Node) -> FunctionKind {
         Some("fallback") => FunctionKind::Fallback,
         Some("receive") => FunctionKind::Receive,
         _ => FunctionKind::Function,
+    }
+}
+
+fn function_name(node: &Node, kind: FunctionKind) -> String {
+    match node.attribute::<String>("name") {
+        Some(n) if !n.is_empty() => n,
+        _ => match kind {
+            FunctionKind::Constructor => "constructor".to_string(),
+            FunctionKind::Receive => "receive".to_string(),
+            FunctionKind::Fallback => "fallback".to_string(),
+            FunctionKind::Function => String::new(),
+        },
     }
 }
 
