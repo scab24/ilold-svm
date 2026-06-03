@@ -24,6 +24,7 @@ pub struct CfgBuilder {
     /// restore this field across recursive descent. This is acceptable for
     /// common modifiers (onlyOwner, nonReentrant, lock, whenNotPaused).
     current_modifier: Option<String>,
+    state_vars: Vec<String>,
 }
 
 impl CfgBuilder {
@@ -45,6 +46,7 @@ impl CfgBuilder {
             next_block_id: 0,
             current_block: NodeIndex::new(0), // will be replaced
             current_modifier: None,
+            state_vars: contract.state_vars.iter().map(|sv| sv.name.clone()).collect(),
         };
 
         let entry = builder.add_block(BlockKind::Entry);
@@ -121,6 +123,12 @@ impl CfgBuilder {
     }
 
     fn add_stmt_to_current(&mut self, stmt: CfgStatement) {
+        if let CfgStatement::StateWrite { variable, .. } = &stmt {
+            let base = crate::util::target_base_name(variable);
+            if !self.state_vars.iter().any(|n| n == base) {
+                return;
+            }
+        }
         if let Some(block) = self.graph.node_weight_mut(self.current_block) {
             block.statements.push(stmt);
         }

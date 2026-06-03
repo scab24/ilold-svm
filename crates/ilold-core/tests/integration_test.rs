@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use ilold_core::cfg::builder::CfgBuilder;
-use ilold_core::cfg::types::BlockKind;
+use ilold_core::cfg::types::{BlockKind, CfgStatement};
 use ilold_core::model::function::{FunctionKind, Visibility, Mutability};
 use ilold_core::parse::solc_frontend::SolcFrontend;
 use ilold_core::parse::ProjectParser;
@@ -206,4 +206,21 @@ fn return_value_reads_are_detected() {
         .iter()
         .any(|p| p.annotations.state_reads.iter().any(|r| r == "total"));
     assert!(reads_total, "state read in return value not detected");
+}
+
+#[test]
+fn local_variable_mutations_are_not_state_writes() {
+    let parser = SolcFrontend;
+    let project = parser.parse(&[fixture_path("solc/statements/src/Stmts.sol")]).unwrap();
+    let contract = project.contracts.iter().find(|c| c.name == "Stmts").unwrap();
+    let f = contract.functions.iter().find(|f| f.name == "localOnly").unwrap();
+
+    let cfg = CfgBuilder::build(f, contract).unwrap();
+    let local_write = cfg.node_weights().any(|b| {
+        b.statements
+            .iter()
+            .any(|s| matches!(s, CfgStatement::StateWrite { variable, .. } if variable == "tmp"))
+    });
+
+    assert!(!local_write, "mutation of a local variable must not emit a state write");
 }

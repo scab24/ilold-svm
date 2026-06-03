@@ -75,6 +75,12 @@ contract Stmts {
         return total;
     }
 
+    function localOnly() external returns (uint256) {
+        uint256 tmp = total;
+        tmp++;
+        return tmp;
+    }
+
     function ext(uint256 x) external pure returns (uint256) {
         return x;
     }
