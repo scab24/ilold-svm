@@ -7,17 +7,22 @@ use rmcp::model::{
 };
 use rmcp::service::{RequestContext, RoleServer};
 use serde_json::{json, Value};
+use tokio::sync::Mutex;
 
 use crate::client::IloldClient;
 use crate::tools;
 
 pub struct EvmMcpServer {
     client: Arc<IloldClient>,
+    current_contract: Arc<Mutex<Option<String>>>,
 }
 
 impl EvmMcpServer {
     pub fn new(client: Arc<IloldClient>) -> Self {
-        Self { client }
+        Self {
+            client,
+            current_contract: Arc::new(Mutex::new(None)),
+        }
     }
 }
 
@@ -49,12 +54,13 @@ impl ServerHandler for EvmMcpServer {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let name = request.name.to_string();
         let args = request.arguments.map(Value::Object);
-        Ok(dispatch(&self.client, &name, args.as_ref()).await)
+        Ok(dispatch(&self.client, &self.current_contract, &name, args.as_ref()).await)
     }
 }
 
 pub async fn dispatch(
     client: &IloldClient,
+    current: &Mutex<Option<String>>,
     tool_name: &str,
     arguments: Option<&Value>,
 ) -> CallToolResult {
@@ -63,6 +69,18 @@ pub async fn dispatch(
             match $opt {
                 Some(v) => v,
                 None => return error_result(format!("missing required field: {}", $field)),
+            }
+        };
+    }
+    macro_rules! active {
+        () => {
+            match current.lock().await.clone() {
+                Some(c) => c,
+                None => {
+                    return error_result(
+                        "no active contract — call ilold_use <contract> first".to_string(),
+                    )
+                }
             }
         };
     }
@@ -150,6 +168,82 @@ pub async fn dispatch(
                     json!({ "contract": c, "command": { "Who": { "variable": v } } }),
                 )
                 .await
+        }
+        "ilold_use" => {
+            let c = need!(arg_str(arguments, "contract"), "contract");
+            if let Err(e) = client.get(&format!("/api/contract/{c}")).await {
+                return error_result(format!("contract '{c}' not found: {e}"));
+            }
+            let _ = client
+                .post("/api/cmd", json!({ "contract": c, "command": "Session" }))
+                .await;
+            *current.lock().await = Some(c.clone());
+            return ok_result(json!({ "active_contract": c }));
+        }
+        "ilold_session_call" => {
+            let c = active!();
+            let f = need!(arg_str(arguments, "function"), "function");
+            client
+                .post("/api/cmd", json!({ "contract": c, "command": { "Call": { "func": f } } }))
+                .await
+        }
+        "ilold_session_state" => {
+            let c = active!();
+            client.post("/api/cmd", json!({ "contract": c, "command": "State" })).await
+        }
+        "ilold_session_back" => {
+            let c = active!();
+            client.post("/api/cmd", json!({ "contract": c, "command": "Back" })).await
+        }
+        "ilold_session_clear" => {
+            let c = active!();
+            client.post("/api/cmd", json!({ "contract": c, "command": "Clear" })).await
+        }
+        "ilold_timeline" => {
+            let _ = active!();
+            let v = need!(arg_str(arguments, "variable"), "variable");
+            client.get(&format!("/api/session/timeline/{v}")).await
+        }
+        "ilold_slice" => {
+            let _ = active!();
+            let f = need!(arg_str(arguments, "function"), "function");
+            let v = need!(arg_str(arguments, "variable"), "variable");
+            let dir = arg_str(arguments, "direction").unwrap_or_else(|| "both".to_string());
+            client.get(&format!("/api/session/slice/{f}/{v}?direction={dir}")).await
+        }
+        "ilold_record_finding" => {
+            let c = active!();
+            let severity = need!(arg_str(arguments, "severity"), "severity");
+            let title = need!(arg_str(arguments, "title"), "title");
+            let description = arg_str(arguments, "description").unwrap_or_default();
+            client
+                .post(
+                    "/api/cmd",
+                    json!({ "contract": c, "command": { "Finding": { "severity": severity, "title": title, "description": description } } }),
+                )
+                .await
+        }
+        "ilold_note" => {
+            let c = active!();
+            let text = need!(arg_str(arguments, "text"), "text");
+            client
+                .post("/api/cmd", json!({ "contract": c, "command": { "Note": { "text": text } } }))
+                .await
+        }
+        "ilold_set_status" => {
+            let c = active!();
+            let func = need!(arg_str(arguments, "function"), "function");
+            let status = need!(arg_str(arguments, "status"), "status");
+            client
+                .post(
+                    "/api/cmd",
+                    json!({ "contract": c, "command": { "Status": { "func": func, "status": status } } }),
+                )
+                .await
+        }
+        "ilold_export" => {
+            let c = active!();
+            client.post("/api/cmd", json!({ "contract": c, "command": "Export" })).await
         }
         other => return error_result(format!("unknown tool: {other}")),
     };

@@ -85,6 +85,61 @@ pub fn build_tool_registry() -> Vec<Tool> {
             "Transaction sequence tree of a contract up to a depth.",
             sequences_schema(),
         ),
+        tool(
+            "ilold_use",
+            "Set the active contract for the session-scoped tools (session_call/state/back/clear, timeline, findings). Call before building a session.",
+            contract_schema(),
+        ),
+        tool(
+            "ilold_slice",
+            "Backward and forward dataflow of a variable in a function of the active contract. A forward slice of a parameter is a taint analysis. Requires an active contract (ilold_use).",
+            slice_schema(),
+        ),
+        tool(
+            "ilold_session_call",
+            "Add a function call to the active session sequence. Requires an active contract (ilold_use).",
+            function_only_schema(),
+        ),
+        tool(
+            "ilold_session_state",
+            "Accumulated state changes across the active session. Requires an active contract (ilold_use).",
+            empty_schema(),
+        ),
+        tool(
+            "ilold_session_back",
+            "Remove the last step from the active session. Requires an active contract (ilold_use).",
+            empty_schema(),
+        ),
+        tool(
+            "ilold_session_clear",
+            "Reset the active session. Requires an active contract (ilold_use).",
+            empty_schema(),
+        ),
+        tool(
+            "ilold_timeline",
+            "Mutations of a state variable across the steps of the active session. Build a session with session_call first.",
+            variable_only_schema(),
+        ),
+        tool(
+            "ilold_record_finding",
+            "Record a security finding against the active session. Requires an active contract (ilold_use).",
+            finding_schema(),
+        ),
+        tool(
+            "ilold_note",
+            "Attach a note to the current step of the active session. Requires an active contract (ilold_use).",
+            note_schema(),
+        ),
+        tool(
+            "ilold_set_status",
+            "Set the review status of a function. Requires an active contract (ilold_use).",
+            status_schema(),
+        ),
+        tool(
+            "ilold_export",
+            "Render the active session, findings and notes as a markdown report. Requires an active contract (ilold_use).",
+            empty_schema(),
+        ),
     ]
 }
 
@@ -158,6 +213,71 @@ fn sequences_schema() -> Value {
             "depth": { "type": "integer", "description": "Max sequence depth" }
         },
         "required": ["contract"],
+        "additionalProperties": false
+    })
+}
+
+fn function_only_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": { "function": { "type": "string", "description": "Function name" } },
+        "required": ["function"],
+        "additionalProperties": false
+    })
+}
+
+fn variable_only_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": { "variable": { "type": "string", "description": "State variable name" } },
+        "required": ["variable"],
+        "additionalProperties": false
+    })
+}
+
+fn slice_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "function": { "type": "string", "description": "Function name" },
+            "variable": { "type": "string", "description": "Variable to slice" },
+            "direction": { "type": "string", "enum": ["backward", "forward", "both"], "description": "Slice direction (default both)" }
+        },
+        "required": ["function", "variable"],
+        "additionalProperties": false
+    })
+}
+
+fn finding_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "severity": { "type": "string", "enum": ["Critical", "High", "Medium", "Low", "Informational"], "description": "Finding severity" },
+            "title": { "type": "string", "description": "Short finding title" },
+            "description": { "type": "string", "description": "Optional details" }
+        },
+        "required": ["severity", "title"],
+        "additionalProperties": false
+    })
+}
+
+fn note_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": { "text": { "type": "string", "description": "Note body" } },
+        "required": ["text"],
+        "additionalProperties": false
+    })
+}
+
+fn status_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "function": { "type": "string", "description": "Function name" },
+            "status": { "type": "string", "enum": ["Reviewed", "Suspicious", "Vulnerable", "Clean", "InProgress", "NotReviewed"], "description": "Review status" }
+        },
+        "required": ["function", "status"],
         "additionalProperties": false
     })
 }
