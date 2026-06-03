@@ -63,6 +63,11 @@ enum Commands {
         #[arg(long)]
         attach: Option<String>,
     },
+    /// Run the MCP server (stdio) exposing the EVM analysis as tools for LLM agents
+    EvmMcp {
+        #[arg(long, default_value = "http://127.0.0.1:8080")]
+        server_url: String,
+    },
 }
 
 #[tokio::main]
@@ -92,6 +97,9 @@ async fn main() -> Result<()> {
                 let root = foundry_root(&path)?;
                 explore::run(vec![root], port, max_seq_depth, attach).await
             }
+        }
+        Commands::EvmMcp { server_url } => {
+            ilold_evm_mcp::run(ilold_evm_mcp::Config { server_url }).await
         }
     }
 }
