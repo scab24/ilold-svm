@@ -690,6 +690,7 @@ fn unary_op(node: &Node) -> UnaryOperator {
         "++" => UnaryOperator::PostIncrement,
         "--" if prefix => UnaryOperator::PreDecrement,
         "--" => UnaryOperator::PostDecrement,
+        "delete" => UnaryOperator::Delete,
         _ => UnaryOperator::Not,
     }
 }

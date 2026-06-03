@@ -65,6 +65,12 @@ contract Stmts {
         items.push(x);
     }
 
+    function mutates(uint256 x) external {
+        items.push(x);
+        total++;
+        delete items;
+    }
+
     function ext(uint256 x) external pure returns (uint256) {
         return x;
     }

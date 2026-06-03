@@ -542,6 +542,16 @@ fn classify_expression(expr: &Expression, from_modifier: &Option<String>) -> Vec
         });
     }
 
+    if let ExpressionKind::UnaryOp { operator, operand } = &expr.kind {
+        if operator.mutates_operand() {
+            stmts.push(CfgStatement::StateWrite {
+                variable: expr_to_string(operand),
+                span: None,
+                from_modifier: from_modifier.clone(),
+            });
+        }
+    }
+
     stmts
 }
 
@@ -591,7 +601,13 @@ fn collect_calls(expr: &Expression, stmts: &mut Vec<CfgStatement>, from_modifier
                         });
                     }
                 }
-                ExpressionKind::MemberAccess { .. } => {}
+                ExpressionKind::MemberAccess { object, .. } => {
+                    stmts.push(CfgStatement::StateWrite {
+                        variable: expr_to_string(object),
+                        span: None,
+                        from_modifier: from_modifier.clone(),
+                    });
+                }
                 _ => {
                     stmts.push(CfgStatement::InternalCall {
                         function: expr_to_string(callee),

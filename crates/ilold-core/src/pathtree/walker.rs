@@ -396,10 +396,13 @@ fn collect_annotations(
                 }
             }
             CfgStatement::StateWrite { variable, .. } => {
-                annotations.state_writes.push(variable.clone());
-                let normalized = normalize_path(variable);
-                if !annotations.state_write_paths.contains(&normalized) {
-                    annotations.state_write_paths.push(normalized);
+                let base = crate::util::target_base_name(variable);
+                if state_vars.iter().any(|sv| sv.name == base) {
+                    annotations.state_writes.push(variable.clone());
+                    let normalized = normalize_path(variable);
+                    if !annotations.state_write_paths.contains(&normalized) {
+                        annotations.state_write_paths.push(normalized);
+                    }
                 }
             }
             CfgStatement::StateRead { variable, .. } => {

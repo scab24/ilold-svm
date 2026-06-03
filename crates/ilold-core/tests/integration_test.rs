@@ -163,3 +163,24 @@ fn array_push_is_not_an_external_call() {
     let has_external = tree.paths.iter().any(|p| !p.annotations.external_calls.is_empty());
     assert!(!has_external, "array push must not be classified as an external call");
 }
+
+#[test]
+fn push_increment_delete_count_as_writes() {
+    let parser = SolcFrontend;
+    let project = parser.parse(&[fixture_path("solc/statements/src/Stmts.sol")]).unwrap();
+    let contract = project.contracts.iter().find(|c| c.name == "Stmts").unwrap();
+    let f = contract.functions.iter().find(|f| f.name == "mutates").unwrap();
+
+    let cfg = CfgBuilder::build(f, contract).unwrap();
+    let tree = build_path_tree(
+        &cfg,
+        &contract.name,
+        &f.name,
+        &contract.state_vars,
+        &PruningConfig::default(),
+    );
+    let writes: Vec<String> = tree.paths.iter().flat_map(|p| p.annotations.state_writes.clone()).collect();
+
+    assert!(writes.iter().any(|w| w.contains("items")), "push/delete on items not detected as write");
+    assert!(writes.iter().any(|w| w == "total"), "increment on total not detected as write");
+}
