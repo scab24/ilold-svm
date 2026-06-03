@@ -20,4 +20,5 @@
 # Reference
 
 - [HTTP API](./reference/api-endpoints.md)
+- [MCP Server](./reference/mcp.md)
 - [Known Limitations](./reference/limitations.md)
