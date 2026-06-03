@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use foundry_compilers::solc::{SolcCompiler, SolcSettings};
 use foundry_compilers::{ProjectBuilder, ProjectPathsConfig};
 use foundry_compilers_artifacts_solc::ast::{Node, NodeType};
-use foundry_compilers_artifacts_solc::Settings;
+use foundry_compilers_artifacts_solc::{Remapping, Settings};
 
 use crate::model::common::*;
 use crate::model::contract::*;
@@ -29,9 +29,14 @@ impl ProjectParser for SolcFrontend {
 
 impl SolcFrontend {
     pub fn parse_project(&self, root: &Path) -> Result<Project, ParseError> {
-        let paths = ProjectPathsConfig::dapptools(root).map_err(|e| ParseError::Internal {
+        let mut paths = ProjectPathsConfig::dapptools(root).map_err(|e| ParseError::Internal {
             message: format!("solc paths config: {e}"),
         })?;
+        let mut remappings = read_remappings(root);
+        remappings.append(&mut paths.remappings);
+        paths.remappings = remappings;
+        let src_dir = paths.sources.clone();
+
         let settings = SolcSettings {
             settings: Settings::default().with_ast(),
             ..Default::default()
@@ -75,14 +80,15 @@ impl SolcFrontend {
             let file_index = source_files.len();
             let index = LineIndex::new(file_index, &content);
             let path_str = path.display().to_string();
-            let skip_listing = ["/dependencies/", "/lib/", "/deployments/", "/config-engine/"]
+            let vendored = ["/dependencies/", "/deployments/", "/config-engine/"]
                 .iter()
                 .any(|seg| path_str.contains(seg));
+            let listed = path.starts_with(&src_dir) && !vendored;
 
             for node in &ast.nodes {
                 if node.node_type == NodeType::ContractDefinition {
                     if let Some(contract) = map_contract(node, &index, &mut decl_table) {
-                        if !skip_listing {
+                        if listed {
                             contracts.push(contract);
                         }
                     }
@@ -126,6 +132,25 @@ fn project_root(paths: &[PathBuf]) -> Result<PathBuf, ParseError> {
         }
     }
     Ok(start)
+}
+
+fn read_remappings(root: &Path) -> Vec<Remapping> {
+    let text = match std::fs::read_to_string(root.join("remappings.txt")) {
+        Ok(t) => t,
+        Err(_) => return Vec::new(),
+    };
+    let abs_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .filter_map(|line| line.parse::<Remapping>().ok())
+        .map(|mut r| {
+            if Path::new(&r.path).is_relative() {
+                r.path = abs_root.join(&r.path).to_string_lossy().into_owned();
+            }
+            r
+        })
+        .collect()
 }
 
 fn map_contract(node: &Node, index: &LineIndex, decl_table: &mut DeclTable) -> Option<ContractDef> {
