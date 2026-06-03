@@ -13,6 +13,8 @@ pub struct BasicBlock {
     pub kind: BlockKind,
     pub statements: Vec<CfgStatement>,
     pub span: Option<SourceSpan>,
+    #[serde(default)]
+    pub return_value: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

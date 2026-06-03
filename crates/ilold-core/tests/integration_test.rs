@@ -184,3 +184,26 @@ fn push_increment_delete_count_as_writes() {
     assert!(writes.iter().any(|w| w.contains("items")), "push/delete on items not detected as write");
     assert!(writes.iter().any(|w| w == "total"), "increment on total not detected as write");
 }
+
+#[test]
+fn return_value_reads_are_detected() {
+    let parser = SolcFrontend;
+    let project = parser.parse(&[fixture_path("solc/statements/src/Stmts.sol")]).unwrap();
+    let contract = project.contracts.iter().find(|c| c.name == "Stmts").unwrap();
+    let f = contract.functions.iter().find(|f| f.name == "getTotal").unwrap();
+
+    let cfg = CfgBuilder::build(f, contract).unwrap();
+    let tree = build_path_tree(
+        &cfg,
+        &contract.name,
+        &f.name,
+        &contract.state_vars,
+        &PruningConfig::default(),
+    );
+
+    let reads_total = tree
+        .paths
+        .iter()
+        .any(|p| p.annotations.state_reads.iter().any(|r| r == "total"));
+    assert!(reads_total, "state read in return value not detected");
+}

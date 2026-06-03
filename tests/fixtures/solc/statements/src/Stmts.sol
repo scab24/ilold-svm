@@ -71,6 +71,10 @@ contract Stmts {
         delete items;
     }
 
+    function getTotal() external view returns (uint256) {
+        return total;
+    }
+
     function ext(uint256 x) external pure returns (uint256) {
         return x;
     }

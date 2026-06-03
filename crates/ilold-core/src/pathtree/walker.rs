@@ -145,6 +145,10 @@ pub fn build_path_tree(
         // Collect annotations from this block's statements
         collect_annotations(&block.statements, state_vars, &mut annotations);
 
+        if let Some(rv) = &block.return_value {
+            scan_reads(rv, state_vars, &mut annotations);
+        }
+
         // Terminal check
         match block.kind {
             BlockKind::Return => {

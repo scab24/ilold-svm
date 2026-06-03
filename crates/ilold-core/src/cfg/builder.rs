@@ -112,6 +112,7 @@ impl CfgBuilder {
             kind,
             statements: Vec::new(),
             span: None,
+            return_value: None,
         })
     }
 
@@ -387,6 +388,11 @@ impl CfgBuilder {
             }
         }
         let ret = self.add_block(BlockKind::Return);
+        if let Some(expr) = value {
+            if let Some(block) = self.graph.node_weight_mut(ret) {
+                block.return_value = Some(expr_to_string(expr));
+            }
+        }
         self.add_edge(self.current_block, ret, BranchEdge::Unconditional);
         self.current_block = ret;
     }
