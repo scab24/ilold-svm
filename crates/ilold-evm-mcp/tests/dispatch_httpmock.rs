@@ -263,3 +263,18 @@ async fn p3_slice_requires_active_contract() {
     assert_eq!(res.is_error, Some(true), "slice must require an active contract");
     assert_eq!(slice.hits(), 0, "no slice request without an active contract");
 }
+
+#[tokio::test]
+async fn p3_command_result_error_surfaces_as_mcp_error() {
+    let server = MockServer::start();
+    let cmd = server.mock(|w, t| {
+        w.method(POST).path("/api/cmd");
+        t.status(200).json_body(json!({ "Error": { "message": "Function 'foo' not found" } }));
+    });
+    let client = IloldClient::new(server.base_url());
+    let current = Mutex::new(Some("Vault".to_string()));
+
+    let res = dispatch(&client, &current, "ilold_session_call", Some(&json!({"function":"foo"}))).await;
+    cmd.assert();
+    assert_eq!(res.is_error, Some(true), "backend CommandResult::Error (HTTP 200) must surface as an MCP error");
+}

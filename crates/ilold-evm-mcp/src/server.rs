@@ -248,9 +248,16 @@ pub async fn dispatch(
         other => return error_result(format!("unknown tool: {other}")),
     };
     match result {
-        Ok(value) => ok_result(value),
+        Ok(value) => match command_error(&value) {
+            Some(message) => error_result(message),
+            None => ok_result(value),
+        },
         Err(err) => error_result(err.to_string()),
     }
+}
+
+fn command_error(value: &Value) -> Option<String> {
+    value.get("Error")?.get("message")?.as_str().map(str::to_string)
 }
 
 fn arg_str(arguments: Option<&Value>, key: &str) -> Option<String> {
