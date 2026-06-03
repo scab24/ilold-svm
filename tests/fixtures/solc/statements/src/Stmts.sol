@@ -52,6 +52,14 @@ contract Stmts {
         return acc;
     }
 
+    function reads() external {
+        if (total > 5) {
+            total += 1;
+        }
+        assert(total < 100);
+        total -= 1;
+    }
+
     function ext(uint256 x) external pure returns (uint256) {
         return x;
     }

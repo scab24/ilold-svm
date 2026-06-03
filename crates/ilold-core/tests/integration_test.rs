@@ -5,6 +5,8 @@ use ilold_core::cfg::types::BlockKind;
 use ilold_core::model::function::{FunctionKind, Visibility, Mutability};
 use ilold_core::parse::solc_frontend::SolcFrontend;
 use ilold_core::parse::ProjectParser;
+use ilold_core::pathtree::config::PruningConfig;
+use ilold_core::pathtree::walker::build_path_tree;
 
 fn fixture_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -105,4 +107,27 @@ fn test_parse_file_not_found() {
     let parser = SolcFrontend;
     let result = parser.parse(&[PathBuf::from("nonexistent.sol")]);
     assert!(result.is_err());
+}
+
+#[test]
+fn reads_in_conditions_and_compound_assignments_detected() {
+    let parser = SolcFrontend;
+    let project = parser.parse(&[fixture_path("solc/statements/src/Stmts.sol")]).unwrap();
+    let contract = project.contracts.iter().find(|c| c.name == "Stmts").unwrap();
+    let reads_fn = contract.functions.iter().find(|f| f.name == "reads").unwrap();
+
+    let cfg = CfgBuilder::build(reads_fn, contract).unwrap();
+    let tree = build_path_tree(
+        &cfg,
+        &contract.name,
+        &reads_fn.name,
+        &contract.state_vars,
+        &PruningConfig::default(),
+    );
+
+    let reads_total = tree
+        .paths
+        .iter()
+        .any(|p| p.annotations.state_reads.iter().any(|r| r == "total"));
+    assert!(reads_total, "total read in if-condition/assert/compound not detected");
 }

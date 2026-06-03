@@ -6,6 +6,7 @@ use petgraph::Direction;
 
 use crate::cfg::types::*;
 use crate::model::common::StateVar;
+use crate::model::expression::AssignOperator;
 
 use super::config::PruningConfig;
 use super::types::*;
@@ -125,6 +126,13 @@ pub fn build_path_tree(
                 });
                 continue;
             }
+        }
+
+        if let Some(
+            BranchEdge::ConditionalTrue { condition } | BranchEdge::ConditionalFalse { condition },
+        ) = &state.edge_taken
+        {
+            scan_reads(condition, state_vars, &mut annotations);
         }
 
         // Add this block to the path
@@ -364,26 +372,16 @@ fn collect_annotations(
             }
             CfgStatement::RequireCheck { condition, .. } => {
                 annotations.require_checks.push(condition.clone());
-                for sv in state_vars {
-                    if expression_mentions_var(condition, &sv.name) {
-                        if !annotations.state_reads.contains(&sv.name) {
-                            annotations.state_reads.push(sv.name.clone());
-                        }
-                        for path in extract_qualified_paths(condition, &sv.name) {
-                            if !annotations.state_read_paths.contains(&path) {
-                                annotations.state_read_paths.push(path);
-                            }
-                        }
-                    }
-                }
+                scan_reads(condition, state_vars, annotations);
             }
             CfgStatement::AssertCheck { condition, .. } => {
                 annotations.require_checks.push(format!("assert: {condition}"));
+                scan_reads(condition, state_vars, annotations);
             }
             CfgStatement::AssemblyBlock { .. } => {
                 annotations.has_assembly = true;
             }
-            CfgStatement::Assignment { target, value, .. } => {
+            CfgStatement::Assignment { target, value, operator, .. } => {
                 let base_name = crate::util::target_base_name(target);
                 if state_vars.iter().any(|sv| sv.name == base_name) {
                     annotations.state_writes.push(target.clone());
@@ -392,18 +390,9 @@ fn collect_annotations(
                         annotations.state_write_paths.push(normalized);
                     }
                 }
-                // Detect state reads in the value expression and target
-                for sv in state_vars {
-                    if expression_mentions_var(value, &sv.name) {
-                        if !annotations.state_reads.contains(&sv.name) {
-                            annotations.state_reads.push(sv.name.clone());
-                        }
-                        for path in extract_qualified_paths(value, &sv.name) {
-                            if !annotations.state_read_paths.contains(&path) {
-                                annotations.state_read_paths.push(path);
-                            }
-                        }
-                    }
+                scan_reads(value, state_vars, annotations);
+                if !matches!(operator, AssignOperator::Assign) {
+                    scan_reads(target, state_vars, annotations);
                 }
             }
             CfgStatement::StateWrite { variable, .. } => {
@@ -418,6 +407,21 @@ fn collect_annotations(
                 let normalized = normalize_path(variable);
                 if !annotations.state_read_paths.contains(&normalized) {
                     annotations.state_read_paths.push(normalized);
+                }
+            }
+        }
+    }
+}
+
+fn scan_reads(text: &str, state_vars: &[StateVar], annotations: &mut PathAnnotations) {
+    for sv in state_vars {
+        if expression_mentions_var(text, &sv.name) {
+            if !annotations.state_reads.contains(&sv.name) {
+                annotations.state_reads.push(sv.name.clone());
+            }
+            for path in extract_qualified_paths(text, &sv.name) {
+                if !annotations.state_read_paths.contains(&path) {
+                    annotations.state_read_paths.push(path);
                 }
             }
         }
