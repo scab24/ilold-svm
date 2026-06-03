@@ -198,7 +198,8 @@ fn trace_schema() -> Value {
             "contract": { "type": "string", "description": "Contract name" },
             "function": { "type": "string", "description": "Function name" },
             "depth": { "type": "integer", "description": "Max internal-call inlining depth (default 2)" },
-            "reverts": { "type": "boolean", "description": "Include revert paths (default false)" }
+            "reverts": { "type": "boolean", "description": "Include revert paths (default false)" },
+            "expand": { "type": "string", "description": "Comma-separated step ids to force-inline beyond depth, e.g. \"17,24\"" }
         },
         "required": ["contract", "function"],
         "additionalProperties": false

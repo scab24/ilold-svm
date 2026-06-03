@@ -278,3 +278,19 @@ async fn p3_command_result_error_surfaces_as_mcp_error() {
     cmd.assert();
     assert_eq!(res.is_error, Some(true), "backend CommandResult::Error (HTTP 200) must surface as an MCP error");
 }
+
+#[tokio::test]
+async fn trace_forwards_expand_step_ids() {
+    let server = MockServer::start();
+    let trace = server.mock(|w, t| {
+        w.method(GET)
+            .path("/api/session/trace/Vault/deposit")
+            .query_param("expand", "17,24");
+        t.status(200).json_body(json!({}));
+    });
+    let client = IloldClient::new(server.base_url());
+    let current = Mutex::new(None::<String>);
+
+    dispatch(&client, &current, "ilold_trace", Some(&json!({"contract":"Vault","function":"deposit","expand":"17,24"}))).await;
+    trace.assert();
+}

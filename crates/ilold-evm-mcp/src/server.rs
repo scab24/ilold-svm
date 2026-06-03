@@ -146,6 +146,9 @@ pub async fn dispatch(
             if arg_bool(arguments, "reverts") {
                 q.push("reverts=true".to_string());
             }
+            if let Some(e) = arg_str(arguments, "expand") {
+                q.push(format!("expand={e}"));
+            }
             let qs = if q.is_empty() {
                 String::new()
             } else {
@@ -174,9 +177,12 @@ pub async fn dispatch(
             if let Err(e) = client.get(&format!("/api/contract/{c}")).await {
                 return error_result(format!("contract '{c}' not found: {e}"));
             }
-            let _ = client
+            if let Err(e) = client
                 .post("/api/cmd", json!({ "contract": c, "command": "Session" }))
-                .await;
+                .await
+            {
+                return error_result(format!("failed to activate '{c}': {e}"));
+            }
             *current.lock().await = Some(c.clone());
             return ok_result(json!({ "active_contract": c }));
         }
