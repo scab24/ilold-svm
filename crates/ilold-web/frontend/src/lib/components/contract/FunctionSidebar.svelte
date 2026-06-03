@@ -186,7 +186,7 @@
         </div>
       {:else}
         {#if ownFiltered.length > 0}
-          {#each ownFiltered as row (row.source + ':' + row.name)}
+          {#each ownFiltered as row, i (row.source + ':' + row.name + ':' + i)}
             {@render functionRow(row)}
           {/each}
         {/if}
@@ -195,7 +195,7 @@
           {#if ownFiltered.length > 0}
             <div class="section-divider">Inherited</div>
           {/if}
-          {#each inheritedFiltered as row (row.source + ':' + row.name)}
+          {#each inheritedFiltered as row, i (row.source + ':' + row.name + ':' + i)}
             {@render functionRow(row)}
           {/each}
         {/if}
