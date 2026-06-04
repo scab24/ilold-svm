@@ -104,7 +104,6 @@ pub enum ObservationKind {
     WriteAfterExternalCall,
     SharedState,
     NoAccessControl,
-    ExternalCallRisk,
 }
 
 impl fmt::Display for ObservationKind {
@@ -113,7 +112,6 @@ impl fmt::Display for ObservationKind {
             ObservationKind::WriteAfterExternalCall => write!(f, "Write after external call"),
             ObservationKind::SharedState => write!(f, "Shared state"),
             ObservationKind::NoAccessControl => write!(f, "No access control"),
-            ObservationKind::ExternalCallRisk => write!(f, "External call"),
         }
     }
 }
