@@ -587,7 +587,7 @@ fn collect_calls(expr: &Expression, stmts: &mut Vec<CfgStatement>, from_modifier
                     }
                 }
                 ExpressionKind::MemberAccess { object, member, resolved }
-                    if member != "push" && member != "pop" =>
+                    if (member != "push" && member != "pop") || resolved.is_some() =>
                 {
                     if let ExpressionKind::Identifier { name, .. } = &object.kind {
                         if name == "this" || name == "super" {

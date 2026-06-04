@@ -286,3 +286,19 @@ fn is_type_cast_distinguishes_casts_from_calls() {
         assert!(!is_type_cast(f), "{f} is a real call, not a type cast");
     }
 }
+
+#[test]
+fn method_named_push_is_an_external_call_not_a_write() {
+    let project = SolcFrontend.parse_project(&fixture_path("solc/cross")).unwrap();
+    let vault = project.contracts.iter().find(|c| c.name == "Vault").unwrap();
+    let f = vault.functions.iter().find(|f| f.name == "pushVia").unwrap();
+
+    let cfg = CfgBuilder::build(f, vault).unwrap();
+    let tree = build_path_tree(&cfg, &vault.name, &f.name, &vault.state_vars, &PruningConfig::default());
+
+    let calls_push = tree.paths.iter().any(|p| p.annotations.external_calls.iter().any(|c| c.function == "push"));
+    let writes_pool = tree.paths.iter().any(|p| p.annotations.state_writes.iter().any(|w| w == "pool"));
+
+    assert!(calls_push, "pool.push() (resolved contract method) must be an external call");
+    assert!(!writes_pool, "pool.push() must not be recorded as a write to `pool`");
+}
