@@ -268,3 +268,21 @@ fn value_call_options_resolve_the_real_callee() {
     assert!(detects_call, "value-call `to.call{{value:}}` not detected as an external call");
     assert!(!leaks_placeholder, "FunctionCallOptions placeholder leaked into calls");
 }
+
+#[test]
+fn is_type_cast_distinguishes_casts_from_calls() {
+    use ilold_core::util::is_type_cast;
+
+    // Elementary type casts (bare or with args)
+    for c in ["uint256", "uint256(x)", "int", "address", "address(0)", "bytes32", "bool", "string"] {
+        assert!(is_type_cast(c), "{c} should be a type cast");
+    }
+    // User-defined casts in Type(expr) form
+    for c in ["IERC20(addr)", "MyContract(addr)"] {
+        assert!(is_type_cast(c), "{c} should be a type cast");
+    }
+    // Real calls the old starts_with heuristic wrongly dropped
+    for f in ["internalTransfer", "intMax", "uintToString", "addressOf", "stringify", "IMint", "IExecute", "foo(bar)"] {
+        assert!(!is_type_cast(f), "{f} is a real call, not a type cast");
+    }
+}
