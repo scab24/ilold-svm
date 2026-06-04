@@ -93,6 +93,11 @@ contract Stmts {
         total = 0;
     }
 
+    function valueCall(address to, uint256 amount) external {
+        (bool ok, ) = to.call{value: amount}("");
+        require(ok);
+    }
+
     function localOnly() external returns (uint256) {
         uint256 tmp = total;
         tmp++;

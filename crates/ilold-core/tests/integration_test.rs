@@ -242,3 +242,29 @@ fn write_after_external_call_is_observed() {
         .any(|o| matches!(o.kind, ObservationKind::WriteAfterExternalCall));
     assert!(observed, "write (assignment) after external call not surfaced as an observation");
 }
+
+#[test]
+fn value_call_options_resolve_the_real_callee() {
+    let parser = SolcFrontend;
+    let project = parser.parse(&[fixture_path("solc/statements/src/Stmts.sol")]).unwrap();
+    let contract = project.contracts.iter().find(|c| c.name == "Stmts").unwrap();
+    let f = contract.functions.iter().find(|f| f.name == "valueCall").unwrap();
+
+    let cfg = CfgBuilder::build(f, contract).unwrap();
+    let tree = build_path_tree(
+        &cfg,
+        &contract.name,
+        &f.name,
+        &contract.state_vars,
+        &PruningConfig::default(),
+    );
+
+    let detects_call = tree.paths.iter().any(|p| p.annotations.external_calls.iter().any(|c| c.function == "call"));
+    let leaks_placeholder = tree.paths.iter().any(|p| {
+        p.annotations.internal_calls.iter().any(|c| c.contains("/*"))
+            || p.annotations.external_calls.iter().any(|c| c.function.contains("/*"))
+    });
+
+    assert!(detects_call, "value-call `to.call{{value:}}` not detected as an external call");
+    assert!(!leaks_placeholder, "FunctionCallOptions placeholder leaked into calls");
+}

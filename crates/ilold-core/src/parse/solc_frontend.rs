@@ -500,6 +500,7 @@ fn callee_name(node: &Node) -> String {
 fn map_expression(node: &Node, index: &LineIndex) -> Expression {
     let kind = match node.node_type {
         NodeType::FunctionCall => map_call(node, index),
+        NodeType::FunctionCallOptions => child_expr(node, "expression", index).kind,
         NodeType::MemberAccess => ExpressionKind::MemberAccess {
             object: Box::new(child_expr(node, "expression", index)),
             member: node.attribute::<String>("memberName").unwrap_or_default(),
