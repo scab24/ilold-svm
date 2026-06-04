@@ -101,7 +101,7 @@ pub struct Observation {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ObservationKind {
-    CeiViolation,
+    WriteAfterExternalCall,
     SharedState,
     NoAccessControl,
     ExternalCallRisk,
@@ -110,7 +110,7 @@ pub enum ObservationKind {
 impl fmt::Display for ObservationKind {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            ObservationKind::CeiViolation => write!(f, "CEI violation"),
+            ObservationKind::WriteAfterExternalCall => write!(f, "Write after external call"),
             ObservationKind::SharedState => write!(f, "Shared state"),
             ObservationKind::NoAccessControl => write!(f, "No access control"),
             ObservationKind::ExternalCallRisk => write!(f, "External call"),
