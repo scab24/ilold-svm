@@ -605,6 +605,7 @@ fn classify_expression(expr: &Expression, from_modifier: &Option<String>) -> Vec
 fn collect_calls(expr: &Expression, stmts: &mut Vec<CfgStatement>, from_modifier: &Option<String>) {
     match &expr.kind {
         ExpressionKind::FunctionCall { callee, arguments } => {
+            let args = arguments.iter().map(|a| expr_to_string(a)).collect::<Vec<_>>().join(", ");
             // Classify this call
             match &callee.kind {
                 // `uint32(x)` etc. — type conversion, not a call.
@@ -615,6 +616,7 @@ fn collect_calls(expr: &Expression, stmts: &mut Vec<CfgStatement>, from_modifier
                             function: name.clone(),
                             span: None,
                             from_modifier: from_modifier.clone(),
+                            arguments: args.clone(),
                         });
                     }
                 }
@@ -627,6 +629,7 @@ fn collect_calls(expr: &Expression, stmts: &mut Vec<CfgStatement>, from_modifier
                                 function: member.clone(),
                                 span: None,
                                 from_modifier: from_modifier.clone(),
+                                arguments: args.clone(),
                             });
                         } else {
                             stmts.push(CfgStatement::ExternalCall {
@@ -635,6 +638,7 @@ fn collect_calls(expr: &Expression, stmts: &mut Vec<CfgStatement>, from_modifier
                                 span: None,
                                 from_modifier: from_modifier.clone(),
                                 resolved: *resolved,
+                                arguments: args.clone(),
                             });
                         }
                     } else {
@@ -644,6 +648,7 @@ fn collect_calls(expr: &Expression, stmts: &mut Vec<CfgStatement>, from_modifier
                             span: None,
                             from_modifier: from_modifier.clone(),
                             resolved: *resolved,
+                            arguments: args.clone(),
                         });
                     }
                 }
@@ -659,6 +664,7 @@ fn collect_calls(expr: &Expression, stmts: &mut Vec<CfgStatement>, from_modifier
                         function: expr_to_string(callee),
                         span: None,
                         from_modifier: from_modifier.clone(),
+                        arguments: args.clone(),
                     });
                 }
             }

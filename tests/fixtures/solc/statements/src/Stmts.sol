@@ -117,6 +117,14 @@ contract Stmts {
         m.a = 9;
     }
 
+    function readViaCallArg() external {
+        sink(total);
+    }
+
+    function sink(uint256 x) internal {
+        delVar = x;
+    }
+
     function localOnly() external returns (uint256) {
         uint256 tmp = total;
         tmp++;

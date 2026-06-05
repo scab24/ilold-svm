@@ -359,14 +359,16 @@ fn collect_annotations(
 ) {
     for stmt in statements {
         match stmt {
-            CfgStatement::ExternalCall { target, function, .. } => {
+            CfgStatement::ExternalCall { target, function, arguments, .. } => {
                 annotations.external_calls.push(ExternalCallInfo {
                     target: target.clone(),
                     function: function.clone(),
                 });
+                scan_reads(arguments, state_vars, annotations);
             }
-            CfgStatement::InternalCall { function, .. } => {
+            CfgStatement::InternalCall { function, arguments, .. } => {
                 annotations.internal_calls.push(function.clone());
+                scan_reads(arguments, state_vars, annotations);
             }
             CfgStatement::EmitEvent { event, .. } => {
                 annotations.events_emitted.push(event.clone());

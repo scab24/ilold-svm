@@ -74,12 +74,16 @@ pub enum CfgStatement {
         from_modifier: Option<String>,
         #[serde(default)]
         resolved: Option<DeclId>,
+        #[serde(default)]
+        arguments: String,
     },
     InternalCall {
         function: String,
         span: Option<SourceSpan>,
         #[serde(default)]
         from_modifier: Option<String>,
+        #[serde(default)]
+        arguments: String,
     },
     EmitEvent {
         event: String,

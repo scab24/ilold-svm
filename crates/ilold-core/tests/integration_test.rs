@@ -314,3 +314,9 @@ fn storage_pointer_alias_writes_attributed_to_state_var() {
     let (_, w_copy) = state_access("memoryCopyNotWrite");
     assert!(!w_copy.iter().any(|w| w.starts_with("info")), "memory copy must NOT count as a state write");
 }
+
+#[test]
+fn reads_in_call_arguments_are_detected() {
+    let (reads, _) = state_access("readViaCallArg");
+    assert!(reads.iter().any(|r| r == "total"), "state var passed as a call argument not detected as a read");
+}
