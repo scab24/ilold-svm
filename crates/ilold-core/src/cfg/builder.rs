@@ -181,12 +181,14 @@ impl CfgBuilder {
                 let revert = self.add_block(BlockKind::Revert);
                 self.add_edge(self.current_block, revert, BranchEdge::Unconditional);
             }
-            StatementKind::Emit { event_name, .. } => {
+            StatementKind::Emit { event_name, arguments } => {
                 let from_modifier = self.current_modifier.clone();
+                let args = arguments.iter().map(|a| expr_to_string(a)).collect::<Vec<_>>().join(", ");
                 self.add_stmt_to_current(CfgStatement::EmitEvent {
                     event: event_name.clone(),
                     span: None,
                     from_modifier,
+                    arguments: args,
                 });
             }
             StatementKind::Block { statements } => {
@@ -213,6 +215,7 @@ impl CfgBuilder {
                     let from_modifier = self.current_modifier.clone();
                     let mut call_stmts = Vec::new();
                     collect_calls(val, &mut call_stmts, &from_modifier);
+                    collect_mutations(val, &mut call_stmts, &from_modifier);
                     for s in call_stmts {
                         self.add_stmt_to_current(s);
                     }
@@ -588,17 +591,29 @@ fn classify_expression(expr: &Expression, from_modifier: &Option<String>) -> Vec
         });
     }
 
-    if let ExpressionKind::UnaryOp { operator, operand } = &expr.kind {
-        if operator.mutates_operand() {
+    collect_mutations(expr, &mut stmts, from_modifier);
+
+    stmts
+}
+
+/// Emit a StateWrite for every `++`/`--`/`delete` mutation in `expr`, including
+/// when it sits on the RHS of an assignment (`x = counter++`).
+fn collect_mutations(expr: &Expression, stmts: &mut Vec<CfgStatement>, from_modifier: &Option<String>) {
+    match &expr.kind {
+        ExpressionKind::UnaryOp { operator, operand } if operator.mutates_operand() => {
             stmts.push(CfgStatement::StateWrite {
                 variable: expr_to_string(operand),
                 span: None,
                 from_modifier: from_modifier.clone(),
             });
         }
+        ExpressionKind::Assignment { value, .. } => collect_mutations(value, stmts, from_modifier),
+        ExpressionKind::BinaryOp { left, right, .. } => {
+            collect_mutations(left, stmts, from_modifier);
+            collect_mutations(right, stmts, from_modifier);
+        }
+        _ => {}
     }
-
-    stmts
 }
 
 /// Recursively scan an expression for function calls and add them as CfgStatements.

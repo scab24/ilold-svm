@@ -370,8 +370,9 @@ fn collect_annotations(
                 annotations.internal_calls.push(function.clone());
                 scan_reads(arguments, state_vars, annotations);
             }
-            CfgStatement::EmitEvent { event, .. } => {
+            CfgStatement::EmitEvent { event, arguments, .. } => {
                 annotations.events_emitted.push(event.clone());
+                scan_reads(arguments, state_vars, annotations);
             }
             CfgStatement::EthTransfer { to, .. } => {
                 annotations.eth_transfers.push(to.clone());

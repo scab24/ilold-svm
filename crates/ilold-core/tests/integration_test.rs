@@ -320,3 +320,15 @@ fn reads_in_call_arguments_are_detected() {
     let (reads, _) = state_access("readViaCallArg");
     assert!(reads.iter().any(|r| r == "total"), "state var passed as a call argument not detected as a read");
 }
+
+#[test]
+fn reads_in_emit_arguments_are_detected() {
+    let (reads, _) = state_access("emitRead");
+    assert!(reads.iter().any(|r| r == "total"), "state var in an emit argument not detected as a read");
+}
+
+#[test]
+fn increment_on_assignment_rhs_is_a_write() {
+    let (_, writes) = state_access("rhsIncrement");
+    assert!(writes.iter().any(|w| w == "total"), "`x = total++` must count as a write to total");
+}

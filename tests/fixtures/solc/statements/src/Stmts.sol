@@ -125,6 +125,15 @@ contract Stmts {
         delVar = x;
     }
 
+    function emitRead() external {
+        emit Done(total);
+    }
+
+    function rhsIncrement() external {
+        uint256 x = total++;
+        delVar = x;
+    }
+
     function localOnly() external returns (uint256) {
         uint256 tmp = total;
         tmp++;

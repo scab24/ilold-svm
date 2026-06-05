@@ -90,6 +90,8 @@ pub enum CfgStatement {
         span: Option<SourceSpan>,
         #[serde(default)]
         from_modifier: Option<String>,
+        #[serde(default)]
+        arguments: String,
     },
     StateRead {
         variable: String,
