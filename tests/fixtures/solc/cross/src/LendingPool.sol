@@ -18,4 +18,9 @@ contract LendingPool is BasePool, IPool {
         balances[msg.sender] -= amount;
         return balances[msg.sender];
     }
+
+    function push(uint256 amount) external returns (uint256) {
+        balances[msg.sender] += amount;
+        return balances[msg.sender];
+    }
 }

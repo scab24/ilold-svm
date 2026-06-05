@@ -135,6 +135,7 @@ pub enum UnaryOperator {
     PreDecrement,
     PostIncrement,
     PostDecrement,
+    Delete,
 }
 
 impl UnaryOperator {
@@ -150,7 +151,19 @@ impl UnaryOperator {
             UnaryOperator::PreDecrement => ("--", false),
             UnaryOperator::PostIncrement => ("++", true),
             UnaryOperator::PostDecrement => ("--", true),
+            UnaryOperator::Delete => ("delete ", false),
         }
+    }
+
+    pub fn mutates_operand(self) -> bool {
+        matches!(
+            self,
+            UnaryOperator::PreIncrement
+                | UnaryOperator::PostIncrement
+                | UnaryOperator::PreDecrement
+                | UnaryOperator::PostDecrement
+                | UnaryOperator::Delete
+        )
     }
 }
 

@@ -198,7 +198,7 @@ pub fn extract_statement_uses_defs(stmt: &Statement) -> (HashSet<String>, HashSe
 pub fn statement_text(stmt: &Statement) -> String {
     match &stmt.kind {
         StatementKind::ExpressionStmt { expression } => expr_to_text(expression),
-        StatementKind::VariableDeclaration { name, type_name, initial_value } => {
+        StatementKind::VariableDeclaration { name, type_name, initial_value, .. } => {
             match initial_value {
                 Some(v) => format!("{} {} = {}", type_name, name, expr_to_text(v)),
                 None => format!("{} {}", type_name, name),

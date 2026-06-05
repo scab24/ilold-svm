@@ -33,4 +33,9 @@ contract Vault {
     function depositCast(address poolAddr, uint256 amount) external returns (uint256) {
         return IPool(poolAddr).supply(amount);
     }
+
+    // Call to a contract method literally named `push` — not an array push.
+    function pushVia(uint256 amount) external returns (uint256) {
+        return pool.push(amount);
+    }
 }

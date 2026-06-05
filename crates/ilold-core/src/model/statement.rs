@@ -63,6 +63,8 @@ pub enum StatementKind {
         name: String,
         type_name: String,
         initial_value: Option<Expression>,
+        #[serde(default)]
+        is_storage_ref: bool,
     },
     /// try expr returns (...) { ok_body } catch Error(...) { err_body } catch (...) { ... }
     TryCatch {

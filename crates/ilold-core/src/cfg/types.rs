@@ -13,6 +13,8 @@ pub struct BasicBlock {
     pub kind: BlockKind,
     pub statements: Vec<CfgStatement>,
     pub span: Option<SourceSpan>,
+    #[serde(default)]
+    pub return_value: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,18 +74,24 @@ pub enum CfgStatement {
         from_modifier: Option<String>,
         #[serde(default)]
         resolved: Option<DeclId>,
+        #[serde(default)]
+        arguments: String,
     },
     InternalCall {
         function: String,
         span: Option<SourceSpan>,
         #[serde(default)]
         from_modifier: Option<String>,
+        #[serde(default)]
+        arguments: String,
     },
     EmitEvent {
         event: String,
         span: Option<SourceSpan>,
         #[serde(default)]
         from_modifier: Option<String>,
+        #[serde(default)]
+        arguments: String,
     },
     StateRead {
         variable: String,

@@ -85,7 +85,7 @@ pub fn build_function_narrative(
         .collect();
 
     let observations = generate_observations(
-        &access, path_tree, cfg, all_behaviors, &function.name,
+        &access, path_tree, cfg, all_behaviors, &function.name, &contract.state_vars,
     );
 
     let mut writes = HashSet::new();
@@ -259,6 +259,7 @@ fn branch_direction(edge: &Option<BranchEdge>) -> Option<BranchDirection> {
 fn check_cei_violation(
     path: &crate::pathtree::types::ExecutionPath,
     cfg: &CfgGraph,
+    state_vars: &[crate::model::common::StateVar],
 ) -> Option<(String, String)> {
     let mut seen_external_call: Option<String> = None;
 
@@ -285,6 +286,14 @@ fn check_cei_violation(
                         return Some((call.clone(), variable.clone()));
                     }
                 }
+                CfgStatement::Assignment { target, .. } => {
+                    let base = crate::util::target_base_name(target);
+                    if state_vars.iter().any(|sv| sv.name == base) {
+                        if let Some(call) = &seen_external_call {
+                            return Some((call.clone(), target.clone()));
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -298,17 +307,18 @@ fn generate_observations(
     cfg: &CfgGraph,
     all_behaviors: &[FunctionBehavior],
     function_name: &str,
+    state_vars: &[crate::model::common::StateVar],
 ) -> Vec<Observation> {
     let mut obs = Vec::new();
 
     for path in &path_tree.paths {
         if path.terminal == TerminalKind::Revert { continue; }
 
-        if let Some((call, write)) = check_cei_violation(path, cfg) {
+        if let Some((call, write)) = check_cei_violation(path, cfg, state_vars) {
             obs.push(Observation {
-                kind: ObservationKind::CeiViolation,
+                kind: ObservationKind::WriteAfterExternalCall,
                 description: format!(
-                    "Path #{}: {} called BEFORE writing {}",
+                    "Path #{}: external call {} then writes {}",
                     path.id, call, write,
                 ),
             });

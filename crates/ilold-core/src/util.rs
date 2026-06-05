@@ -1,31 +1,29 @@
 //! Shared utility helpers used across multiple analysis passes.
 
-/// Filter out type casts that look like function calls
-/// (e.g. `IERC20(addr)`, `address(0)`, `uint256(x)`).
-///
-/// Used by the call graph builder and by transitive-effect analysis
-/// to avoid treating type casts as real internal calls.
 pub fn is_type_cast(name: &str) -> bool {
     let name = name.trim();
-    // Solidity elementary types
-    if name.starts_with("type(")
-        || name.starts_with("address")
-        || name.starts_with("uint")
-        || name.starts_with("int")
-        || name.starts_with("bytes")
-        || name.starts_with("bool")
-        || name.starts_with("string")
-    {
-        return true;
+    // `Type(expr)` is a cast; a bare non-elementary name (internalTransfer) is a call.
+    if let Some((head, _)) = name.split_once('(') {
+        return is_elementary_type(head) || is_user_type_name(head);
     }
-    // Interface type casts: starts with I + uppercase (IERC20, IUniswapV2Pair)
-    if name.starts_with('I')
-        && name.len() > 1
-        && name.chars().nth(1).is_some_and(|c| c.is_uppercase())
-    {
-        return true;
-    }
-    false
+    is_elementary_type(name)
+}
+
+fn is_elementary_type(name: &str) -> bool {
+    matches!(name, "address" | "bool" | "string")
+        || is_sized_type(name, "uint")
+        || is_sized_type(name, "int")
+        || is_sized_type(name, "bytes")
+}
+
+fn is_sized_type(name: &str, prefix: &str) -> bool {
+    name.strip_prefix(prefix)
+        .is_some_and(|rest| rest.is_empty() || rest.bytes().all(|b| b.is_ascii_digit()))
+}
+
+fn is_user_type_name(head: &str) -> bool {
+    head.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+        && head.chars().all(|c| c.is_alphanumeric() || c == '_')
 }
 
 /// Extract the base variable name from an assignment target expression.

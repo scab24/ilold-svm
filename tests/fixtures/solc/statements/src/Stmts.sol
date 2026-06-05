@@ -6,6 +6,15 @@ contract Stmts {
     event Done(uint256 x);
     error Bad(uint256 x);
     uint256 public total;
+    uint256[] public items;
+    uint256 public rCond;
+    uint256 public rAssert;
+    uint256 public rCompound;
+    uint256 public delVar;
+
+    struct Info { uint256 a; }
+    Info public info;
+    mapping(uint256 => Info) public infos;
 
     modifier gated() {
         require(total >= 0, "g");
@@ -50,6 +59,85 @@ contract Stmts {
         }
         emit Done(acc);
         return acc;
+    }
+
+    function reads() external view {
+        if (rCond > 5) {}
+        assert(rAssert < 100);
+    }
+
+    function compoundRead() external {
+        rCompound -= 1;
+    }
+
+    function pushItem(uint256 x) external {
+        items.push(x);
+    }
+
+    function popItem() external {
+        items.pop();
+    }
+
+    function mutates(uint256 x) external {
+        items.push(x);
+        total++;
+        delete delVar;
+    }
+
+    function getTotal() external view returns (uint256) {
+        return total;
+    }
+
+    function pair() external view returns (uint256, uint256) {
+        return (total, rAssert);
+    }
+
+    function cei(address payable to) external {
+        to.transfer(1);
+        total = 0;
+    }
+
+    function valueCall(address to, uint256 amount) external {
+        (bool ok, ) = to.call{value: amount}("");
+        require(ok);
+    }
+
+    function aliasWrite() external {
+        Info storage p = info;
+        p.a = 5;
+    }
+
+    function aliasMappingWrite(uint256 k) external {
+        Info storage q = infos[k];
+        q.a = 7;
+    }
+
+    function memoryCopyNotWrite() external {
+        Info memory m = info;
+        m.a = 9;
+    }
+
+    function readViaCallArg() external {
+        sink(total);
+    }
+
+    function sink(uint256 x) internal {
+        delVar = x;
+    }
+
+    function emitRead() external {
+        emit Done(total);
+    }
+
+    function rhsIncrement() external {
+        uint256 x = total++;
+        delVar = x;
+    }
+
+    function localOnly() external returns (uint256) {
+        uint256 tmp = total;
+        tmp++;
+        return tmp;
     }
 
     function ext(uint256 x) external pure returns (uint256) {

@@ -207,9 +207,10 @@ fn map_contract(node: &Node, index: &LineIndex, decl_table: &mut DeclTable) -> O
 }
 
 fn map_function(node: &Node, index: &LineIndex) -> FunctionDef {
+    let kind = function_kind(node);
     FunctionDef {
-        name: node.attribute::<String>("name").unwrap_or_default(),
-        kind: function_kind(node),
+        name: function_name(node, kind),
+        kind,
         visibility: visibility(node),
         mutability: mutability(node),
         modifiers: modifier_refs(node),
@@ -382,23 +383,14 @@ fn map_statement(node: &Node, index: &LineIndex) -> Statement {
                 .attribute::<Node>("loopExpression")
                 .and_then(|s| s.attribute::<Node>("expression"))
                 .map(|e| map_expression(&e, index)),
-            body: node
-                .attribute::<Node>("body")
-                .map(|b| map_body(&b, index))
-                .unwrap_or_default(),
+            body: node.body.as_deref().map(|b| map_body(b, index)).unwrap_or_default(),
         },
         NodeType::WhileStatement => StatementKind::While {
             condition: child_expr(node, "condition", index),
-            body: node
-                .attribute::<Node>("body")
-                .map(|b| map_body(&b, index))
-                .unwrap_or_default(),
+            body: node.body.as_deref().map(|b| map_body(b, index)).unwrap_or_default(),
         },
         NodeType::DoWhileStatement => StatementKind::DoWhile {
-            body: node
-                .attribute::<Node>("body")
-                .map(|b| map_body(&b, index))
-                .unwrap_or_default(),
+            body: node.body.as_deref().map(|b| map_body(b, index)).unwrap_or_default(),
             condition: child_expr(node, "condition", index),
         },
         NodeType::Return => StatementKind::Return {
@@ -452,10 +444,12 @@ fn map_var_decl(node: &Node, index: &LineIndex) -> StatementKind {
             .and_then(|s| s.as_str())
             .unwrap_or_default()
             .to_string();
+        let is_storage_ref = d.get("storageLocation").and_then(|s| s.as_str()) == Some("storage");
         return StatementKind::VariableDeclaration {
             name: decl_name(d),
             type_name,
             initial_value,
+            is_storage_ref,
         };
     }
 
@@ -464,6 +458,7 @@ fn map_var_decl(node: &Node, index: &LineIndex) -> StatementKind {
         name: format!("({})", names.join(", ")),
         type_name: "tuple".into(),
         initial_value,
+        is_storage_ref: false,
     }
 }
 
@@ -508,6 +503,7 @@ fn callee_name(node: &Node) -> String {
 fn map_expression(node: &Node, index: &LineIndex) -> Expression {
     let kind = match node.node_type {
         NodeType::FunctionCall => map_call(node, index),
+        NodeType::FunctionCallOptions => child_expr(node, "expression", index).kind,
         NodeType::MemberAccess => ExpressionKind::MemberAccess {
             object: Box::new(child_expr(node, "expression", index)),
             member: node.attribute::<String>("memberName").unwrap_or_default(),
@@ -698,6 +694,7 @@ fn unary_op(node: &Node) -> UnaryOperator {
         "++" => UnaryOperator::PostIncrement,
         "--" if prefix => UnaryOperator::PreDecrement,
         "--" => UnaryOperator::PostDecrement,
+        "delete" => UnaryOperator::Delete,
         _ => UnaryOperator::Not,
     }
 }
@@ -785,6 +782,18 @@ fn function_kind(node: &Node) -> FunctionKind {
     }
 }
 
+fn function_name(node: &Node, kind: FunctionKind) -> String {
+    match node.attribute::<String>("name") {
+        Some(n) if !n.is_empty() => n,
+        _ => match kind {
+            FunctionKind::Constructor => "constructor".to_string(),
+            FunctionKind::Receive => "receive".to_string(),
+            FunctionKind::Fallback => "fallback".to_string(),
+            FunctionKind::Function => String::new(),
+        },
+    }
+}
+
 fn span_of(node: &Node, index: &LineIndex) -> SourceSpan {
     let start = node.src.start;
     let end = start + node.src.length.unwrap_or(0);
@@ -846,6 +855,34 @@ mod tests {
             body.iter().any(|s| matches!(s.kind, K::VariableDeclaration { .. })),
             "var decl"
         );
+
+        let for_body = body
+            .iter()
+            .find_map(|s| match &s.kind {
+                K::For { body, .. } => Some(body),
+                _ => None,
+            })
+            .expect("for present");
+        assert!(
+            for_body.iter().any(|s| matches!(s.kind, K::ExpressionStmt { .. })),
+            "for body lost its statements"
+        );
+        let while_body = body
+            .iter()
+            .find_map(|s| match &s.kind {
+                K::While { body, .. } => Some(body),
+                _ => None,
+            })
+            .expect("while present");
+        assert!(!while_body.is_empty(), "while body lost its statements");
+        let do_body = body
+            .iter()
+            .find_map(|s| match &s.kind {
+                K::DoWhile { body, .. } => Some(body),
+                _ => None,
+            })
+            .expect("do-while present");
+        assert!(!do_body.is_empty(), "do-while body lost its statements");
 
         let gated = stmts
             .modifiers

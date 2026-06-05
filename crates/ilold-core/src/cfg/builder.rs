@@ -24,6 +24,10 @@ pub struct CfgBuilder {
     /// restore this field across recursive descent. This is acceptable for
     /// common modifiers (onlyOwner, nonReentrant, lock, whenNotPaused).
     current_modifier: Option<String>,
+    state_vars: Vec<String>,
+    /// `T storage x = stateVar` aliases → the state-var expression, so a write
+    /// through `x.field` is attributed to the underlying state variable.
+    storage_aliases: std::collections::HashMap<String, String>,
 }
 
 impl CfgBuilder {
@@ -45,6 +49,11 @@ impl CfgBuilder {
             next_block_id: 0,
             current_block: NodeIndex::new(0), // will be replaced
             current_modifier: None,
+            state_vars: match project {
+                Some(p) => p.inherited_state_vars(contract).into_iter().map(|sv| sv.name).collect(),
+                None => contract.state_vars.iter().map(|sv| sv.name.clone()).collect(),
+            },
+            storage_aliases: std::collections::HashMap::new(),
         };
 
         let entry = builder.add_block(BlockKind::Entry);
@@ -112,6 +121,7 @@ impl CfgBuilder {
             kind,
             statements: Vec::new(),
             span: None,
+            return_value: None,
         })
     }
 
@@ -119,7 +129,32 @@ impl CfgBuilder {
         self.graph.add_edge(from, to, edge);
     }
 
-    fn add_stmt_to_current(&mut self, stmt: CfgStatement) {
+    fn resolve_alias(&self, var: &str) -> String {
+        let base = crate::util::target_base_name(var);
+        // Only resolve `alias.field` / `alias[i]`; a bare alias is the pointer
+        // declaration itself, not a write through it.
+        if var.len() > base.len() {
+            if let Some(target) = self.storage_aliases.get(base) {
+                return format!("{}{}", target, &var[base.len()..]);
+            }
+        }
+        var.to_string()
+    }
+
+    fn add_stmt_to_current(&mut self, mut stmt: CfgStatement) {
+        match &mut stmt {
+            CfgStatement::StateWrite { variable, .. } => {
+                *variable = self.resolve_alias(variable);
+                let base = crate::util::target_base_name(variable);
+                if !self.state_vars.iter().any(|n| n == base) {
+                    return;
+                }
+            }
+            CfgStatement::Assignment { target, .. } => {
+                *target = self.resolve_alias(target);
+            }
+            _ => {}
+        }
         if let Some(block) = self.graph.node_weight_mut(self.current_block) {
             block.statements.push(stmt);
         }
@@ -146,12 +181,14 @@ impl CfgBuilder {
                 let revert = self.add_block(BlockKind::Revert);
                 self.add_edge(self.current_block, revert, BranchEdge::Unconditional);
             }
-            StatementKind::Emit { event_name, .. } => {
+            StatementKind::Emit { event_name, arguments } => {
                 let from_modifier = self.current_modifier.clone();
+                let args = arguments.iter().map(|a| expr_to_string(a)).collect::<Vec<_>>().join(", ");
                 self.add_stmt_to_current(CfgStatement::EmitEvent {
                     event: event_name.clone(),
                     span: None,
                     from_modifier,
+                    arguments: args,
                 });
             }
             StatementKind::Block { statements } => {
@@ -167,11 +204,18 @@ impl CfgBuilder {
             StatementKind::ExpressionStmt { expression } => {
                 self.process_expression_stmt(expression);
             }
-            StatementKind::VariableDeclaration { name, initial_value, .. } => {
+            StatementKind::VariableDeclaration { name, initial_value, is_storage_ref, .. } => {
                 if let Some(val) = initial_value {
+                    if *is_storage_ref {
+                        let init = self.resolve_alias(&expr_to_string(val));
+                        if self.state_vars.iter().any(|n| n == crate::util::target_base_name(&init)) {
+                            self.storage_aliases.insert(name.clone(), init);
+                        }
+                    }
                     let from_modifier = self.current_modifier.clone();
                     let mut call_stmts = Vec::new();
                     collect_calls(val, &mut call_stmts, &from_modifier);
+                    collect_mutations(val, &mut call_stmts, &from_modifier);
                     for s in call_stmts {
                         self.add_stmt_to_current(s);
                     }
@@ -387,6 +431,11 @@ impl CfgBuilder {
             }
         }
         let ret = self.add_block(BlockKind::Return);
+        if let Some(expr) = value {
+            if let Some(block) = self.graph.node_weight_mut(ret) {
+                block.return_value = Some(expr_to_string(expr));
+            }
+        }
         self.add_edge(self.current_block, ret, BranchEdge::Unconditional);
         self.current_block = ret;
     }
@@ -542,13 +591,36 @@ fn classify_expression(expr: &Expression, from_modifier: &Option<String>) -> Vec
         });
     }
 
+    collect_mutations(expr, &mut stmts, from_modifier);
+
     stmts
+}
+
+/// Emit a StateWrite for every `++`/`--`/`delete` mutation in `expr`, including
+/// when it sits on the RHS of an assignment (`x = counter++`).
+fn collect_mutations(expr: &Expression, stmts: &mut Vec<CfgStatement>, from_modifier: &Option<String>) {
+    match &expr.kind {
+        ExpressionKind::UnaryOp { operator, operand } if operator.mutates_operand() => {
+            stmts.push(CfgStatement::StateWrite {
+                variable: expr_to_string(operand),
+                span: None,
+                from_modifier: from_modifier.clone(),
+            });
+        }
+        ExpressionKind::Assignment { value, .. } => collect_mutations(value, stmts, from_modifier),
+        ExpressionKind::BinaryOp { left, right, .. } => {
+            collect_mutations(left, stmts, from_modifier);
+            collect_mutations(right, stmts, from_modifier);
+        }
+        _ => {}
+    }
 }
 
 /// Recursively scan an expression for function calls and add them as CfgStatements.
 fn collect_calls(expr: &Expression, stmts: &mut Vec<CfgStatement>, from_modifier: &Option<String>) {
     match &expr.kind {
         ExpressionKind::FunctionCall { callee, arguments } => {
+            let args = arguments.iter().map(|a| expr_to_string(a)).collect::<Vec<_>>().join(", ");
             // Classify this call
             match &callee.kind {
                 // `uint32(x)` etc. — type conversion, not a call.
@@ -559,16 +631,20 @@ fn collect_calls(expr: &Expression, stmts: &mut Vec<CfgStatement>, from_modifier
                             function: name.clone(),
                             span: None,
                             from_modifier: from_modifier.clone(),
+                            arguments: args.clone(),
                         });
                     }
                 }
-                ExpressionKind::MemberAccess { object, member, resolved } => {
+                ExpressionKind::MemberAccess { object, member, resolved }
+                    if (member != "push" && member != "pop") || resolved.is_some() =>
+                {
                     if let ExpressionKind::Identifier { name, .. } = &object.kind {
                         if name == "this" || name == "super" {
                             stmts.push(CfgStatement::InternalCall {
                                 function: member.clone(),
                                 span: None,
                                 from_modifier: from_modifier.clone(),
+                                arguments: args.clone(),
                             });
                         } else {
                             stmts.push(CfgStatement::ExternalCall {
@@ -577,6 +653,7 @@ fn collect_calls(expr: &Expression, stmts: &mut Vec<CfgStatement>, from_modifier
                                 span: None,
                                 from_modifier: from_modifier.clone(),
                                 resolved: *resolved,
+                                arguments: args.clone(),
                             });
                         }
                     } else {
@@ -586,14 +663,23 @@ fn collect_calls(expr: &Expression, stmts: &mut Vec<CfgStatement>, from_modifier
                             span: None,
                             from_modifier: from_modifier.clone(),
                             resolved: *resolved,
+                            arguments: args.clone(),
                         });
                     }
+                }
+                ExpressionKind::MemberAccess { object, .. } => {
+                    stmts.push(CfgStatement::StateWrite {
+                        variable: expr_to_string(object),
+                        span: None,
+                        from_modifier: from_modifier.clone(),
+                    });
                 }
                 _ => {
                     stmts.push(CfgStatement::InternalCall {
                         function: expr_to_string(callee),
                         span: None,
                         from_modifier: from_modifier.clone(),
+                        arguments: args.clone(),
                     });
                 }
             }
