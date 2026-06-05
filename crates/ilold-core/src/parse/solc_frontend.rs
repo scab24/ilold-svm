@@ -444,10 +444,12 @@ fn map_var_decl(node: &Node, index: &LineIndex) -> StatementKind {
             .and_then(|s| s.as_str())
             .unwrap_or_default()
             .to_string();
+        let is_storage_ref = d.get("storageLocation").and_then(|s| s.as_str()) == Some("storage");
         return StatementKind::VariableDeclaration {
             name: decl_name(d),
             type_name,
             initial_value,
+            is_storage_ref,
         };
     }
 
@@ -456,6 +458,7 @@ fn map_var_decl(node: &Node, index: &LineIndex) -> StatementKind {
         name: format!("({})", names.join(", ")),
         type_name: "tuple".into(),
         initial_value,
+        is_storage_ref: false,
     }
 }
 

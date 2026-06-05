@@ -12,6 +12,10 @@ contract Stmts {
     uint256 public rCompound;
     uint256 public delVar;
 
+    struct Info { uint256 a; }
+    Info public info;
+    mapping(uint256 => Info) public infos;
+
     modifier gated() {
         require(total >= 0, "g");
         _;
@@ -96,6 +100,21 @@ contract Stmts {
     function valueCall(address to, uint256 amount) external {
         (bool ok, ) = to.call{value: amount}("");
         require(ok);
+    }
+
+    function aliasWrite() external {
+        Info storage p = info;
+        p.a = 5;
+    }
+
+    function aliasMappingWrite(uint256 k) external {
+        Info storage q = infos[k];
+        q.a = 7;
+    }
+
+    function memoryCopyNotWrite() external {
+        Info memory m = info;
+        m.a = 9;
     }
 
     function localOnly() external returns (uint256) {

@@ -302,3 +302,15 @@ fn method_named_push_is_an_external_call_not_a_write() {
     assert!(calls_push, "pool.push() (resolved contract method) must be an external call");
     assert!(!writes_pool, "pool.push() must not be recorded as a write to `pool`");
 }
+
+#[test]
+fn storage_pointer_alias_writes_attributed_to_state_var() {
+    let (_, w_direct) = state_access("aliasWrite");
+    assert!(w_direct.iter().any(|w| w.starts_with("info")), "write through storage alias not attributed to `info`");
+
+    let (_, w_map) = state_access("aliasMappingWrite");
+    assert!(w_map.iter().any(|w| w.starts_with("infos")), "write through mapping storage alias not attributed to `infos`");
+
+    let (_, w_copy) = state_access("memoryCopyNotWrite");
+    assert!(!w_copy.iter().any(|w| w.starts_with("info")), "memory copy must NOT count as a state write");
+}
