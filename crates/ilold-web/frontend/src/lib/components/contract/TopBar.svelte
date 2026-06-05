@@ -9,7 +9,7 @@
     contractName,
     mode,
     seqDirection,
-    kind = 'solidity',
+    kind = 'solana',
     hideSystem = false,
     onmodechange,
     onsearch,

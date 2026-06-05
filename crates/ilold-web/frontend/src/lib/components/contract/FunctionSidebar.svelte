@@ -17,7 +17,7 @@
     program = null,
     canvasFuncs,
     mode,
-    kind = 'solidity',
+    kind = 'solana',
     onadd,
     onremove,
   }: {
@@ -50,7 +50,7 @@
     hasPdas?: boolean;
     signers?: string[];
   };
-  const allRows = $derived<Row[]>(() => {
+  const allRows = $derived.by<Row[]>(() => {
     if (kind === 'solana' && program) {
       return (program.instructions ?? []).map((ix): Row => ({
         name: ix.name,
@@ -85,8 +85,7 @@
 
   const filtered = $derived.by(() => {
     const q = query.trim().toLowerCase();
-    const rows = allRows();
-    return rows.filter((r) => {
+    return allRows.filter((r: Row) => {
       if (q && !r.name.toLowerCase().includes(q)) return false;
       if (kind === 'solana') {
         if (onlyPdas && !r.hasPdas) return false;
@@ -99,9 +98,9 @@
     });
   });
 
-  const ownFiltered = $derived(filtered.filter((r) => r.source === 'own'));
-  const inheritedFiltered = $derived(filtered.filter((r) => r.source === 'inherited'));
-  const totalCount = $derived(allRows().length);
+  const ownFiltered = $derived(filtered.filter((r: Row) => r.source === 'own'));
+  const inheritedFiltered = $derived(filtered.filter((r: Row) => r.source === 'inherited'));
+  const totalCount = $derived(allRows.length);
   const visibleCount = $derived(filtered.length);
   const canvasCount = $derived(canvasFuncs.size);
   const canClear = $derived(mode !== 'session' && canvasCount > 0);

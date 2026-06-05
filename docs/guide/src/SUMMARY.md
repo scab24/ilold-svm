@@ -8,21 +8,6 @@
 - [What ilold does](./concepts/overview.md)
 - [Architecture](./concepts/architecture.md)
 
-# Solidity Backend
-
-- [Overview](./solidity/overview.md)
-- [CLI: analyze](./solidity/cli-analyze.md)
-- [CLI: context](./solidity/cli-context.md)
-- [REPL: Session](./solidity/repl/session.md)
-- [REPL: Analysis](./solidity/repl/analysis.md)
-- [REPL: Contract](./solidity/repl/contract.md)
-- [REPL: Findings](./solidity/repl/findings.md)
-- [REPL: Scenarios](./solidity/repl/scenarios.md)
-- [REPL: Workspace](./solidity/repl/workspace.md)
-- [Workflow: Audit walkthrough](./solidity/workflows/audit-walkthrough.md)
-- [Workflow: Taint analysis](./solidity/workflows/taint-analysis.md)
-- [Limitations](./solidity/limitations.md)
-
 # Solana Backend
 
 - [Overview](./solana/overview.md)
@@ -47,6 +32,5 @@
 
 # Roadmap
 
-- [Solidity: future work](./roadmap/solidity.md)
 - [Solana: Phase 2](./roadmap/solana.md)
 - [Cross-cutting](./roadmap/cross-cutting.md)

@@ -38,10 +38,9 @@ Cross-program CPI calls are exercised correctly by the VM and surface in logs, b
 
 ## Flat bipartite CFG visual
 
-The web canvas renders Solana state as a flat bipartite graph (instructions ↔ accounts). The Solidity-style CFG visual is not implemented; See [Solana roadmap](../roadmap/solana.md) for CFG visual parity.
+The web canvas renders Solana state as a flat bipartite graph (instructions ↔ accounts). A per-instruction control-flow view is not implemented; see [Solana roadmap](../roadmap/solana.md) for the planned CFG layer.
 
 ## Related pages
 
 - [Roadmap: Solana Phase 2](../roadmap/solana.md)
-- [Solidity limitations](../solidity/limitations.md)
 - [Reference: HTTP API](../reference/api-endpoints.md)

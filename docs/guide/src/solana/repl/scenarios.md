@@ -76,5 +76,4 @@ ilold[staking]> sc delete attack
 
 - `back` and `clear` rewind the VM of the **active scenario only**, never the fork's parent. Diverging via `fork` is the only way to keep both timelines side by side.
 - `time-warp` is a per-scenario side effect on the `Clock` sysvar, but is not reverted by `back`.
-- See [Solana: Scenarios and forks](../workflows/scenarios.md) for an end-to-end workflow.
-- The Solidity counterpart is documented at [Solidity: Scenarios](../../solidity/repl/scenarios.md); the command surface is identical, but Solidity scenarios share the parsed model (no VM clone needed).
+- See [Scenarios and forks](../workflows/scenarios.md) for an end-to-end workflow.

@@ -1,7 +1,7 @@
 <script lang="ts">
   let {
     mode,
-    kind = 'solidity',
+    kind = 'solana',
   }: {
     mode: 'cfg' | 'sequences' | 'session';
     kind?: 'solidity' | 'solana';

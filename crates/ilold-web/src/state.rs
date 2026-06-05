@@ -2,25 +2,10 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::RwLock;
 
-use axum::http::StatusCode;
 use tokio::sync::broadcast;
 
-use ilold_core::callgraph::builder::build_call_graph;
-use ilold_core::exploration::commands::CanvasPatch;
-use ilold_core::callgraph::types::CallGraph;
-use ilold_core::cfg::builder::CfgBuilder;
-use ilold_core::cfg::types::CfgGraph;
-use ilold_core::classify::entry_points::{classify_all, AccessLevel};
-use ilold_core::exploration::session::ExplorationSession;
-use ilold_core::model::project::Project;
-use ilold_core::parse::solar_frontend::SolarParser;
-use ilold_core::parse::ProjectParser;
-use ilold_core::pathtree::config::PruningConfig;
-use ilold_core::pathtree::types::PathTree;
-use ilold_core::pathtree::walker::build_path_tree;
-use ilold_core::sequence::analysis::{analyze_project, analyze_sequences, SequenceAnalysis};
-use ilold_core::sequence::builder::build_sequence_tree;
-use ilold_core::sequence::types::SequenceTree;
+use ilold_session_core::exploration::canvas::CanvasPatch;
+use ilold_session_core::exploration::session::ExplorationSession;
 use ilold_solana_core::execute::VmHost;
 use ilold_solana_core::model::SolanaProject;
 use solana_address::Address;
@@ -252,16 +237,6 @@ fn decode_keypair_bundle(
     Ok(out)
 }
 
-pub struct SolidityState {
-    pub project: Project,
-    pub cfgs: HashMap<(String, String), CfgGraph>,
-    pub path_trees: HashMap<(String, String), PathTree>,
-    pub call_graphs: HashMap<String, CallGraph>,
-    pub sequence_trees: HashMap<String, SequenceTree>,
-    pub sequence_analyses: HashMap<String, SequenceAnalysis>,
-    pub classifications: HashMap<String, Vec<(String, AccessLevel)>>,
-}
-
 pub struct SolanaState {
     pub project: SolanaProject,
     pub program_artifacts: Vec<(Address, Vec<u8>)>,
@@ -271,7 +246,6 @@ pub struct SolanaState {
 }
 
 pub enum Backend {
-    Solidity(SolidityState),
     Solana(SolanaState),
 }
 
@@ -285,35 +259,10 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn solidity(&self) -> Option<&SolidityState> {
-        match &self.backend {
-            Backend::Solidity(s) => Some(s),
-            Backend::Solana(_) => None,
-        }
-    }
-
     pub fn solana(&self) -> Option<&SolanaState> {
-        match &self.backend {
-            Backend::Solana(s) => Some(s),
-            Backend::Solidity(_) => None,
-        }
+        let Backend::Solana(s) = &self.backend;
+        Some(s)
     }
-}
-
-impl AppState {
-    pub fn unwrap_solidity(&self) -> &SolidityState {
-        self.solidity().expect("Solidity backend required")
-    }
-}
-
-pub fn require_solidity(state: &AppState) -> Result<&SolidityState, StatusCode> {
-    state.solidity().ok_or(StatusCode::BAD_REQUEST)
-}
-
-pub fn require_solidity_msg(state: &AppState) -> Result<&SolidityState, (StatusCode, String)> {
-    state
-        .solidity()
-        .ok_or_else(|| (StatusCode::BAD_REQUEST, "endpoint is Solidity-only".to_string()))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -382,83 +331,6 @@ impl AppState {
             }),
             annotations: RwLock::new(Vec::new()),
             scenarios: RwLock::new(ScenarioStore::new_for_contract(default_program)),
-            session_tx,
-            port,
-            project_root,
-        })
-    }
-
-    pub fn from_paths(paths: &[PathBuf], max_seq_depth: usize, port: u16, project_root: PathBuf) -> anyhow::Result<Self> {
-        let parser = SolarParser;
-        let mut project = parser.parse(paths)?;
-        project.rebuild_index();
-
-        let config = PruningConfig::default();
-        let mut cfgs = HashMap::new();
-        let mut path_trees = HashMap::new();
-        let mut call_graphs = HashMap::new();
-        let mut sequence_trees = HashMap::new();
-        let mut sequence_analyses = HashMap::new();
-        let mut classifications = HashMap::new();
-
-        for contract in &project.contracts {
-            let cg = build_call_graph(&project, contract);
-            call_graphs.insert(contract.name.clone(), cg);
-
-            let mut contract_path_trees = Vec::new();
-            let combined_state_vars = project.inherited_state_vars(contract);
-
-            for func in &contract.functions {
-                let key = (contract.name.clone(), func.name.clone());
-
-                if let Ok(cfg) = CfgBuilder::build_with_project(func, contract, Some(&project)) {
-                    let pt = build_path_tree(
-                        &cfg,
-                        &contract.name,
-                        &func.name,
-                        &combined_state_vars,
-                        &config,
-                    );
-                    contract_path_trees.push(pt.clone());
-                    path_trees.insert(key.clone(), pt);
-                    cfgs.insert(key, cfg);
-                }
-            }
-
-            let st = build_sequence_tree(contract, &contract_path_trees, max_seq_depth);
-            sequence_trees.insert(contract.name.clone(), st);
-
-            let pt_map: HashMap<(String, String), PathTree> = contract_path_trees
-                .iter()
-                .map(|pt| ((pt.contract.clone(), pt.function.clone()), pt.clone()))
-                .collect();
-            let analysis = analyze_sequences(&pt_map, &contract.name);
-            sequence_analyses.insert(contract.name.clone(), analysis);
-
-            classifications.insert(contract.name.clone(), classify_all(contract));
-        }
-
-        analyze_project(&project, &mut sequence_analyses);
-
-        let (session_tx, _) = broadcast::channel(64);
-
-        let default_contract = project.contracts.iter()
-            .find(|c| !c.name.is_empty())
-            .map(|c| c.name.clone())
-            .unwrap_or_else(|| "unknown".to_string());
-
-        Ok(Self {
-            backend: Backend::Solidity(SolidityState {
-                project,
-                cfgs,
-                path_trees,
-                call_graphs,
-                sequence_trees,
-                sequence_analyses,
-                classifications,
-            }),
-            annotations: RwLock::new(Vec::new()),
-            scenarios: RwLock::new(ScenarioStore::new_for_contract(default_contract)),
             session_tx,
             port,
             project_root,

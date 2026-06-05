@@ -1,6 +1,6 @@
 # Solana Runtime Commands
 
-These commands operate directly on the LiteSVM owned by the active scenario. They have no Solidity counterpart.
+These commands operate directly on the LiteSVM owned by the active scenario.
 
 ## users
 

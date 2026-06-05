@@ -69,7 +69,7 @@ ilold[staking]> status claim_rewards finding
   ✓ status updated
 ```
 
-Note: Solana statuses are intentionally narrower than the Solidity equivalent: only `open`, `reviewed`, `finding` (alias `found`). Solidity supports `reviewed`, `suspicious`, `vulnerable`, `clean`, `inprogress`, `notreviewed`.
+Note: the supported statuses are `open`, `reviewed`, `finding` (alias `found`).
 
 **Returns:** `StatusUpdated`.
 
@@ -103,4 +103,3 @@ ilold[staking]> export --auditor="Alba S." --version=v1.2 --date=2026-05-09
 ## Notes
 
 - Findings are scoped to the scenario they were recorded in but the export merges all of them.
-- The Solidity equivalent (see [Solidity: Findings](../../solidity/repl/findings.md)) does not support the `--rec=`, `--auditor=`, `--version=`, `--date=` flags; the report there is simpler.

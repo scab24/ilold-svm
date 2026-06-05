@@ -24,7 +24,7 @@
     lookupBlock = () => null,
     onpathselect = () => {},
     onexpandcfg = () => {},
-    kind = 'solidity',
+    kind = 'solana',
     program = null,
     solanaUsers = [],
     onsolanarun = () => {},

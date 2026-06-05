@@ -1,21 +1,14 @@
 # ilold
 
-Execution path analyzer and interactive security workbench for smart contracts. It maps every possible path through a protocol (every branch, function combination, and state mutation) and lets users navigate them visually, branch by branch, with an LLM reasoning over each path.
+Solana program execution path analyzer and interactive security workbench. It maps every reachable instruction path through an Anchor program, executes them on a real LiteSVM, and lets the auditor (or an LLM agent) navigate branches, fork scenarios, and ship a Markdown deliverable.
 
 ![ilold](images/Ilold.jpg)
 
 ## What it does
 
-ilold loads a smart contract project, builds an in-memory model, and drops the auditor into an interactive REPL backed by a live web canvas. Each command answers a question about the protocol: list entry points, add a call to a session, inspect state changes, trace execution flow, slice data dependencies, record findings, export a report. The canvas reflects the same state in a visual graph that the user navigates by clicking, expanding and forking.
+ilold loads an Anchor workspace, builds an in-memory model from the IDL, boots a LiteSVM with the compiled `.so`, and drops the auditor into an interactive REPL backed by a live web canvas. Each command answers a question about the program: list instructions, add a call to a scenario, inspect decoded account state, fork the timeline, record a finding, export the report. The canvas reflects the same state in a visual graph that the user navigates by clicking, expanding and forking.
 
-Two backends, one shell:
-
-| Backend | Input | Execution model |
-| --- | --- | --- |
-| Solana | Anchor project (`Anchor.toml` + IDL + `.so`) | Concrete execution on LiteSVM with scenario forking |
-| Solidity | `.sol` sources | Static analysis: parser, CFG, path tree, slicer |
-
-The Solana backend also ships a Model Context Protocol (MCP) server so an LLM agent can drive the audit end to end while the canvas reflects every step in real time.
+ilold also ships a Model Context Protocol (MCP) server so any LLM client (Claude Code, Cursor, Continue) can drive the audit end to end while the canvas reflects every step in real time.
 
 ## Quick start
 
@@ -27,7 +20,7 @@ cd ilold
 cargo build --release
 ```
 
-The binary is at `target/release/ilold` with four subcommands: `analyze`, `context`, `serve`, and `explore`.
+The binary is at `target/release/ilold` with three subcommands: `serve`, `explore`, and `mcp`.
 
 ## Solana backend
 
@@ -52,7 +45,7 @@ ilold[staking]> finding High "..."
 ilold[staking]> export
 ```
 
-### LLM-driven audit (Solana via MCP)
+### LLM-driven audit (MCP)
 
 Register the MCP server once in your client:
 
@@ -67,37 +60,6 @@ Then ask the LLM in natural language:
 
 The LLM picks the right tools, the backend executes them in LiteSVM, and the canvas reflects each step in real time. The MCP server is agnostic to the active program: a single registration works against multi-program workspaces, the LLM switches with `ilold_use <program>`.
 
-## Solidity backend
-
-Contracts are parsed into a typed model. Per-function CFGs and path trees drive the interactive analysis commands: `info`, `trace`, `slice`, `timeline`, and sequence narratives.
-
-![Solidity canvas](images/diagram_solidity.png)
-
-```
-./target/release/ilold explore tests/fixtures/staking.sol
-```
-
-```
-ilold[Staking]> f
-ilold[Staking]> c deposit
-ilold[Staking → deposit]> s
-ilold[Staking → deposit]> who totalStaked
-ilold[Staking → deposit]> sl deposit totalStaked
-ilold[Staking → deposit]> tr deposit
-```
-
-For one-shot static analysis without the REPL:
-
-```
-./target/release/ilold analyze tests/fixtures/staking.sol --max-seq-depth 5
-```
-
-## Trace and slice (Solidity)
-
-`trace` builds the full execution tree of a function with modifier bodies inlined, requires highlighted, state writes flagged, and external calls marked. `slice` produces backward and forward dataflow slices for any variable in any function. Both are static and only available on the Solidity side today; Solana coverage is reconstructed at runtime via `coverage` and the runtime overlay until the AST + CFG layer lands (see [Roadmap](docs/guide/src/roadmap/solana.md)).
-
-![Solidity trace command output](images/tr_menu.png)
-
 ## Documentation
 
 The published book lives at **[scab24.github.io/ilold](https://scab24.github.io/ilold/)**. Sources are in [`docs/guide/`](docs/guide/src/SUMMARY.md); build it locally with:
@@ -111,7 +73,6 @@ Key pages:
 - [Introduction](docs/guide/src/introduction.md)
 - [Getting Started](docs/guide/src/getting-started.md)
 - [Solana Backend](docs/guide/src/solana/overview.md)
-- [Solidity Backend](docs/guide/src/solidity/overview.md)
 - [MCP server](docs/guide/src/reference/mcp.md)
 - [Roadmap](docs/guide/src/roadmap/solana.md)
 
@@ -119,19 +80,20 @@ Key pages:
 
 MVP scope shipped:
 
-- Typed graph from Anchor IDL (Solana) and `solar-compiler` AST (Solidity)
+- Typed graph from Anchor IDL with discriminator + admin-gating + coupling metadata
 - Executable scenarios with fork from any step, save/load, runtime overlay
 - LLM-aware REPL with structured `?` help per command
 - MCP server with 30 typed tools agnostic to the active program
-- Source viewer parity Solana - Solidity with "open in IDE" deep links
+- Source viewer with "open in IDE" deep links
 - Markdown audit deliverable with severity matrix and methodology
 
 Documented future work (see [Roadmap](docs/guide/src/roadmap/solana.md)):
 
-- AST + CFG layer on the Solana side via Elozer, our in-house static analyzer
+- AST + CFG layer for Anchor handlers via Elozer, our in-house static analyzer
 - Detector engine measured against the public sealevel-attacks corpus
 - Pre-built attack-pattern query catalog
-- MCP server for the Solidity backend
+
+For the legacy Solidity backend, see the standalone [`ilold-evm`](https://github.com/scab24/ilold-evm) repo.
 
 ## Project layout
 
@@ -139,16 +101,15 @@ Single Rust monorepo:
 
 ```
 crates/
-  ilold-cli           Interactive shell + analyze/context CLI
+  ilold-cli           Interactive shell + serve/explore/mcp CLI
   ilold-solana-core   Solana engine (Anchor IDL + LiteSVM + runtime overlay)
-  ilold-core          Solidity engine (parser, CFG, path tree, slicer)
   ilold-session-core  Shared session, scenarios, findings, export
   ilold-web           REST + WebSocket server (Svelte frontend inside)
   ilold-mcp           MCP server for LLM agent integration
   ilold-render        Pretty printers shared by CLI and MCP
   ilold-help          Tool registry shared by REPL help and MCP
 tests/
-  fixtures/           Anchor + Solidity Foundry fixtures (binaries committed)
+  fixtures/solana/    Anchor fixtures (binaries committed)
   scenarios/          Bash + Python end-to-end suite
 docs/guide/           Public mdbook documentation
 ```

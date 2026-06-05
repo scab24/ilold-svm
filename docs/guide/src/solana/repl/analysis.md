@@ -127,5 +127,5 @@ Coverage is the closest current surrogate for "have I exercised every instructio
 
 ## Notes
 
-- See [Solana: Limitations](../limitations.md) for the static-analysis gap (no CFG → no `slice` / `trace` yet).
-- The Solidity counterparts of `who` and `timeline` work on state variables; the Solana versions work on account types and pubkeys respectively. The mental shift is the same ("what touches this piece of state?") but the units of state are different.
+- See [Limitations](../limitations.md) for the static-analysis gap (no CFG → no `slice` / `trace` yet).
+- `who` works against account types (and fields with a snake_case → PascalCase heuristic). `timeline` works against decoded account pubkeys.

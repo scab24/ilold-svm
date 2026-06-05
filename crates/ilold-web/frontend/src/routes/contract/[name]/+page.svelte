@@ -48,7 +48,7 @@
 
   let contract: ContractDetail | null = $state(null);
   let solanaProgram: ProgramView | null = $state(null);
-  let kind: 'solidity' | 'solana' = $state('solidity');
+  let kind: 'solidity' | 'solana' = $state('solana');
   let solanaCanvasIxs: Set<string> = $state(new Set());
   let solanaExpandedIxs: Set<string> = $state(new Set());
   let solanaUsers: { name: string; pubkey: string; lamports: number }[] = $state([]);
@@ -984,47 +984,25 @@
     clearUserLabels();
     setSearchContext(contractName);
     try {
-      const pm = await getProjectMap();
+      await getProjectMap();
       if (!stillFresh()) return;
-      kind = pm.kind === 'solana' ? 'solana' : 'solidity';
-      if (kind === 'solana') {
-        try {
-          const prog = await getProgramView(contractName);
-          if (!stillFresh()) return;
-          solanaProgram = prog;
-        } catch {
-          if (stillFresh()) error = `Program "${contractName}" not found`;
-          return;
-        }
-        projectMap = [];
-        await refreshSolanaUsers();
-        const scenario = getActiveScenario();
-        await loadRuntimeOverlay(contractName, scenario);
-        if (scenario) await loadUserLabels(scenario);
-        paintCpiEdges();
+      kind = 'solana';
+      try {
+        const prog = await getProgramView(contractName);
+        if (!stillFresh()) return;
+        solanaProgram = prog;
+      } catch {
+        if (stillFresh()) error = `Program "${contractName}" not found`;
         return;
       }
-      projectMap = pm.contracts ?? [];
-      const ctr = await getContract(contractName);
-      if (!stillFresh()) return;
-      contract = ctr;
-      const callgraphData = await getCallGraph(contractName);
-      if (!stillFresh()) return;
-      callgraphRaw = callgraphData;
-      try {
-        const tree = await getSequences(contractName);
-        if (stillFresh()) seqTree = tree;
-      } catch (e) {
-        if (stillFresh() && kind !== 'solana') console.warn('getSequences failed:', e);
-      }
-      try {
-        const analysis = await getSequenceAnalysis(contractName);
-        if (stillFresh()) seqAnalysis = analysis;
-      } catch (e) {
-        if (stillFresh() && kind !== 'solana') console.warn('getSequenceAnalysis failed:', e);
-      }
+      projectMap = [];
+      await refreshSolanaUsers();
+      const scenario = getActiveScenario();
+      await loadRuntimeOverlay(contractName, scenario);
+      if (scenario) await loadUserLabels(scenario);
+      paintCpiEdges();
     } catch (e) {
-      if (stillFresh()) error = `Contract "${contractName}" not found`;
+      if (stillFresh()) error = `Program "${contractName}" not found`;
     }
   });
 

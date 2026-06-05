@@ -1,191 +1,87 @@
 # HTTP API Reference
 
-ilold exposes an HTTP API on the configured port (default 3001). All endpoints return JSON. The API is split into three groups: command bus, session queries, and contract queries.
+ilold exposes an HTTP API on the configured port (default `8080`). All endpoints return JSON. The routes are defined in `crates/ilold-web/src/lib.rs::build_router`.
 
 ## Command bus
 
 ### POST /api/cmd
 
-Execute a session command. This is the single entry point for all state-mutating session operations.
+Execute a session command against the active program and scenario. This is the single entry point for every state-mutating session operation.
 
 **Request body:**
 
-```
+```json
 {
-  "contract": "Staking",          // optional, defaults to session contract
-  "command": { "Call": { "func": "deposit" } }
+  "contract": "staking",
+  "command": { "Call": { "ix": "stake", "args": { "amount": 1000 }, "accounts": { "pool": "pool", "user_stake": "alice_stake", "user": "alice" }, "signers": ["alice"] } }
 }
 ```
 
-**Supported commands:**
+`contract` is the program name. It defaults to the first program in the workspace when omitted.
 
-| Command | Payload | Description |
-|---|---|---|
-| `Call` | `{ "func": "deposit", "trace_config": null }` | Add a function call as a session step |
-| `Back` | `"Back"` | Remove the last step |
-| `Clear` | `"Clear"` | Remove all steps |
-| `State` | `"State"` | Return accumulated state variable summary |
-| `Functions` | `"Functions"` | List functions of the current contract |
-| `FunctionsAll` | `"FunctionsAll"` | List all accessible functions including inherited |
-| `StateVarsAll` | `"StateVarsAll"` | List all accessible state variables including inherited |
-| `Who` | `{ "variable": "totalStaked" }` | Find all writers and readers of a variable |
-| `Finding` | `{ "severity": "High", "title": "...", "description": "..." }` | Record an audit finding |
-| `Note` | `{ "text": "..." }` | Record a free-text note |
-| `Status` | `{ "func": "deposit", "status": "Reviewed" }` | Set review status for a function |
-| `Session` | `"Session"` | Return session overview (contract, steps, finding count) |
-| `Export` | `"Export"` | Export session journal as markdown |
-| `SaveSession` | `"SaveSession"` | Serialize session to JSON |
-| `LoadSession` | `{ "json": "..." }` | Restore session from serialized JSON |
+`command` carries a `SolanaCommand` variant (see `crates/ilold-solana-core/src/exploration/commands.rs`). Headline variants:
 
-**Response:** A `CommandResult` variant matching the command type. Key variants:
+| Variant | Payload | Description |
+| --- | --- | --- |
+| `Call` | `{ ix, args, accounts, signers }` | Run an instruction against the LiteSVM and append a step |
+| `Back` | `"Back"` | Remove the last step and rewind the VM |
+| `Clear` | `"Clear"` | Reset scenario steps and the underlying VM |
+| `Funcs` / `Vars` / `Info` / `Coupling` / `Coverage` | metadata | Inspect the typed model and runtime aggregates |
+| `State` / `Session` / `Step` / `Timeline` / `Inspect` | session queries | Decoded views of the active scenario |
+| `Users` / `UsersNew` / `Airdrop` / `TimeWarp` / `Pda` | runtime | LiteSVM controls |
+| `Scenario` | `{ sub: New | List | Switch | Fork | Delete }` | Scenario management |
+| `Finding` / `Note` / `Status` / `Findings` / `Export` | deliverable | Audit journal and Markdown export |
+| `SaveSession` / `LoadSession` | persistence | JSON scenario store under `~/.ilold/sessions/` |
 
-- `StepAdded`: `step_index`, `function`, `access`, `state_changed` (list of variable names)
-- `StateView`: `summary` (list of variable summaries with writers per step)
-- `FunctionList`: `functions` (name, access level, writes_state, has_external_calls)
-- `VariableInfo`: `variable`, `writers` (name + access), `readers` (name + access)
-- `Error`: `message`
+The response is a `SolanaCommandResult` variant (`StepAdded`, `CallFailed`, `StateView`, `Timeline`, `Coverage`, `Error`, …).
 
-## Session query endpoints
-
-These endpoints read from the active session. They return 404 if no session exists (no `Call` command has been issued).
-
-### GET /api/session/state
-
-Returns the accumulated state variable summary across all session steps.
-
-**Response:** Array of `VariableSummary` objects with variable name, type, and per-step write details.
-
-### GET /api/session/sequence
-
-Returns a sequence narrative describing the relationship between session steps. Requires at least 2 steps.
-
-**Response:** `SequenceNarrative` with per-step summaries and flow summaries derived from persisted flow trees.
-
-### GET /api/session/step/{index}/narrative
-
-Returns the function narrative for a specific session step.
-
-**Path params:** `index` -- zero-based step index.
-
-**Response:** `FunctionNarrative` with paths, state writes, external calls, and conditions.
-
-### GET /api/session/step/{index}/trace
-
-Returns the persisted FlowTree of a session step. This is the tree captured when `Call` was executed, not a recomputation.
-
-**Path params:** `index` -- zero-based step index.
-
-**Response:** `FlowTree` with step nodes, each containing operation type, target, conditions, and child steps. Returns 404 if the step has no persisted tree (pre-Phase-2a sessions).
-
-### GET /api/session/timeline/{variable}
-
-Returns a chronological timeline of every write to `variable` across all session steps. Matches by base name (e.g., `balances` matches `balances[msg.sender]`).
-
-**Path params:** `variable` -- state variable name.
-
-**Response:** `VariableTimeline` with `state_entries` and `local_entries`. Each entry contains: `session_step_index`, `function`, `target`, `operator`, `value_expr`, `reached_when` (path conditions), `via` (modifier name if applicable), `scope`.
-
-### GET /api/session/slice/{function}/{variable}
-
-Returns a dataflow slice for `variable` inside `function` of the session's current contract.
-
-**Path params:** `function` -- function name, `variable` -- variable name.
-
-**Query params:**
-
-| Param | Values | Default | Description |
-|---|---|---|---|
-| `direction` | `backward`, `forward`, `both`, `b`, `f`, `all` | `both` | Slice direction |
-
-**Response:** `SliceResult` with `backward` and `forward` arrays. Each entry contains: `path`, `span` (source location), `text` (rendered statement), `origin` (`FunctionBody` or `Modifier(name)`).
-
-### GET /api/session/trace/{contract}/{func}
-
-Returns a FlowTree for the given function, computed on demand from the current analysis data.
-
-**Path params:** `contract` -- contract name, `func` -- function name.
-
-**Query params:**
-
-| Param | Type | Default | Description |
-|---|---|---|---|
-| `depth` | integer | 2 | Maximum inline depth for internal calls |
-| `reverts` | boolean | false | Include revert paths in the tree |
-| `expand` | string | empty | Comma-separated step IDs to force-inline beyond max depth (e.g., `17,24`) |
-
-**Response:** `FlowTree` with nested step nodes representing the execution flow.
-
-### GET /api/session/function/{contract}/{func}
-
-Returns a function narrative without requiring a session step. Useful for inspecting functions that have not been called in the session.
-
-**Path params:** `contract` -- contract name, `func` -- function name.
-
-**Response:** `FunctionNarrative` with paths, state effects, and behavioral summary.
-
-## Contract query endpoints
-
-These endpoints read from the static analysis data and do not require an active session.
-
-### GET /api/project
-
-Returns a project summary with file count and a list of contracts (name, kind, function count, state variable count, inheritance).
-
-### GET /api/project/map
-
-Returns the full project map with all contracts, their functions (with path counts and external call flags), state variables, and cross-contract relationships extracted from call graphs.
-
-### GET /api/contract/{name}
-
-Returns contract detail: name, kind, inheritance chain, functions (with path stats), state variables, and inherited functions and state variables.
-
-### GET /api/contract/{name}/callgraph
-
-Returns the call graph for a contract in Cytoscape-compatible JSON format. Nodes represent functions (with contract, type, external flag). Edges represent calls (with kind and count).
-
-### GET /api/contract/{name}/{func}/cfg
-
-Returns the control flow graph for a function in Cytoscape-compatible JSON format. Nodes represent basic blocks (entry, normal, return, revert, assembly, loop). Edges represent control flow transitions.
-
-### GET /api/contract/{name}/{func}/paths
-
-Returns the path tree for a function. Contains all execution paths with stats (total, happy, revert) and per-path annotations (state writes, external calls, events).
-
-### GET /api/contract/{name}/sequences
-
-Returns the sequence tree for a contract, showing function interaction patterns.
-
-### GET /api/contract/{name}/analysis
-
-Returns the sequence analysis for a contract: per-function behavior summaries (state writes, state reads, external calls, conditions) and inter-function transition information.
-
-### GET /api/contract/{name}/suggestions
-
-Returns search suggestions for the contract: function names, state variable names, event names, external call targets, and predefined categories (revert, return, assembly).
-
-## Solana-specific endpoints
-
-Solana shares `/api/cmd`, `/api/project`, `/api/project/map`, `/ws`, and most session endpoints with the Solidity backend. The following routes are Solana-only:
+## Project endpoints
 
 | Endpoint | Description |
 | --- | --- |
-| `GET /api/program/{name}/view` | Full `ProgramView` for the named program: instructions (with args, accounts, signers, PDAs, admin-gated flag, coupling hints), account types, discriminators. |
-| `GET /api/program/{name}/overlay` | Runtime overlay aggregated over the active scenario: calls-per-instruction, failures, CU stats, CPI edges. |
-| `GET /api/users/{scenario}/labels` | Returns the keypair labels for a given scenario (used by the web canvas to render `users new <name>` aliases). |
-| `GET /api/scenarios` | Scenario list for the active program (active marker, step counts). |
-| `GET /api/scenarios/all` | Scenario list across every program in the workspace. |
+| `GET /api/project` | Project summary: `kind: "solana"`, list of programs with instruction + account-type counts |
+| `GET /api/project/map` | Full project map consumed by the web canvas (programs, instructions, account types) |
 
-`POST /api/cmd` carries a `SolanaCommand` payload (`Call`, `Users`, `UsersNew`, `Airdrop`, `TimeWarp`, `Pda`, `Inspect`, `Scenario`, `SaveSession`, `LoadSession`, …; see `crates/ilold-solana-core/src/exploration/commands.rs`). The response is a `SolanaCommandResult` variant (`StepAdded`, `CallFailed`, `StateView`, `Timeline`, `Coverage`, etc.).
+## Program endpoints
+
+| Endpoint | Description |
+| --- | --- |
+| `GET /api/program/{name}/view` | Full `ProgramView` for the named program: instructions (typed args, accounts with flags, signers, PDAs, admin-gated flag, coupling hints), account types, discriminators |
+| `GET /api/program/{name}/overlay` | Runtime overlay aggregated over the active scenario: calls-per-instruction, failures, CU stats, CPI edges (`?scenario=<name>` overrides the default) |
+| `GET /api/program/{name}/{ix}/source` | Anchor handler source slice from `programs/<program>/src/lib.rs`, with `file_path`, `source`, and `span` (line/column range) |
+
+## Users + scenarios
+
+| Endpoint | Description |
+| --- | --- |
+| `GET /api/users/{scenario}/labels` | Returns the keypair labels (pubkey → name) for the given scenario; used by the canvas to render `users new <name>` aliases on signer/payer pubkeys |
+| `GET /api/scenarios` | Scenario list for the active program (name, active flag, step count) |
+| `GET /api/scenarios/all` | Scenarios with their step lists across every program in the workspace |
+
+## Session step trace
+
+### GET /api/session/step/{index}/trace
+
+Returns the persisted runtime trace of a session step (logs, CU, inner instructions). 404 if the step has no trace recorded.
+
+## Annotations
+
+| Endpoint | Description |
+| --- | --- |
+| `GET /api/annotations` | List all canvas annotations |
+| `POST /api/annotations` | Create an annotation |
+| `PUT /api/annotations/{id}` | Update an annotation |
+| `DELETE /api/annotations/{id}` | Delete an annotation |
 
 ## WebSocket
 
 `GET /ws` upgrades to a WebSocket connection. See [WebSocket events](./websocket.md) for the full event vocabulary and payload shapes.
 
-A second WebSocket route `GET /ws/pty` provides a PTY bridge used by the embedded REPL in the web canvas.
+`GET /ws/pty` provides a PTY bridge used by the embedded REPL in the web canvas. Binary passthrough; the wire format is documented inline in `crates/ilold-web/src/ws/pty.rs`.
 
 ## Related pages
 
 - [WebSocket events](./websocket.md)
-- [Solidity REPL: Session](../solidity/repl/session.md)
-- [Solana REPL: Session](../solana/repl/session.md)
+- [MCP server](./mcp.md)
+- [REPL: Session](../solana/repl/session.md)
 - [Known Limitations](./limitations.md)

@@ -75,4 +75,4 @@ Exits the REPL. `Ctrl+D` and `Ctrl+C` also work.
 ## Notes
 
 - The full list of registered command aliases is enforced by the test `every_solana_command_has_a_help_block` in `crates/ilold-cli/src/help.rs`. New commands without a corresponding HelpBlock break the build.
-- The Solidity REPL uses a flat one-line inline-help table (see `print_inline_help`); Solana uses the structured HelpBlock format above. Both respond to the `<cmd>?` trailing syntax.
+- Append `?` to any command for its structured HelpBlock (syntax, flags, examples, return shape, related commands).
